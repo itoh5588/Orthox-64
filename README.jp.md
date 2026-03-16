@@ -1,5 +1,8 @@
 # Orthox-64
 
+![Orthox-64 デスクトップ](assets/screenshot.png)
+![Orthox-64 DOOM](assets/doom.png)
+
 Orthox-64（オーソックス・シックスティフォー）は、現代的なOS自作の在り方を提示するプロジェクトである。
 
 ## コンセプトと設計哲学

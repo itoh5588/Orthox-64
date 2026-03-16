@@ -27,6 +27,7 @@ qemu.log
 # Images (Screenshots)
 *.png
 スクリーンショット*.png
+!assets/*.png
 
 # Temporary files
 test1.iso

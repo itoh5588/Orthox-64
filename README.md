@@ -1,5 +1,8 @@
 # Orthox-64
 
+![Orthox-64 Desktop](assets/screenshot.png)
+![Orthox-64 DOOM](assets/doom.png)
+
 Orthox-64 is a project that presents a modern approach to operating system development from scratch.
 
 ## Concept and Design Philosophy
