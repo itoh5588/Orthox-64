@@ -24,3 +24,8 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 
 ## Status
 The project is currently in active development. Core kernel primitives are stable, and current focus is on improving the userland environment and porting standard tools.
+
+## Acknowledgements
+Orthox-64 is inspired by and references the following projects:
+- **[MikanOS](https://github.com/uchan-nos/mikanos)**: A modern educational OS by [uchan-nos](https://github.com/uchan-nos). The kernel architecture and some primitive setups were developed with reference to its implementation.
+- **[Limine](https://github.com/limine-bootloader/limine)**: Used as the bootloader for modern UEFI/BIOS support.
