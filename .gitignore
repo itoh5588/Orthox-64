@@ -55,3 +55,4 @@ ports/test.cpp
 **/*.a
 **/*.tar.gz
 **/*.tar.bz2
+Docs/
