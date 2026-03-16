@@ -58,3 +58,4 @@ ports/test.cpp
 **/*.tar.bz2
 Docs/
 tests/binutils_test/README.md
+user/doomgeneric/
