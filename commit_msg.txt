@@ -1,0 +1,11 @@
+feat: Implement pipe and dup2 syscalls, and port GCC 4.7.4 (cc1)
+
+- Added SYS_PIPE and SYS_DUP2 syscall numbers.
+- Implemented `FT_PIPE` file type and ring buffer based pipe logic in `kernel/fs.c`.
+- Fixed file descriptor inheritance in `task_fork()`.
+- Fixed General Protection Fault during pipe usage by adjusting `PIPE_BUF_SIZE` to fit within a single physical page.
+- Created `pipetest.elf` to successfully verify pipe and process synchronization.
+- Transitioned GCC porting target from 4.9.4 to 4.7.4 to bypass C++ standard library dependencies on the host cross-compiler.
+- Built a custom OS stub library (`libosstubs.a`) containing missing POSIX functions (mkdir, sleep, alarm, execv, chdir, gettimeofday) required by GCC build tools.
+- Fixed `opt-gather.awk` sorting bug on macOS by forcing `LC_ALL=C` and `AWK=gawk`.
+- Successfully cross-compiled GCC 4.7.4 `cc1` and `xgcc` for orthOS.

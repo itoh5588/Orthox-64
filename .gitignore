@@ -1,0 +1,57 @@
+# Build artifacts
+*.o
+*.elf
+*.iso
+*.img
+*.dmg
+iso_root/
+build/
+rootfs.tar
+rootfs/bin/
+rootfs/doom1.wad
+
+# Dependency files
+**/.deps/
+**/*.Po
+
+# macOS files
+.DS_Store
+
+# Logs and reports
+xorriso_log.txt
+iso_report.txt
+*.log
+serial.log
+qemu.log
+
+# Images (Screenshots)
+*.png
+スクリーンショット*.png
+
+# Temporary files
+test1.iso
+test2.iso
+test_dir/
+
+# Ports (External software)
+# Ignore extracted sources and build directories
+ports/gcc-*/
+ports/binutils-*/
+ports/gmp-*/
+ports/mpfr-*/
+ports/mpc-*/
+ports/busybox/
+ports/musl/
+ports/musl-install/
+
+# Ignore tarballs and pre-built binaries
+ports/*.tar.gz
+ports/*.tar.bz2
+ports/*.a
+ports/a.out
+ports/conftest.c
+ports/test.c
+ports/test.cpp
+**/*.a
+**/*.tar.gz
+**/*.tar.bz2
