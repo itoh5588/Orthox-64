@@ -57,3 +57,4 @@ ports/test.cpp
 **/*.tar.gz
 **/*.tar.bz2
 Docs/
+tests/binutils_test/README.md
