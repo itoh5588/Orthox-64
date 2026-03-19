@@ -978,6 +978,10 @@ int get_mount_status(char* buf, uint32_t size) {
     return (int)syscall(ORTH_SYS_GET_MOUNT_STATUS, (uint64_t)buf, (uint64_t)size, 0);
 }
 
+int dns_lookup_ipv4(const char* hostname, uint32_t* out_addr) {
+    return (int)syscall(ORTH_SYS_DNS_LOOKUP, (uint64_t)hostname, (uint64_t)out_addr, 0);
+}
+
 int getdents_sys(int fd, struct orth_dirent* dirp, uint32_t count) {
     return (int)syscall(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count);
 }

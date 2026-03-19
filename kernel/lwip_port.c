@@ -8,6 +8,7 @@
 #include "lwip/timeouts.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/dhcp.h"
+#include "lwip/dns.h"
 #include "lwip/etharp.h"
 #include "lwip/raw.h"
 #include "lwip/udp.h"
@@ -18,6 +19,7 @@
 #include "lwip/prot/icmp.h"
 #include "lwip/prot/ethernet.h"
 #include "netif/ethernet.h"
+#include "task.h"
 
 void puts(const char* s);
 void puthex(uint64_t v);
@@ -39,6 +41,10 @@ static struct raw_pcb* g_icmp_pcb = 0;
 static struct udp_pcb* g_udp_echo_pcb = 0;
 static struct dhcp g_dhcp;
 static ip_addr_t g_ping_target;
+static volatile int g_dns_pending = 0;
+static volatile int g_dns_done = 0;
+static volatile err_t g_dns_result = ERR_OK;
+static ip_addr_t g_dns_addr;
 
 static err_t orthox_lwip_output(struct netif* netif, struct pbuf* p);
 static err_t orthox_lwip_init_netif(struct netif* netif);
@@ -48,6 +54,7 @@ static void orthox_lwip_netif_status(struct netif* netif);
 static u8_t orthox_lwip_icmp_recv(void* arg, struct raw_pcb* pcb, struct pbuf* p, const ip_addr_t* addr);
 static void orthox_lwip_ping_gateway(void);
 static void orthox_lwip_udp_echo_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip_addr_t* addr, u16_t port);
+static void orthox_lwip_dns_found(const char* name, const ip_addr_t* ipaddr, void* arg);
 
 static void putdec_u8(uint8_t v) {
     char buf[4];
@@ -135,6 +142,13 @@ static void orthox_lwip_log_udp_echo(uint16_t len, uint16_t port) {
     puts("\r\n");
 }
 
+static void orthox_lwip_log_dns_server(const ip_addr_t* addr) {
+    if (!addr || !IP_IS_V4(addr)) return;
+    puts("[lwip] dns=");
+    orthox_lwip_put_ip4(ip_2_ip4(addr));
+    puts("\r\n");
+}
+
 static void orthox_lwip_netif_status(struct netif* netif) {
     if (!netif) return;
     if (ip4_addr_isany_val(*netif_ip4_addr(netif))) return;
@@ -150,6 +164,7 @@ static void orthox_lwip_netif_status(struct netif* netif) {
     puts(" mask=");
     orthox_lwip_put_ip4(netif_ip4_netmask(netif));
     puts("\r\n");
+    orthox_lwip_log_dns_server(dns_getserver(0));
 }
 
 static u8_t orthox_lwip_icmp_recv(void* arg, struct raw_pcb* pcb, struct pbuf* p, const ip_addr_t* addr) {
@@ -212,6 +227,19 @@ static void orthox_lwip_udp_echo_recv(void* arg, struct udp_pcb* pcb, struct pbu
     orthox_lwip_log_udp_echo(p->tot_len, port);
     (void)udp_sendto(pcb, p, addr, port);
     pbuf_free(p);
+}
+
+static void orthox_lwip_dns_found(const char* name, const ip_addr_t* ipaddr, void* arg) {
+    (void)name;
+    (void)arg;
+    if (ipaddr) {
+        g_dns_addr = *ipaddr;
+        g_dns_result = ERR_OK;
+    } else {
+        g_dns_result = ERR_VAL;
+    }
+    g_dns_done = 1;
+    g_dns_pending = 0;
 }
 
 static err_t orthox_lwip_output(struct netif* netif, struct pbuf* p) {
@@ -373,4 +401,30 @@ void lwip_port_poll(void) {
 
 int lwip_port_is_ready(void) {
     return g_lwip_ready;
+}
+
+int lwip_port_lookup_ipv4(const char* hostname, uint32_t* out_addr) {
+    if (!g_lwip_ready || !g_dhcp_ready || !hostname || !out_addr) return -1;
+    if (g_dns_pending) return -1;
+
+    g_dns_pending = 1;
+    g_dns_done = 0;
+    g_dns_result = ERR_OK;
+    ip_addr_set_zero(&g_dns_addr);
+
+    err_t err = dns_gethostbyname(hostname, &g_dns_addr, orthox_lwip_dns_found, NULL);
+    if (err == ERR_OK) {
+        g_dns_pending = 0;
+        g_dns_done = 1;
+    } else if (err != ERR_INPROGRESS) {
+        g_dns_pending = 0;
+        return -1;
+    }
+
+    while (!g_dns_done) {
+        schedule();
+    }
+    if (g_dns_result != ERR_OK || !IP_IS_V4(&g_dns_addr)) return -1;
+    *out_addr = ip_2_ip4(&g_dns_addr)->addr;
+    return 0;
 }

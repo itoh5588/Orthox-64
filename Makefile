@@ -107,6 +107,7 @@ SRCS = kernel/main.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
 
 LWIP_CORE_SRCS = \
 	ports/lwip/src/core/def.c \
+	ports/lwip/src/core/dns.c \
 	ports/lwip/src/core/inet_chksum.c \
 	ports/lwip/src/core/init.c \
 	ports/lwip/src/core/ip.c \

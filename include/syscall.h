@@ -91,6 +91,7 @@
 #define ORTH_SYS_SIGPROCMASK      (ORTH_SYS_BASE + 18)
 #define ORTH_SYS_SIGPENDING       (ORTH_SYS_BASE + 19)
 #define ORTH_SYS_SIGACTION        (ORTH_SYS_BASE + 20)
+#define ORTH_SYS_DNS_LOOKUP       (ORTH_SYS_BASE + 21)
 
 // mmap flags/protection (Linux-compatible subset)
 #ifndef PROT_NONE
@@ -186,5 +187,6 @@ int tcsetattr_sys(int fd, int optional_actions, const struct orth_termios* tio);
 int sigprocmask_sys(int how, const uint64_t* set, uint64_t* oldset);
 int sigpending_sys(uint64_t* set);
 int sigaction_sys(int sig, const struct orth_sigaction* act, struct orth_sigaction* oldact);
+int dns_lookup_ipv4(const char* hostname, uint32_t* out_addr);
 
 #endif

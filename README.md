@@ -18,6 +18,7 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **Multitasking:** Preemptive multitasking and kernel threads.
 - **File System:** Virtual File System (VFS) and tar-based initial ramdisk.
 - **USB Support:** Basic USB stack and Mass Storage Class (MSC) support.
+- **Networking:** `virtio-net` + `lwIP` based IPv4 networking with DHCP, DNS, ICMP, UDP, TCP, socket syscalls, BusyBox `httpd`, and outbound HTTP client support.
 - **Sound:** Audio support via Intel HD Audio.
 - **Userland:** Environment based on `musl libc` for better standard compatibility.
 - **Ported Apps:** Capable of running ported software like `doomgeneric`.
@@ -30,7 +31,7 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **doomgeneric:** Vendored local port, upstream version not recorded in-tree
 
 ## Status
-The project is currently in active development. Core kernel primitives are stable, and current focus is on improving the userland environment and porting standard tools.
+The project is currently in active development. Core kernel primitives are stable, networking bring-up is now working on QEMU user-net, and current focus is on expanding userland compatibility and higher-level network capabilities such as TLS/HTTPS.
 
 ## Acknowledgements
 Orthox-64 is inspired by and references the following projects:

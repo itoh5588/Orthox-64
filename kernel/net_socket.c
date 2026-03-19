@@ -46,6 +46,7 @@ typedef struct net_socket_backend {
     int type;
     int protocol;
     int connected;
+    int connecting;
     int listening;
     int eof;
     int error;
@@ -232,6 +233,22 @@ static err_t tcp_stream_sent(void* arg, struct tcp_pcb* tpcb, u16_t len) {
     (void)arg;
     (void)tpcb;
     (void)len;
+    return ERR_OK;
+}
+
+static err_t tcp_client_connected(void* arg, struct tcp_pcb* tpcb, err_t err) {
+    net_socket_backend_t* sock = (net_socket_backend_t*)arg;
+    if (!sock) return err;
+    sock->connecting = 0;
+    if (err != ERR_OK) {
+        sock->error = err;
+        return err;
+    }
+    sock->connected = 1;
+    sock->local_port = cpu_to_be16(tpcb->local_port);
+    sock->peer_port = cpu_to_be16(tpcb->remote_port);
+    sock->local_addr = ip_2_ip4(&tpcb->local_ip)->addr;
+    sock->peer_addr = ip_2_ip4(&tpcb->remote_ip)->addr;
     return ERR_OK;
 }
 
@@ -431,10 +448,35 @@ int sys_connect(int fd, const void* addr, uint32_t addrlen) {
     const struct orth_sockaddr_in* in = (const struct orth_sockaddr_in*)addr;
     if (in->sin_family != AF_INET) return -1;
 
-    if (sock->type == SOCK_STREAM) return -1;
-
     ip_addr_t ipaddr;
     ip_addr_copy_from_ip4(ipaddr, *(const ip4_addr_t*)&in->sin_addr.s_addr);
+
+    if (sock->type == SOCK_STREAM) {
+        if (!sock->pcb.tcp || sock->listening) return -1;
+        if (sock->connected) return 0;
+
+        sock->error = 0;
+        sock->eof = 0;
+        sock->connecting = 1;
+        sock->peer_port = in->sin_port;
+        sock->peer_addr = in->sin_addr.s_addr;
+
+        tcp_arg(sock->pcb.tcp, sock);
+        tcp_recv(sock->pcb.tcp, tcp_stream_recv);
+        tcp_sent(sock->pcb.tcp, tcp_stream_sent);
+        tcp_err(sock->pcb.tcp, tcp_stream_err);
+
+        if (tcp_connect(sock->pcb.tcp, &ipaddr, be16_to_cpu(in->sin_port), tcp_client_connected) != ERR_OK) {
+            sock->connecting = 0;
+            return -1;
+        }
+
+        while (sock->connecting) {
+            schedule();
+        }
+        return sock->connected ? 0 : -1;
+    }
+
     if (udp_connect(sock->pcb.udp, &ipaddr, be16_to_cpu(in->sin_port)) != ERR_OK) return -1;
 
     sock->connected = 1;

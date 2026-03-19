@@ -11,6 +11,7 @@
 #include "sound.h"
 #include "usb.h"
 #include "net_socket.h"
+#include "lwip_port.h"
 
 void puts(const char *s);
 void puthex(uint64_t v);
@@ -918,6 +919,9 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case ORTH_SYS_GET_MOUNT_STATUS:
             frame->rax = (uint64_t)fs_get_mount_status((char*)frame->rdi, (size_t)frame->rsi);
+            break;
+        case ORTH_SYS_DNS_LOOKUP:
+            frame->rax = (uint64_t)lwip_port_lookup_ipv4((const char*)frame->rdi, (uint32_t*)frame->rsi);
             break;
         case SYS_GETDENTS:
             frame->rax = (uint64_t)sys_getdents((int)frame->rdi, (struct orth_dirent*)frame->rsi, (size_t)frame->rdx);

@@ -411,4 +411,5 @@ int usb_read_block_sys(uint32_t lba, void *buf, uint32_t count) { return (int)or
 int mount_usb_root(const char *path) { return (int)orth_syscall3(ORTH_SYS_MOUNT_USB_ROOT, (uint64_t)path, 0, 0); }
 int mount_module_root(void) { return (int)orth_syscall3(ORTH_SYS_MOUNT_MODULE_ROOT, 0, 0, 0); }
 int get_mount_status(char *buf, uint32_t size) { return (int)orth_syscall3(ORTH_SYS_GET_MOUNT_STATUS, (uint64_t)buf, (uint64_t)size, 0); }
+int dns_lookup_ipv4(const char *hostname, uint32_t *out_addr) { return (int)orth_syscall3(ORTH_SYS_DNS_LOOKUP, (uint64_t)hostname, (uint64_t)out_addr, 0); }
 int getdents_sys(int fd, struct orth_dirent *dirp, uint32_t count) { return (int)orth_syscall3(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count); }
