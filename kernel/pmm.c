@@ -4,7 +4,7 @@
 #include "pmm.h"
 #include "limine.h"
 
-// main.c で定義されているリクエストを外部参照
+// init.c で定義されているリクエストを外部参照
 extern volatile struct limine_memmap_request memmap_request;
 extern volatile struct limine_hhdm_request hhdm_request;
 

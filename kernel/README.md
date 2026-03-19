@@ -2,37 +2,45 @@
 
 This directory contains the core source code for the Orthox-64 kernel.
 
-## File Breakdown and Detailed Descriptions
+## File Breakdown
 
-### Core & Initialization
-- **`main.c`**: Kernel entry point. Receives control from the bootloader, initializes all major subsystems (PMM, VMM, GDT/IDT, Tasking, FS, etc.) in order, and kicks off the first user-space process.
+### Core and Initialization
+- **`init.c`**: Kernel entry point and early bring-up sequence. Receives control from Limine, initializes memory management, descriptor tables, interrupts, syscall entry, tasking, PCI, networking, USB, and starts the first user-space process.
+- **`elf.c`**: ELF loader used by both the initial task bring-up path and later `execve()` style process loading.
 
 ### Memory Management
-- **`pmm.c`**: Physical Memory Manager. Responsible for tracking available physical page frames (4KB units) and providing interfaces for allocation and deallocation of physical memory.
-- **`vmm.c`**: Virtual Memory Manager. Manages the x86_64 4-level paging scheme. It handles virtual-to-physical address mappings, page table construction, and switching address spaces between processes.
+- **`pmm.c`**: Physical Memory Manager. Tracks free physical pages and provides page-granular allocation and free services.
+- **`vmm.c`**: Virtual Memory Manager. Builds and updates x86_64 4-level page tables, maps user/kernel memory, and switches address spaces.
 
-### Segmentation & Interrupts
-- **`gdt.c` / `gdt_flush.S`**: Global Descriptor Table setup. Defines code and data segments for both kernel and user-land, and configures the Task State Segment (TSS) for reliable stack switching during privilege level transitions.
-- **`idt.c` / `interrupt.S`**: Interrupt Descriptor Table setup. Defines handlers for CPU exceptions (e.g., page faults) and external interrupts (e.g., timer, keyboard). The assembly wrapper (`interrupt.S`) manages register context saving and restoration.
-- **`lapic.c` / `pic.c`**: Interrupt Controller management. Provides interfaces for both modern Local APIC (`lapic.c`) and legacy 8259A PIC (`pic.c`) to route interrupts to the appropriate devices.
+### CPU Setup and Interrupts
+- **`gdt.c` / `gdt_flush.S`**: GDT and TSS setup for kernel/user privilege transitions.
+- **`idt.c` / `interrupt.S`**: IDT setup and interrupt/exception entry stubs.
+- **`lapic.c`**: Local APIC timer and timing support used by scheduling and `lwIP` timeouts.
+- **`pic.c`**: Legacy 8259 PIC masking/unmasking for IRQ routing compatibility.
 
-### Multitasking
-- **`task.c` / `task_switch.S`**: Implementation of preemptive multitasking. Manages process creation, scheduling, and time-slice logic. `task_switch.S` contains the low-level architecture-specific code for context switching.
+### Tasking and Process Control
+- **`task.c` / `task_switch.S`**: Preemptive task scheduler, task creation, process context, fork/exec helpers, and low-level context switching.
+- **`syscall.c` / `syscall_entry.S`**: `syscall` entry path and dispatcher for file, process, tty, signal, network, USB, and Orthox-64 private syscalls.
 
-### System Calls & Loader
-- **`syscall.c` / `syscall_entry.S`**: System call interface via the `syscall` instruction. Dispatches user-space requests to kernel services like file I/O or memory management.
-- **`elf.c`**: ELF executable loader. Parses ELF headers and loads program segments into memory, preparing the process for execution.
+### File System and Console I/O
+- **`fs.c`**: VFS layer, file descriptor table handling, tar-backed root file system, directory traversal, tty/console plumbing, and generic `read`/`write` dispatch.
+- **`keyboard.c`**: PS/2 keyboard and serial-input path feeding the shell's console input buffer.
 
-### File System & I/O
-- **`fs.c`**: Virtual File System (VFS) abstraction. Manages file descriptors and provides support for reading from a tar-formatted initial RAM disk (initrd).
-- **`pci.c`**: PCI bus enumeration. Scans the PCI bus to discover and identify connected hardware such as audio controllers and USB host controllers.
+### PCI, USB, and Devices
+- **`pci.c`**: PCI enumeration and discovery of devices such as `virtio-net`, audio, and xHCI controllers.
+- **`usb.c`**: USB/xHCI and mass-storage-oriented code used for USB storage access and rootfs mounting experiments.
+- **`sound.c`**: Intel HD Audio / PCM playback support.
 
-### Device Drivers
-- **`keyboard.c`**: PS/2 Keyboard driver. Translates scan codes into ASCII and manages an input buffer for user interactions.
-- **`usb.c`**: Basic USB stack. Implements host controller initialization and experimental support for USB Mass Storage Class (MSC) devices.
-- **`sound.c`**: Intel High Definition Audio (HDA) driver. Supports PCM audio playback, enabling the OS to produce sound.
+### Networking
+- **`virtio_net.c`**: Minimal `virtio-net` driver using legacy virtio-pci I/O BARs, RX/TX virtqueues, MAC discovery, and polling-based frame I/O.
+- **`net.c`**: Thin NIC abstraction layer that sits between the driver and upper networking code. Exposes frame send, MAC lookup, RX callback registration, and polling.
+- **`lwip_port.c`**: `lwIP` integration layer (`NO_SYS=1`). Brings up the netif, runs DHCP/DNS/timeout processing, handles ARP/ICMP diagnostics, UDP echo, and kernel-side DNS lookup glue.
+- **`net_socket.c`**: Kernel socket backend on top of `lwIP`. Implements the current `AF_INET` socket path for UDP and TCP, including bind/connect/listen/accept/send/recv and fd integration.
 
----
+### Freestanding libc Fragments
+- **`cstring.c`**: Minimal string and memory routines required by the kernel and vendored components such as `lwIP`.
+- **`cstdio.c`**: Minimal formatted output helpers and serial-oriented stdio support used inside the kernel.
+- **`cstdlib.c`**: Minimal libc-style utility functions needed by freestanding kernel code.
 
 ## Notes
-- **`idt.c.bak_doom_sched_test`**: A backup file for scheduler testing during the DOOM porting phase.
+- **`idt.c.bak_doom_sched_test`**: Backup file kept from earlier scheduler experiments during the DOOM bring-up phase.
