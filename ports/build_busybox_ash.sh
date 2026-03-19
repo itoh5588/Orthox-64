@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${1:-$ROOT/ports/busybox}"
 OUT="${2:-$ROOT/user/busybox-ash.elf}"
+case "$OUT" in
+  /*) ;;
+  *) OUT="$ROOT/$OUT" ;;
+esac
 
 if [ ! -d "$SRC" ]; then
   echo "busybox source not found: $SRC" >&2
@@ -18,7 +22,7 @@ export AR="x86_64-elf-ar"
 export RANLIB="x86_64-elf-ranlib"
 export STRIP="x86_64-elf-strip"
 INCLUDEDIR="${ORTHOS_INCLUDEDIR:-$ROOT/user/include}"
-export CFLAGS="-O2 -I$ROOT/include -I$INCLUDEDIR -Wno-format-security -Wno-stringop-overflow -Wno-unused-but-set-variable"
+export CFLAGS="-O2 -I$INCLUDEDIR -Wno-format-security -Wno-stringop-overflow -Wno-unused-but-set-variable"
 export HOSTCFLAGS="-Wno-format-security -Wno-stringop-overflow -Wno-unused-but-set-variable"
 export LDFLAGS="-static -nostartfiles"
 export LDLIBS=""

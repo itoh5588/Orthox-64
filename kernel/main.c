@@ -11,6 +11,7 @@
 #include "task.h"
 #include "lapic.h"
 #include "pci.h"
+#include "net.h"
 #include "usb.h"
 
 LIMINE_BASE_REVISION(0);
@@ -109,6 +110,7 @@ void _start(void) {
         pic_init();
         lapic_init();
         pci_init();
+        net_init();
         usb_init();
 
         uint64_t* pml4 = vmm_get_kernel_pml4();
@@ -169,6 +171,7 @@ void _start(void) {
 
     puts("Idle task running.\r\n");
     while(1) {
+        net_poll();
         __asm__ volatile("hlt");
         schedule();
     }

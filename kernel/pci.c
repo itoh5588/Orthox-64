@@ -40,6 +40,8 @@ static uint16_t pci_vendor_id(uint8_t bus, uint8_t device, uint8_t function) {
 
 static int g_has_xhci = 0;
 static struct pci_device_info g_xhci;
+static int g_has_virtio_net = 0;
+static struct pci_device_info g_virtio_net;
 
 static void pci_probe_function(uint8_t bus, uint8_t device, uint8_t function) {
     uint16_t vendor = pci_vendor_id(bus, device, function);
@@ -74,10 +76,23 @@ static void pci_probe_function(uint8_t bus, uint8_t device, uint8_t function) {
         puthex(((uint64_t)bus << 16) | ((uint64_t)device << 8) | function);
         puts("\r\n");
     }
+
+    if (!g_has_virtio_net && info.vendor_id == 0x1AF4 && info.class_code == 0x02) {
+        g_virtio_net = info;
+        g_has_virtio_net = 1;
+        puts("[pci] virtio-net found: vendor=0x");
+        puthex(info.vendor_id);
+        puts(" device=0x");
+        puthex(info.device_id);
+        puts(" bdf=");
+        puthex(((uint64_t)bus << 16) | ((uint64_t)device << 8) | function);
+        puts("\r\n");
+    }
 }
 
 void pci_init(void) {
     g_has_xhci = 0;
+    g_has_virtio_net = 0;
     for (uint16_t bus = 0; bus < 256; bus++) {
         for (uint8_t dev = 0; dev < 32; dev++) {
             uint16_t vendor = pci_vendor_id((uint8_t)bus, dev, 0);
@@ -102,6 +117,12 @@ int pci_find_xhci(struct pci_device_info* out) {
     return 0;
 }
 
+int pci_find_virtio_net(struct pci_device_info* out) {
+    if (!g_has_virtio_net || !out) return -1;
+    *out = g_virtio_net;
+    return 0;
+}
+
 uint64_t pci_get_bar0_mmio(const struct pci_device_info* dev) {
     if (!dev) return 0;
 
@@ -119,11 +140,28 @@ uint64_t pci_get_bar0_mmio(const struct pci_device_info* dev) {
     return base;
 }
 
+uint16_t pci_get_bar0_iobase(const struct pci_device_info* dev) {
+    if (!dev) return 0;
+
+    uint32_t bar0 = pci_config_read32(dev->bus, dev->device, dev->function, 0x10);
+    if (!(bar0 & 0x1)) return 0;
+    return (uint16_t)(bar0 & 0xFFFCU);
+}
+
 void pci_enable_mmio_busmaster(const struct pci_device_info* dev) {
     if (!dev) return;
     uint32_t reg = pci_config_read32(dev->bus, dev->device, dev->function, 0x04);
     // Command register bits: bit1 Memory Space, bit2 Bus Master.
     uint32_t new_reg = reg | (1U << 1) | (1U << 2);
+    if (new_reg != reg) {
+        pci_config_write32(dev->bus, dev->device, dev->function, 0x04, new_reg);
+    }
+}
+
+void pci_enable_io_busmaster(const struct pci_device_info* dev) {
+    if (!dev) return;
+    uint32_t reg = pci_config_read32(dev->bus, dev->device, dev->function, 0x04);
+    uint32_t new_reg = reg | (1U << 0) | (1U << 2);
     if (new_reg != reg) {
         pci_config_write32(dev->bus, dev->device, dev->function, 0x04, new_reg);
     }

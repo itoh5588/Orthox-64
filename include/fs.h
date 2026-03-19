@@ -33,6 +33,7 @@ typedef enum {
     FT_TAR,     // TAR内ファイル
     FT_RAMFS,   // メモリ上の書き込み可能ファイル
     FT_PIPE,    // パイプ
+    FT_SOCKET,  // lwIP-backed socket
     FT_USB,     // USB FAT file
     FT_USBROOT, // file inside mounted USB TAR root
     FT_DIR      // synthesized directory listing

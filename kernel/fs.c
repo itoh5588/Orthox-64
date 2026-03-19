@@ -5,6 +5,7 @@
 #include "vmm.h"
 #include "usb.h"
 #include "lapic.h"
+#include "net_socket.h"
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -1594,6 +1595,10 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         return (int64_t)written;
     }
 
+    if (f->type == FT_SOCKET) {
+        return net_socket_write_fd(f, buf, count);
+    }
+
     if (f->type != FT_RAMFS) return -1;
     if (f->offset + count > RAMFS_FILE_SIZE) count = RAMFS_FILE_SIZE - f->offset;
     uint8_t* dest = (uint8_t*)f->data + f->offset;
@@ -1660,6 +1665,10 @@ int64_t sys_read(int fd, void* buf, size_t count) {
         return (int64_t)to_read;
     }
 
+    if (f->type == FT_SOCKET) {
+        return net_socket_read_fd(f, buf, count);
+    }
+
     if (f->type == FT_USB) {
         struct fat_boot_info info;
         uint8_t sector[4096];
@@ -1720,6 +1729,8 @@ int sys_close(int fd) {
         if (pipe->ref_count == 0) {
             pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
         }
+    } else if (current->fds[fd].type == FT_SOCKET) {
+        (void)net_socket_close_fd(&current->fds[fd]);
     } else if (current->fds[fd].type == FT_DIR) {
         if (current->fds[fd].data) {
             pmm_free((void*)VIRT_TO_PHYS((uint64_t)current->fds[fd].data), (int)current->fds[fd].aux0);
@@ -1749,6 +1760,8 @@ int sys_dup2(int oldfd, int newfd) {
     if (current->fds[newfd].type == FT_PIPE) {
         pipe_t* pipe = (pipe_t*)current->fds[newfd].data;
         pipe->ref_count++;
+    } else if (current->fds[newfd].type == FT_SOCKET) {
+        net_socket_dup_fd(&current->fds[newfd]);
     }
     return newfd;
 }
@@ -1869,6 +1882,12 @@ int sys_fstat(int fd, struct kstat* st) {
     }
     if (f->type == FT_PIPE) {
         kstat_set_defaults(st, KSTAT_MODE_FILE | 0600U, 0);
+        st->dev = FS_DEV_PIPE;
+        st->ino = ((uint64_t)(uintptr_t)f->data) >> 4;
+        return 0;
+    }
+    if (f->type == FT_SOCKET) {
+        kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_CHR), 0);
         st->dev = FS_DEV_PIPE;
         st->ino = ((uint64_t)(uintptr_t)f->data) >> 4;
         return 0;

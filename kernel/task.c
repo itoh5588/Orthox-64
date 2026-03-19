@@ -6,6 +6,7 @@
 #include "gdt.h"
 #include "limine.h"
 #include "elf64.h"
+#include "net_socket.h"
 
 struct cpu_data {
     uint64_t kernel_stack;
@@ -120,6 +121,12 @@ static int alloc_user_stack(uint64_t* pml4_virt, struct task* t, int stack_pages
 static int copy_user_string_to_stack(uint8_t* stack_mem, uint64_t mapped_bottom_vaddr,
                                      uint64_t stack_top_vaddr, uint64_t* current_sp,
                                      const char* src, uint64_t* user_addr_out) {
+    if ((uint64_t)src < 0x1000ULL) {
+        puts("Exec: invalid user string pointer ");
+        puthex((uint64_t)src);
+        puts("\r\n");
+        return -1;
+    }
     int len = 0;
     while (src[len]) len++;
     len++;
@@ -187,9 +194,6 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const s
         return -1;
     }
 
-    // NULL sentinel for envp
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
-
     // auxv (push value first, then type)
     current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
     current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_NULL;
@@ -226,6 +230,9 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const s
 
     current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = info->phdr_vaddr;
     current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_PHDR;
+
+    // NULL sentinel for envp must appear before auxv in the user-visible stack layout.
+    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
 
     // envp
     for (int i = envc - 1; i >= 0; i--) {
@@ -431,6 +438,8 @@ int task_fork(struct syscall_frame* frame) {
         if (child->fds[i].in_use && child->fds[i].type == FT_PIPE) {
             pipe_t* pipe = (pipe_t*)child->fds[i].data;
             if (pipe) pipe->ref_count++;
+        } else if (child->fds[i].in_use && child->fds[i].type == FT_SOCKET) {
+            net_socket_dup_fd(&child->fds[i]);
         }
     }
     child->next = task_list;

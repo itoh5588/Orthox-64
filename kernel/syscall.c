@@ -10,6 +10,7 @@
 #include "lapic.h"
 #include "sound.h"
 #include "usb.h"
+#include "net_socket.h"
 
 void puts(const char *s);
 void puthex(uint64_t v);
@@ -30,6 +31,7 @@ extern void syscall_entry(void);
 extern struct task* task_list;
 extern int64_t sys_write(int fd, const void* buf, size_t count);
 extern int64_t sys_read(int fd, void* buf, size_t count);
+extern int sys_close(int fd);
 
 void sys_brk_init(uint64_t initial_break) {
     (void)initial_break;
@@ -87,6 +89,11 @@ static void sys_exit(int status) {
     struct task* current = get_current_task();
     // Ensure no speaker tone leaks when a user task exits abruptly.
     sound_beep_stop();
+    for (int fd = 0; fd < MAX_FDS; fd++) {
+        if (current->fds[fd].in_use) {
+            (void)sys_close(fd);
+        }
+    }
     current->exit_status = status;
     current->state = TASK_ZOMBIE;
     if (current->ppid > 0) {
@@ -655,6 +662,17 @@ extern int sys_fcntl(int fd, int cmd, uint64_t arg);
 extern int sys_pipe(int pipefd[2]);
 extern int sys_pipe2(int pipefd[2], int flags);
 extern int sys_dup2(int oldfd, int newfd);
+extern int sys_socket(int domain, int type, int protocol);
+extern int sys_connect(int fd, const void* addr, uint32_t addrlen);
+extern int sys_accept(int fd, void* addr, uint32_t* addrlen);
+extern int sys_bind(int fd, const void* addr, uint32_t addrlen);
+extern int sys_listen(int fd, int backlog);
+extern int sys_setsockopt(int fd, int level, int optname, const void* optval, uint32_t optlen);
+extern int sys_getsockname(int fd, void* addr, uint32_t* addrlen);
+extern int sys_getpeername(int fd, void* addr, uint32_t* addrlen);
+extern int sys_shutdown(int fd, int how);
+extern int64_t sys_sendto(int fd, const void* buf, size_t len, int flags, const void* dest_addr, uint32_t addrlen);
+extern int64_t sys_recvfrom(int fd, void* buf, size_t len, int flags, void* src_addr, uint32_t* addrlen);
 extern int sys_mkdirat(int dirfd, const char* path, int mode);
 extern int fs_mount_usb_root_tar(const char* path);
 extern int fs_mount_module_root(void);
@@ -752,6 +770,42 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case SYS_GETPID:
             frame->rax = sys_getpid();
+            break;
+        case SYS_SOCKET:
+            frame->rax = (uint64_t)sys_socket((int)frame->rdi, (int)frame->rsi, (int)frame->rdx);
+            break;
+        case SYS_CONNECT:
+            frame->rax = (uint64_t)sys_connect((int)frame->rdi, (const void*)frame->rsi, (uint32_t)frame->rdx);
+            break;
+        case SYS_ACCEPT:
+            frame->rax = (uint64_t)sys_accept((int)frame->rdi, (void*)frame->rsi, (uint32_t*)frame->rdx);
+            break;
+        case SYS_SENDTO:
+            frame->rax = (uint64_t)sys_sendto((int)frame->rdi, (const void*)frame->rsi, (size_t)frame->rdx,
+                                              (int)frame->r10, (const void*)frame->r8, (uint32_t)frame->r9);
+            break;
+        case SYS_RECVFROM:
+            frame->rax = (uint64_t)sys_recvfrom((int)frame->rdi, (void*)frame->rsi, (size_t)frame->rdx,
+                                                (int)frame->r10, (void*)frame->r8, (uint32_t*)frame->r9);
+            break;
+        case SYS_SHUTDOWN:
+            frame->rax = (uint64_t)sys_shutdown((int)frame->rdi, (int)frame->rsi);
+            break;
+        case SYS_BIND:
+            frame->rax = (uint64_t)sys_bind((int)frame->rdi, (const void*)frame->rsi, (uint32_t)frame->rdx);
+            break;
+        case SYS_LISTEN:
+            frame->rax = (uint64_t)sys_listen((int)frame->rdi, (int)frame->rsi);
+            break;
+        case SYS_GETSOCKNAME:
+            frame->rax = (uint64_t)sys_getsockname((int)frame->rdi, (void*)frame->rsi, (uint32_t*)frame->rdx);
+            break;
+        case SYS_GETPEERNAME:
+            frame->rax = (uint64_t)sys_getpeername((int)frame->rdi, (void*)frame->rsi, (uint32_t*)frame->rdx);
+            break;
+        case SYS_SETSOCKOPT:
+            frame->rax = (uint64_t)sys_setsockopt((int)frame->rdi, (int)frame->rsi, (int)frame->rdx,
+                                                  (const void*)frame->r10, (uint32_t)frame->r8);
             break;
         case SYS_FORK:
             frame->rax = (uint64_t)task_fork(frame);

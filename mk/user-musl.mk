@@ -1,5 +1,5 @@
 MUSL_USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 -Wno-shift-op-parentheses \
-	-Iinclude -I$(MUSL_SYSROOT)/include -MMD -MP
+	-I$(MUSL_SYSROOT)/include -Iinclude -MMD -MP
 
 $(USER_BUILD_DIR)/crt0.o: user/crt0_musl.S
 	@mkdir -p $(@D)

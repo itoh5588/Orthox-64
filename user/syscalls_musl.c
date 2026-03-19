@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -22,7 +23,7 @@
 #ifdef sa_sigaction
 #undef sa_sigaction
 #endif
-#include "syscall.h"
+#include "../include/syscall.h"
 
 static int64_t orth_syscall3(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
     uint64_t ret;
@@ -207,6 +208,41 @@ int _pipe(int pipefd[2]) { return (int)orth_syscall3(SYS_PIPE, (uint64_t)pipefd,
 int pipe2(int pipefd[2], int flags) { return (int)orth_syscall3(SYS_PIPE2, (uint64_t)pipefd, (uint64_t)flags, 0); }
 int _dup2(int oldfd, int newfd) { return (int)orth_syscall3(SYS_DUP2, (uint64_t)oldfd, (uint64_t)newfd, 0); }
 int _kill(int pid, int sig) { return (int)orth_syscall3(SYS_KILL, (uint64_t)pid, (uint64_t)sig, 0); }
+int socket(int domain, int type, int protocol) { return (int)orth_syscall3(SYS_SOCKET, (uint64_t)domain, (uint64_t)type, (uint64_t)protocol); }
+int connect(int fd, const struct sockaddr *addr, socklen_t addrlen) { return (int)orth_syscall3(SYS_CONNECT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
+int accept(int fd, struct sockaddr *addr, socklen_t *addrlen) { return (int)orth_syscall3(SYS_ACCEPT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
+int bind(int fd, const struct sockaddr *addr, socklen_t addrlen) { return (int)orth_syscall3(SYS_BIND, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
+int listen(int fd, int backlog) { return (int)orth_syscall3(SYS_LISTEN, (uint64_t)fd, (uint64_t)backlog, 0); }
+int getsockname(int fd, struct sockaddr *addr, socklen_t *addrlen) { return (int)orth_syscall3(SYS_GETSOCKNAME, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
+int getpeername(int fd, struct sockaddr *addr, socklen_t *addrlen) { return (int)orth_syscall3(SYS_GETPEERNAME, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
+int setsockopt(int fd, int level, int optname, const void *optval, socklen_t optlen) {
+    int ret = (int)orth_syscall6(SYS_SETSOCKOPT, (uint64_t)fd, (uint64_t)level, (uint64_t)optname,
+                                 (uint64_t)optval, (uint64_t)optlen, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+int shutdown(int fd, int how) { return (int)orth_syscall3(SYS_SHUTDOWN, (uint64_t)fd, (uint64_t)how, 0); }
+ssize_t sendto(int fd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen) {
+    ssize_t ret = (ssize_t)orth_syscall6(SYS_SENDTO, (uint64_t)fd, (uint64_t)buf, (uint64_t)len,
+                                         (uint64_t)flags, (uint64_t)dest_addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = (ret == -11) ? EAGAIN : EINVAL;
+        return -1;
+    }
+    return ret;
+}
+ssize_t recvfrom(int fd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen) {
+    ssize_t ret = (ssize_t)orth_syscall6(SYS_RECVFROM, (uint64_t)fd, (uint64_t)buf, (uint64_t)len,
+                                         (uint64_t)flags, (uint64_t)src_addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = (ret == -11) ? EAGAIN : EINVAL;
+        return -1;
+    }
+    return ret;
+}
 
 int chdir_sys(const char *path) { return (int)orth_syscall3(SYS_CHDIR, (uint64_t)path, 0, 0); }
 int fchdir_sys(int fd) { return (int)orth_syscall3(SYS_FCHDIR, (uint64_t)fd, 0, 0); }

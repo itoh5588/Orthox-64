@@ -22,7 +22,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdarg.h>
-#include "syscall.h"
+#include "../include/syscall.h"
 
 extern char **environ;
 
@@ -501,46 +501,114 @@ WEAK_SYM int setrlimit(int resource, const struct rlimit* rlim) {
 
 WEAK_SYM ssize_t sendto(int sockfd, const void* buf, size_t len, int flags,
                         const struct sockaddr* dest_addr, socklen_t addrlen) {
-    (void)dest_addr;
-    (void)addrlen;
-    return send(sockfd, buf, len, flags);
+    long ret = syscall6(SYS_SENDTO, (uint64_t)sockfd, (uint64_t)buf, (uint64_t)len,
+                        (uint64_t)flags, (uint64_t)dest_addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = (ret == -11) ? EAGAIN : EINVAL;
+        return -1;
+    }
+    return ret;
 }
 
 WEAK_SYM ssize_t recvfrom(int sockfd, void* buf, size_t len, int flags,
                           struct sockaddr* src_addr, socklen_t* addrlen) {
-    (void)src_addr;
-    (void)addrlen;
-    return recv(sockfd, buf, len, flags);
+    long ret = syscall6(SYS_RECVFROM, (uint64_t)sockfd, (uint64_t)buf, (uint64_t)len,
+                        (uint64_t)flags, (uint64_t)src_addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = (ret == -11) ? EAGAIN : EINVAL;
+        return -1;
+    }
+    return ret;
 }
 
 WEAK_SYM int socket(int domain, int type, int protocol) {
-    (void)domain; (void)type; (void)protocol;
-    errno = ENOSYS;
-    return -1;
+    long ret = syscall(SYS_SOCKET, (uint64_t)domain, (uint64_t)type, (uint64_t)protocol);
+    if (ret < 0) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    return (int)ret;
+}
+
+WEAK_SYM int connect(int sockfd, const struct sockaddr* addr, socklen_t addrlen) {
+    long ret = syscall(SYS_CONNECT, (uint64_t)sockfd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+WEAK_SYM int accept(int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
+    long ret = syscall(SYS_ACCEPT, (uint64_t)sockfd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = (ret == -11) ? EAGAIN : EINVAL;
+        return -1;
+    }
+    return (int)ret;
 }
 
 WEAK_SYM int bind(int sockfd, const struct sockaddr* addr, socklen_t addrlen) {
-    (void)sockfd; (void)addr; (void)addrlen;
-    errno = ENOSYS;
-    return -1;
+    long ret = syscall(SYS_BIND, (uint64_t)sockfd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
 }
 
 WEAK_SYM int listen(int sockfd, int backlog) {
-    (void)sockfd; (void)backlog;
-    errno = ENOSYS;
-    return -1;
+    long ret = syscall(SYS_LISTEN, (uint64_t)sockfd, (uint64_t)backlog, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+WEAK_SYM int getsockname(int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
+    long ret = syscall(SYS_GETSOCKNAME, (uint64_t)sockfd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+WEAK_SYM int getpeername(int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
+    long ret = syscall(SYS_GETPEERNAME, (uint64_t)sockfd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+WEAK_SYM int setsockopt(int sockfd, int level, int optname, const void* optval, socklen_t optlen) {
+    long ret = syscall6(SYS_SETSOCKOPT, (uint64_t)sockfd, (uint64_t)level, (uint64_t)optname,
+                        (uint64_t)optval, (uint64_t)optlen, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+WEAK_SYM int shutdown(int sockfd, int how) {
+    long ret = syscall(SYS_SHUTDOWN, (uint64_t)sockfd, (uint64_t)how, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
 }
 
 WEAK_SYM ssize_t send(int sockfd, const void* buf, size_t len, int flags) {
-    (void)sockfd; (void)buf; (void)len; (void)flags;
-    errno = ENOSYS;
-    return -1;
+    return sendto(sockfd, buf, len, flags, 0, 0);
 }
 
 WEAK_SYM ssize_t recv(int sockfd, void* buf, size_t len, int flags) {
-    (void)sockfd; (void)buf; (void)len; (void)flags;
-    errno = ENOSYS;
-    return -1;
+    return recvfrom(sockfd, buf, len, flags, 0, 0);
 }
 
 WEAK_SYM unsigned int alarm(unsigned int seconds) {

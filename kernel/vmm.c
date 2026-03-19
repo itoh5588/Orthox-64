@@ -239,13 +239,21 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
     const char* stack_reason = classify_user_fault_reason(frame, fault_vaddr);
     if (stack_reason) {
         kill_current_task_on_user_fault(frame, fault_vaddr, stack_reason);
-        puts("#PF: User stack guard hit at 0x"); puthex(fault_vaddr); puts("\r\n");
+        puts("#PF: User stack guard hit at 0x"); puthex(fault_vaddr);
+        puts(" RIP: "); puthex(frame->rip);
+        puts(" RSP: "); puthex(frame->rsp);
+        puts(" ERR: "); puthex(frame->error_code);
+        puts("\r\n");
         for(;;) __asm__("hlt");
     }
 
     if (!(frame->error_code & 2)) {
         kill_current_task_on_user_fault(frame, fault_vaddr, "read/page-not-present");
-        puts("#PF: Read access violation at 0x"); puthex(fault_vaddr); puts("\r\n");
+        puts("#PF: Read access violation at 0x"); puthex(fault_vaddr);
+        puts(" RIP: "); puthex(frame->rip);
+        puts(" RSP: "); puthex(frame->rsp);
+        puts(" ERR: "); puthex(frame->error_code);
+        puts("\r\n");
         for(;;) __asm__("hlt");
     }
 
@@ -256,14 +264,22 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
     uint64_t pml4e = pml4[PML4_IDX(fault_vaddr)];
     if (!(pml4e & PTE_PRESENT)) {
         kill_current_task_on_user_fault(frame, fault_vaddr, "pml4e-not-present");
-        puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr); puts("\r\n");
+        puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr);
+        puts(" RIP: "); puthex(frame->rip);
+        puts(" RSP: "); puthex(frame->rsp);
+        puts(" ERR: "); puthex(frame->error_code);
+        puts("\r\n");
         for(;;) __asm__("hlt");
     }
     uint64_t* pdp = (uint64_t*)PHYS_TO_VIRT(pml4e & PTE_ADDR_MASK);
     uint64_t pdpe = pdp[PDP_IDX(fault_vaddr)];
     if (!(pdpe & PTE_PRESENT)) {
         kill_current_task_on_user_fault(frame, fault_vaddr, "pdpe-not-present");
-        puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr); puts("\r\n");
+        puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr);
+        puts(" RIP: "); puthex(frame->rip);
+        puts(" RSP: "); puthex(frame->rsp);
+        puts(" ERR: "); puthex(frame->error_code);
+        puts("\r\n");
         for(;;) __asm__("hlt");
     }
     uint64_t* pd  = (uint64_t*)PHYS_TO_VIRT(pdpe & PTE_ADDR_MASK);
@@ -287,7 +303,11 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
     } else {
         if (!(pd[PD_IDX(fault_vaddr)] & PTE_PRESENT)) {
             kill_current_task_on_user_fault(frame, fault_vaddr, "pde-not-present");
-            puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr); puts("\r\n");
+            puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr);
+            puts(" RIP: "); puthex(frame->rip);
+            puts(" RSP: "); puthex(frame->rsp);
+            puts(" ERR: "); puthex(frame->error_code);
+            puts("\r\n");
             for(;;) __asm__("hlt");
         }
         uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[PD_IDX(fault_vaddr)] & PTE_ADDR_MASK);
@@ -312,6 +332,8 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
 
     kill_current_task_on_user_fault(frame, fault_vaddr, "write-to-nonwritable");
     puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr);
-    puts(" Error: "); puthex(frame->error_code); puts("\r\n");
+    puts(" RIP: "); puthex(frame->rip);
+    puts(" RSP: "); puthex(frame->rsp);
+    puts(" ERR: "); puthex(frame->error_code); puts("\r\n");
     for(;;) __asm__("hlt");
 }

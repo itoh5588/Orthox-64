@@ -11,7 +11,7 @@ USER_BUILD_DIR = $(BUILD_DIR)/$(LIBC_IMPL)/user
 # フラグ
 KERNEL_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-stack-protector -fno-stack-check \
 	-fno-lto -fno-PIE -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone \
-	-mcmodel=kernel -O2 -Wall -Wextra -Iinclude -MMD -MP
+	-mcmodel=kernel -O2 -Wall -Wextra -Iinclude -Iports/lwip/src/include -MMD -MP
 
 KERNEL_LDFLAGS = -nostdlib -static -T scripts/kernel.ld
 
@@ -38,7 +38,7 @@ LIBC = $(USER_LIBDIR)/libc.a
 USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 \
 	-Iinclude -I$(USER_INCLUDEDIR) -MMD -MP
 MUSL_USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 \
-	-Iinclude -I$(MUSL_SYSROOT)/include -MMD -MP
+	-I$(MUSL_SYSROOT)/include -Iinclude -MMD -MP
 
 USER_LDFLAGS = -m elf_x86_64 -nostdlib -static -Ttext 0x400000
 
@@ -76,6 +76,8 @@ TTYLINK_TEST_ELF = user/ttylinktest.elf
 MKDIR_TEST_ELF = user/mkdirtest.elf
 WADHEAD_TEST_ELF = user/wadheadtest.elf
 TICKRATE_TEST_ELF = user/tickratecheck.elf
+UDP_ECHO_TEST_ELF = user/udpecho.elf
+UDP_NB_TEST_ELF = user/udpnb.elf
 CC1_ELF = ports/gcc-4.7.4/build/gcc/cc1
 CC1_SRC_MUSL = ports/gcc-4.7.4/build-musl/gcc/cc1
 CC1_MUSL_ELF = user/cc1-musl.elf
@@ -87,7 +89,7 @@ DOOM_ELF = user/doomgeneric.elf
 DOOM_MUSL_ELF = user/doomgeneric-musl.elf
 BUSYBOX_ASH_ELF = user/busybox-ash.elf
 BUSYBOX_ASH_MUSL_ELF = user/busybox-ash-musl.elf
-BUSYBOX_ASH_APPLETS = ash sh busybox cat chmod cp echo env false head ls mkdir mv printenv printf pwd rm rmdir stat tail test touch true wc
+BUSYBOX_ASH_APPLETS = ash sh busybox cat chmod cp echo env false head httpd ls mkdir mv printenv printf pwd rm rmdir stat tail test touch true wc
 AS_SRC = ports/binutils-2.26/binutils-2.26/build/gas/as-new
 LD_SRC = ports/binutils-2.26/binutils-2.26/build/ld/ld-new
 AS_SRC_MUSL = ports/binutils-2.26/binutils-2.26/build-musl/gas/as-new
@@ -101,11 +103,38 @@ ROOTFS_FILES = $(shell find rootfs -type f 2>/dev/null)
 # ソース
 SRCS = kernel/main.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
        kernel/vmm.c kernel/idt.c kernel/interrupt.S kernel/lapic.c kernel/sound.c kernel/syscall.c kernel/syscall_entry.S \
-       kernel/task.c kernel/task_switch.S kernel/fs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/usb.c
+       kernel/task.c kernel/task_switch.S kernel/fs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio_net.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c
+
+LWIP_CORE_SRCS = \
+	ports/lwip/src/core/def.c \
+	ports/lwip/src/core/inet_chksum.c \
+	ports/lwip/src/core/init.c \
+	ports/lwip/src/core/ip.c \
+	ports/lwip/src/core/mem.c \
+	ports/lwip/src/core/memp.c \
+	ports/lwip/src/core/netif.c \
+	ports/lwip/src/core/pbuf.c \
+	ports/lwip/src/core/raw.c \
+	ports/lwip/src/core/stats.c \
+	ports/lwip/src/core/sys.c \
+	ports/lwip/src/core/tcp.c \
+	ports/lwip/src/core/tcp_in.c \
+	ports/lwip/src/core/tcp_out.c \
+	ports/lwip/src/core/timeouts.c \
+	ports/lwip/src/core/udp.c
+LWIP_IPV4_SRCS = \
+	ports/lwip/src/core/ipv4/dhcp.c \
+	ports/lwip/src/core/ipv4/etharp.c \
+	ports/lwip/src/core/ipv4/icmp.c \
+	ports/lwip/src/core/ipv4/ip4.c \
+	ports/lwip/src/core/ipv4/ip4_addr.c
+LWIP_NETIF_SRCS = ports/lwip/src/netif/ethernet.c
+LWIP_SRCS = $(LWIP_CORE_SRCS) $(LWIP_IPV4_SRCS) $(LWIP_NETIF_SRCS)
 
 # オブジェクトファイル (build ディレクトリ以下に配置)
 OBJS = $(patsubst kernel/%.c, $(BUILD_DIR)/kernel/%.o, $(filter %.c, $(SRCS))) \
-       $(patsubst kernel/%.S, $(BUILD_DIR)/kernel/%.o, $(filter %.S, $(SRCS)))
+       $(patsubst kernel/%.S, $(BUILD_DIR)/kernel/%.o, $(filter %.S, $(SRCS))) \
+       $(patsubst ports/lwip/src/%.c, $(BUILD_DIR)/lwip/%.o, $(LWIP_SRCS))
 
 DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/crt0.d $(USER_BUILD_DIR)/syscalls.d $(USER_BUILD_DIR)/syscalls_musl.d $(USER_BUILD_DIR)/syscall_wrap.d \
@@ -119,9 +148,9 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/sigmasktest.d $(USER_BUILD_DIR)/sigactiontest.d \
        $(USER_BUILD_DIR)/fchdirtest.d $(USER_BUILD_DIR)/ttylinktest.d \
        $(USER_BUILD_DIR)/mkdirtest.d $(USER_BUILD_DIR)/wadheadtest.d \
-       $(USER_BUILD_DIR)/wadstdio_test.d
+       $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d
 
-.PHONY: all clean run usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
+.PHONY: all clean run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
 
 all: $(ISO)
 
@@ -197,6 +226,10 @@ $(BUILD_DIR)/kernel/%.o: kernel/%.S
 	@mkdir -p $(@D)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lwip/%.o: ports/lwip/src/%.c
+	@mkdir -p $(@D)
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
 limine/limine:
 	CC=cc CFLAGS="-O2 -pipe" LDFLAGS="" $(MAKE) -C limine limine
 
@@ -204,12 +237,14 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF)
 	mkdir -p rootfs/bin
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
 	cp $(BUILD_DIR)/musl/user/syscalls_musl.o rootfs/syscalls.o
 	cp $(MUSL_SYSROOT)/lib/libc.a rootfs/libc.a
+	cp $(UDP_ECHO_TEST_ELF) rootfs/bin/udpecho.elf
+	cp $(UDP_NB_TEST_ELF) rootfs/bin/udpnb.elf
 	# Remove old bin-musl if it exists to avoid confusion
 	rm -rf rootfs/bin-musl
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .
@@ -236,6 +271,11 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR)
 
 run: $(ISO)
 	bash ./run_qemu_stdio.sh
+
+netrun: $(ISO)
+	bash ./run_qemu_stdio.sh \
+		-netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=udp::12345-:12345,hostfwd=udp::12346-:12346 \
+		-device virtio-net-pci,netdev=net0
 
 doommsulrun: $(ISO)
 	bash ./run_doom_musl.sh

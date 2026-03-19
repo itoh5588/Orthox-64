@@ -1,6 +1,7 @@
 #include "idt.h"
 #include "gdt.h"
 #include "lapic.h"
+#include "net.h"
 #include "task.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -89,6 +90,7 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
     }
 
     if (frame->int_no == INT_VECTOR_TIMER) {
+        net_poll();
         lapic_timer_tick();
         task_on_timer_tick();
         lapic_eoi();

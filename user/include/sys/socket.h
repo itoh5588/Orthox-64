@@ -51,6 +51,10 @@ struct cmsghdr {
 #define SO_KEEPALIVE   9
 #define SO_BINDTODEVICE 25
 
+#define SHUT_RD 0
+#define SHUT_WR 1
+#define SHUT_RDWR 2
+
 int socket(int domain, int type, int protocol);
 int bind(int sockfd, const struct sockaddr* addr, socklen_t addrlen);
 int connect(int sockfd, const struct sockaddr* addr, socklen_t addrlen);
@@ -66,5 +70,6 @@ int getsockname(int sockfd, struct sockaddr* addr, socklen_t* addrlen);
 int getpeername(int sockfd, struct sockaddr* addr, socklen_t* addrlen);
 int setsockopt(int sockfd, int level, int optname, const void* optval, socklen_t optlen);
 int getsockopt(int sockfd, int level, int optname, void* optval, socklen_t* optlen);
+int shutdown(int sockfd, int how);
 
 #endif

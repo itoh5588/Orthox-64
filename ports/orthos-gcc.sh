@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT="/Users/itoh/orthOS-64"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="${ORTHOS_SYSROOT:-$ROOT/user}"
 INCLUDEDIR="${ORTHOS_INCLUDEDIR:-$SYSROOT/include}"
 LIBGCC="${ORTHOS_LIBGCC:-$(x86_64-elf-gcc -print-libgcc-file-name)}"
@@ -56,6 +56,7 @@ cmd=(
     -DHAVE_SYS_STAT_H
     -DHAVE_SYS_TYPES_H
     -DHAVE_LIMITS_H
+    -L"$LIBDIR"
     "${args[@]}"
     -idirafter "$INCLUDEDIR"
 )
@@ -68,7 +69,6 @@ if ! $compile_only && ! $reloc_link; then
         "$CRT0"
         "$SYSCALLS_O"
         "$SYSCALL_WRAP_O"
-        -L"$LIBDIR"
         "$LIBGCC"
         -lc
     )
