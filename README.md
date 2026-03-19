@@ -22,6 +22,13 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **Userland:** Environment based on `musl libc` for better standard compatibility.
 - **Ported Apps:** Capable of running ported software like `doomgeneric`.
 
+## Ported Userland Components
+- **musl libc:** `1.2.5`
+- **BusyBox (`ash` and core applets):** `1.27.0.git`
+- **GNU Binutils:** `2.26`
+- **GCC:** `4.7.4`
+- **doomgeneric:** Vendored local port, upstream version not recorded in-tree
+
 ## Status
 The project is currently in active development. Core kernel primitives are stable, and current focus is on improving the userland environment and porting standard tools.
 
