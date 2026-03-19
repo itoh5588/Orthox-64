@@ -6,10 +6,10 @@
 Orthox-64 is a project that presents a modern approach to operating system development from scratch.
 
 ## Concept and Design Philosophy
-- **Etymology:** "Orthogonality/Correctness (Ortho-)" + "Unix Tradition (-x)". Aiming for an "Orthodox" Unix-like OS.
-- **Lightweight & Robust:** An antithesis to bloated modern operating systems, pursuing maximum stability with minimal code.
-- **POSIX Subset:** Instead of chasing full POSIX compliance, it implements only the "POSIX Core" necessary for running essential software (e.g., BusyBox, GCC).
-- **Beyond Reinventing the Wheel:** Avoids the "penance" of writing bootloaders, shells, TCP/IP stacks, and compilers from scratch. Instead, it emphasizes the engineering methodology of "integrating (porting)" existing high-quality open-source assets.
+- **Etymology:** "Ortho-" comes from orthogonality and correctness, combined with "-x" from the Unix tradition. Orthox-64 aims to be an orthodox, minimal Unix-like operating system.
+- **Lightweight & Robust:** Orthox-64 rejects unnecessary system complexity and focuses on a small, stable kernel and userland substrate.
+- **Pragmatic Unix Compatibility:** Rather than pursuing full POSIX compliance, it implements the minimum kernel and libc surface needed to run practical software such as BusyBox, GCC, and related toolchain components.
+- **Integration over Reinvention:** Orthox-64 does not treat reimplementing every component from scratch as a virtue. Instead, it treats the integration and porting of high-quality existing open-source software as a primary engineering discipline.
 
 ## Features
 - **64-bit Long Mode:** Runs in full 64-bit mode.

@@ -254,14 +254,10 @@ usb-img:
 		dd of=$(USB_IMG) bs=512 seek=3 conv=notrunc status=none
 
 usb: $(ISO) usb-img
-	qemu-system-x86_64 \
-		-machine pc,pcspk-audiodev=audio0 \
-		-audiodev coreaudio,id=audio0 \
-		-device sb16,audiodev=audio0 \
+	bash ./run_qemu_stdio.sh \
 		-device qemu-xhci,id=xhci \
 		-drive if=none,id=usbdisk,file=$(USB_IMG),format=raw \
-		-device usb-storage,bus=xhci.0,drive=usbdisk \
-		-cpu max -m 2G -cdrom $(ISO) -boot d -serial stdio
+		-device usb-storage,bus=xhci.0,drive=usbdisk
 
 clean:
 	rm -rf $(BUILD_DIR) $(KERNEL_ELF) $(USER_ELF) $(EXEC_ELF) $(PIPE_TEST_ELF) $(SH_ELF) $(GCC_ELF) $(LOOP_ELF) $(ISO)
