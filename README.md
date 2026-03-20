@@ -18,7 +18,7 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **Multitasking:** Preemptive multitasking and kernel threads.
 - **File System:** Virtual File System (VFS) and tar-based initial ramdisk.
 - **USB Support:** Basic USB stack and Mass Storage Class (MSC) support.
-- **Networking:** `virtio-net` + `lwIP` based IPv4 networking with DHCP, DNS, ICMP, UDP, TCP, socket syscalls, BusyBox `httpd`, and outbound HTTP client support.
+- **Networking:** `virtio-net` + `lwIP` based IPv4 networking with DHCP, DNS, ICMP, UDP, TCP, socket syscalls, BusyBox `httpd`, outbound HTTP client support, and userland HTTPS client support with BearSSL.
 - **Sound:** Audio support via Intel HD Audio.
 - **Userland:** Environment based on `musl libc` for better standard compatibility.
 - **Ported Apps:** Capable of running ported software like `doomgeneric`.
@@ -31,7 +31,7 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **doomgeneric:** Vendored local port, upstream version not recorded in-tree
 
 ## Status
-The project is currently in active development. Core kernel primitives are stable, networking bring-up is now working on QEMU user-net, and current focus is on expanding userland compatibility and higher-level network capabilities such as TLS/HTTPS.
+The project is currently in active development. Core kernel primitives are stable, networking is working on QEMU user-net, and Orthox-64 can now resolve DNS, serve BusyBox `httpd`, and fetch real HTTPS pages from userspace with a BearSSL-based client. Current focus is on expanding userland compatibility and improving higher-level network functionality beyond the current minimal HTTP/HTTPS client.
 
 ## Acknowledgements
 Orthox-64 is inspired by and references the following projects:
