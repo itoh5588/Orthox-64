@@ -359,6 +359,7 @@ static int64_t sys_wait4(int pid, int* wstatus, int options) {
             curr = curr->next;
         }
         if (!found_child) return -1;
+        task_mark_sleeping(current);
         kernel_yield();
     }
 }

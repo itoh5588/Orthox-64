@@ -15,6 +15,7 @@ static int kb_tail = 0;
 static struct key_event key_events[KB_BUF_SIZE];
 static int ev_head = 0;
 static int ev_tail = 0;
+static struct task* kb_waiter = 0;
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
@@ -45,6 +46,14 @@ static void send_sigint_to_foreground_pgrp(void) {
     }
 }
 
+static void wake_kb_waiter(void) {
+    if (!kb_waiter) return;
+    if (kb_waiter->state == TASK_SLEEPING) {
+        task_wake(kb_waiter);
+    }
+    kb_waiter = 0;
+}
+
 void keyboard_handler(void) {
     uint8_t scancode = inb(KB_PORT);
     uint8_t pressed = (scancode & 0x80) ? 0 : 1;
@@ -68,6 +77,7 @@ void keyboard_handler(void) {
         if (next_head != kb_tail) {
             kb_buf[kb_head] = c;
             kb_head = next_head;
+            wake_kb_waiter();
         }
     }
 }
@@ -84,6 +94,7 @@ void serial_handler(void) {
     if (next_head != kb_tail) {
         kb_buf[kb_head] = c;
         kb_head = next_head;
+        wake_kb_waiter();
     }
 }
 
@@ -103,4 +114,12 @@ int kb_get_event(struct key_event* ev) {
     *ev = key_events[ev_tail];
     ev_tail = (ev_tail + 1) % KB_BUF_SIZE;
     return 1;
+}
+
+void kb_set_waiter(struct task* t) {
+    kb_waiter = t;
+}
+
+void kb_clear_waiter(struct task* t) {
+    if (kb_waiter == t) kb_waiter = 0;
 }

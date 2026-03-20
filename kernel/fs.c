@@ -1623,12 +1623,17 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     if (!current) return -1;
     if (fd >= 0 && fd < MAX_FDS && current->fds[fd].in_use && current->fds[fd].type == FT_CONSOLE) {
         extern int kb_read(char* buf, int count);
+        extern void kb_set_waiter(struct task* t);
+        extern void kb_clear_waiter(struct task* t);
         extern int64_t sys_write_serial(const char* buf, size_t count);
         int read_bytes = 0;
         while (read_bytes == 0) {
             read_bytes = kb_read((char*)buf, count);
             if (read_bytes == 0) {
-                __asm__ volatile("sti; hlt; cli");
+                task_mark_sleeping(current);
+                kb_set_waiter(current);
+                kernel_yield();
+                kb_clear_waiter(current);
             }
         }
         if (fd == 0 && read_bytes > 0) {

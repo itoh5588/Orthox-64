@@ -23,6 +23,28 @@ static uint8_t exception_stacks[ORTHOX_MAX_CPUS][8192] __attribute__((aligned(16
 static int idt_built = 0;
 static uint8_t resched_ipi_seen[ORTHOX_MAX_CPUS];
 
+static void append_str(char* buf, int* pos, int max, const char* s) {
+    while (s && *s && *pos + 1 < max) {
+        buf[(*pos)++] = *s++;
+    }
+}
+
+static void append_dec(char* buf, int* pos, int max, uint64_t v) {
+    char tmp[21];
+    int n = 0;
+    if (v == 0) {
+        if (*pos + 1 < max) buf[(*pos)++] = '0';
+        return;
+    }
+    while (v && n < (int)sizeof(tmp)) {
+        tmp[n++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (n-- > 0 && *pos + 1 < max) {
+        buf[(*pos)++] = tmp[n];
+    }
+}
+
 extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
 extern void isr4();  extern void isr5();  extern void isr6();  extern void isr7();
 extern void isr8();  extern void isr9();  extern void isr10(); extern void isr11();
@@ -106,7 +128,10 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
     }
 
     if (frame->int_no == INT_VECTOR_TIMER) {
-        net_poll();
+        struct cpu_local* cpu = get_cpu_local();
+        if (!cpu || cpu->cpu_id == 0) {
+            net_poll();
+        }
         lapic_timer_tick();
         task_on_timer_tick();
         lapic_eoi();
@@ -135,10 +160,14 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
     if (frame->int_no == INT_VECTOR_RESCHED) {
         struct cpu_local* cpu = get_cpu_local();
         if (cpu && cpu->cpu_id < ORTHOX_MAX_CPUS && !resched_ipi_seen[cpu->cpu_id]) {
+            char buf[96];
+            int pos = 0;
             resched_ipi_seen[cpu->cpu_id] = 1;
-            puts("[smp] cpu");
-            puthex((uint64_t)cpu->cpu_id);
-            puts(" resched IPI received\r\n");
+            append_str(buf, &pos, sizeof(buf), "[smp] cpu");
+            append_dec(buf, &pos, sizeof(buf), cpu->cpu_id);
+            append_str(buf, &pos, sizeof(buf), " resched IPI received\r\n");
+            buf[pos] = '\0';
+            puts(buf);
         }
         lapic_eoi();
         kernel_lock_exit();
