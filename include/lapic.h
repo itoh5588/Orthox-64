@@ -27,5 +27,6 @@ void lapic_init_cpu(void);
 void lapic_eoi(void);
 void lapic_timer_tick(void);
 uint64_t lapic_get_ticks_ms(void);
+uint64_t lapic_get_cpu_ticks_ms(uint32_t cpu_id);
 
 #endif

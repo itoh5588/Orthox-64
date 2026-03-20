@@ -216,8 +216,7 @@ static void kill_current_task_on_user_fault(struct interrupt_frame* frame, uint6
                 puts("  [RSP+0x10] = "); puthex(user_rsp[2]); puts("\r\n");
                 puts("  [RSP+0x18] = "); puthex(user_rsp[3]); puts("\r\n");
             }
-            current->exit_status = 139;
-            current->state = TASK_ZOMBIE;
+            task_mark_zombie(current, 139);
             while (1) kernel_yield();
         }
     }

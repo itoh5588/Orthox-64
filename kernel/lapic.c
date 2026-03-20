@@ -2,10 +2,37 @@
 #include "lapic.h"
 #include "vmm.h"
 #include "idt.h"
+#include "task.h"
 
 static volatile uint32_t* lapic_base;
 static volatile uint64_t g_ticks_ms = 0;
+static volatile uint64_t g_ticks_ms_per_cpu[ORTHOX_MAX_CPUS];
+static volatile uint8_t g_timer_seen[ORTHOX_MAX_CPUS];
 static uint32_t g_timer_ticks_per_interval = 0;
+
+extern void puts(const char* s);
+
+static void append_str(char* buf, int* pos, int max, const char* s) {
+    while (s && *s && *pos + 1 < max) {
+        buf[(*pos)++] = *s++;
+    }
+}
+
+static void append_dec(char* buf, int* pos, int max, uint64_t v) {
+    char tmp[21];
+    int n = 0;
+    if (v == 0) {
+        if (*pos + 1 < max) buf[(*pos)++] = '0';
+        return;
+    }
+    while (v && n < (int)sizeof(tmp)) {
+        tmp[n++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (n-- > 0 && *pos + 1 < max) {
+        buf[(*pos)++] = tmp[n];
+    }
+}
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ( "outb %b0, %w1" : : "a"(val), "Nd"(port) );
@@ -30,11 +57,31 @@ void lapic_eoi(void) {
 }
 
 void lapic_timer_tick(void) {
+    struct cpu_local* cpu = get_cpu_local();
     g_ticks_ms += SCHED_TICK_MS;
+    if (cpu && cpu->cpu_id < ORTHOX_MAX_CPUS) {
+        uint32_t cpu_id = cpu->cpu_id;
+        g_ticks_ms_per_cpu[cpu_id] += SCHED_TICK_MS;
+        if (cpu_id != 0 && !g_timer_seen[cpu_id]) {
+            char buf[96];
+            int pos = 0;
+            g_timer_seen[cpu_id] = 1;
+            append_str(buf, &pos, sizeof(buf), "[smp] cpu");
+            append_dec(buf, &pos, sizeof(buf), cpu_id);
+            append_str(buf, &pos, sizeof(buf), " local timer online\r\n");
+            buf[pos] = '\0';
+            puts(buf);
+        }
+    }
 }
 
 uint64_t lapic_get_ticks_ms(void) {
     return g_ticks_ms;
+}
+
+uint64_t lapic_get_cpu_ticks_ms(uint32_t cpu_id) {
+    if (cpu_id >= ORTHOX_MAX_CPUS) return 0;
+    return g_ticks_ms_per_cpu[cpu_id];
 }
 
 // PIT (Programmable Interval Timer) を使用した一時的な待機

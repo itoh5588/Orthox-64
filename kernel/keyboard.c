@@ -39,8 +39,7 @@ static void send_sigint_to_foreground_pgrp(void) {
     while (t) {
         if (t->pgid == fg && t->pid != 1) {
             t->sig_pending |= (1ULL << 2);
-            t->exit_status = 130;
-            t->state = TASK_ZOMBIE;
+            task_mark_zombie(t, 130);
         }
         t = t->next;
     }

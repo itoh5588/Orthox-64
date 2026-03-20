@@ -78,11 +78,18 @@ void task_bind_cpu_local(uint32_t cpu_id, struct task* current, struct task* idl
                          uint64_t kernel_stack);
 void task_install_cpu_local(uint32_t cpu_id);
 struct task* task_create(uint64_t entry, uint64_t user_rsp);
+struct task* task_create_on_cpu(uint64_t entry, uint64_t user_rsp, uint32_t cpu_id);
 struct task* task_create_idle(uint32_t cpu_id);
+int task_set_affinity(struct task* t, uint32_t cpu_id);
+int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id);
+int task_mark_sleeping(struct task* t);
+int task_mark_zombie(struct task* t, int exit_status);
+int task_wake(struct task* t);
 void schedule(void);
 struct cpu_local* get_cpu_local(void);
 struct task* get_current_task(void);
 void task_request_resched(void);
+void task_request_resched_cpu(uint32_t cpu_id);
 int task_consume_resched(void);
 void task_on_timer_tick(void);
 int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t,

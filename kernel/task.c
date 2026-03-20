@@ -77,6 +77,18 @@ static inline struct task* get_current_task_raw(void) {
     return cpu ? cpu->current_task : NULL;
 }
 
+static int default_task_cpu_affinity(void) {
+    struct cpu_local* cpu = this_cpu();
+    return cpu ? (int)cpu->cpu_id : 0;
+}
+
+static int normalize_cpu_affinity(uint32_t cpu_id) {
+    uint32_t cpu_count = task_get_cpu_count();
+    if (cpu_count == 0) cpu_count = 1;
+    if (cpu_id >= cpu_count) return 0;
+    return (int)cpu_id;
+}
+
 static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
                            struct task* current, struct task* idle,
                            uint64_t kernel_stack) {
@@ -110,6 +122,11 @@ struct task* get_current_task(void) {
 
 void task_request_resched(void) {
     struct cpu_local* cpu = this_cpu();
+    if (cpu) cpu->resched_pending = 1;
+}
+
+void task_request_resched_cpu(uint32_t cpu_id) {
+    struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
     if (cpu) cpu->resched_pending = 1;
 }
 
@@ -408,7 +425,7 @@ void task_init(void) {
     t->pgid = t->pid;
     t->sid = t->pid;
     t->state = TASK_RUNNING;
-    t->cpu_affinity = 0;
+    t->cpu_affinity = default_task_cpu_affinity();
     t->ctx.cr3 = vmm_get_kernel_pml4_phys();
     uint64_t sp; __asm__ volatile("mov %%rsp, %0" : "=r"(sp));
     t->kstack_top = (sp & ~(PAGE_SIZE - 1)) + PAGE_SIZE; 
@@ -426,15 +443,48 @@ void task_init(void) {
     puts("Task system initialized.\r\n");
 }
 
-struct task* task_create(uint64_t entry, uint64_t user_rsp) {
+int task_set_affinity(struct task* t, uint32_t cpu_id) {
+    if (!t) return -1;
+    t->cpu_affinity = normalize_cpu_affinity(cpu_id);
+    return 0;
+}
+
+int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id) {
+    if (!t) return -1;
+    t->state = TASK_READY;
+    t->cpu_affinity = normalize_cpu_affinity(cpu_id);
+    return 0;
+}
+
+int task_mark_sleeping(struct task* t) {
+    if (!t) return -1;
+    t->state = TASK_SLEEPING;
+    return 0;
+}
+
+int task_mark_zombie(struct task* t, int exit_status) {
+    if (!t) return -1;
+    t->exit_status = exit_status;
+    t->state = TASK_ZOMBIE;
+    return 0;
+}
+
+int task_wake(struct task* t) {
+    if (!t) return -1;
+    if (t->state == TASK_ZOMBIE || t->state == TASK_DEAD) return -1;
+    task_mark_ready_on_cpu(t, (uint32_t)t->cpu_affinity);
+    task_request_resched_cpu((uint32_t)t->cpu_affinity);
+    return 0;
+}
+
+struct task* task_create_on_cpu(uint64_t entry, uint64_t user_rsp, uint32_t cpu_id) {
     struct task* t = alloc_task_struct();
     if (!t) return NULL;
     uint64_t flags = spin_lock_irqsave(&g_task_lock);
     t->pid = next_pid++;
     t->pgid = t->pid;
     t->sid = t->pid;
-    t->state = TASK_READY;
-    t->cpu_affinity = 0;
+    task_mark_ready_on_cpu(t, cpu_id);
     t->user_entry = entry;
     t->user_stack = user_rsp;
     t->user_stack_top = USER_STACK_TOP_VADDR;
@@ -469,6 +519,10 @@ struct task* task_create(uint64_t entry, uint64_t user_rsp) {
     task_list = t;
     spin_unlock_irqrestore(&g_task_lock, flags);
     return t;
+}
+
+struct task* task_create(uint64_t entry, uint64_t user_rsp) {
+    return task_create_on_cpu(entry, user_rsp, (uint32_t)default_task_cpu_affinity());
 }
 
 struct task* task_create_idle(uint32_t cpu_id) {
@@ -518,8 +572,7 @@ int task_fork(struct syscall_frame* frame) {
     child->ppid = parent->pid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
-    child->state = TASK_READY;
-    child->cpu_affinity = parent->cpu_affinity;
+    task_mark_ready_on_cpu(child, (uint32_t)parent->cpu_affinity);
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;
     child->user_entry = parent->user_entry;
@@ -592,7 +645,9 @@ void schedule(void) {
         return;
     }
     struct task* prev = current_task;
-    if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
+    if (prev->state == TASK_RUNNING) {
+        task_mark_ready_on_cpu(prev, (uint32_t)prev->cpu_affinity);
+    }
     cpu->current_task = next;
     next->state = TASK_RUNNING;
     if (next->timeslice_ticks <= 0) next->timeslice_ticks = TASK_TIMESLICE_TICKS;

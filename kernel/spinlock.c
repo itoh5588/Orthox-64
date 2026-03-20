@@ -69,6 +69,14 @@ void kernel_lock_exit(void) {
     }
 }
 
+int kernel_lock_held(void) {
+    struct cpu_local* cpu = get_cpu_local();
+    if (!cpu) {
+        return g_kernel_lock.locked != 0;
+    }
+    return cpu->kernel_lock_depth != 0;
+}
+
 void kernel_yield(void) {
     struct cpu_local* cpu = get_cpu_local();
     uint32_t depth = cpu ? cpu->kernel_lock_depth : 0;

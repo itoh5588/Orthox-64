@@ -271,7 +271,11 @@ int64_t sys_write_serial(const char* buf, size_t count) {
     return (int64_t)count;
 }
 
-static struct task* find_task_by_pid(int pid) {
+static struct task* find_task_by_pid_locked(int pid) {
+    if (!kernel_lock_held()) {
+        puts("[warn] find_task_by_pid_locked without BKL\r\n");
+        return NULL;
+    }
     struct task* t = task_list;
     while (t) {
         if (t->pid == pid) return t;
@@ -280,10 +284,17 @@ static struct task* find_task_by_pid(int pid) {
     return NULL;
 }
 
-static void task_signal_add(struct task* t, int sig) {
+static void task_signal_add_locked(struct task* t, int sig) {
+    if (!kernel_lock_held()) {
+        puts("[warn] task_signal_add_locked without BKL\r\n");
+        return;
+    }
     if (!t || sig <= 0 || sig >= 64) return;
     if (sig < 32 && t->sig_handlers[sig] == 1ULL) return;
     t->sig_pending |= (1ULL << sig);
+    if (t->state == TASK_SLEEPING) {
+        task_wake(t);
+    }
 }
 
 static void sys_exit(int status) {
@@ -295,11 +306,10 @@ static void sys_exit(int status) {
             (void)sys_close(fd);
         }
     }
-    current->exit_status = status;
-    current->state = TASK_ZOMBIE;
+    task_mark_zombie(current, status);
     if (current->ppid > 0) {
-        struct task* parent = find_task_by_pid(current->ppid);
-        if (parent) task_signal_add(parent, 20);
+        struct task* parent = find_task_by_pid_locked(current->ppid);
+        if (parent) task_signal_add_locked(parent, 20);
     }
     while(1) kernel_yield();
 }
@@ -340,7 +350,7 @@ static int64_t sys_wait4(int pid, int* wstatus, int options) {
                         int child_pid = curr->pid;
                         if (wstatus) *wstatus = curr->exit_status << 8;
                         current->sig_pending &= ~(1ULL << 20);
-                        curr->state = TASK_SLEEPING;
+                        task_mark_sleeping(curr);
                         curr->ppid = 0;
                         return child_pid;
                     }
@@ -607,22 +617,21 @@ static int sys_kill(int pid, int sig) {
     struct task* current = get_current_task();
     struct task* t = NULL;
     if (sig == 0) {
-        if (pid > 0) return find_task_by_pid(pid) ? 0 : -1;
+        if (pid > 0) return find_task_by_pid_locked(pid) ? 0 : -1;
         return 0;
     }
     if (pid > 0) {
-        t = find_task_by_pid(pid);
+        t = find_task_by_pid_locked(pid);
     } else if (pid == 0 && current) {
         t = current;
     }
     if (!t) return -1;
-    task_signal_add(t, sig);
+    task_signal_add_locked(t, sig);
     if (sig == 2 || sig == 15 || sig == 9) {
-        t->exit_status = 128 + sig;
-        t->state = TASK_ZOMBIE;
+        task_mark_zombie(t, 128 + sig);
         if (t->ppid > 0) {
-            struct task* parent = find_task_by_pid(t->ppid);
-            if (parent) task_signal_add(parent, 20);
+            struct task* parent = find_task_by_pid_locked(t->ppid);
+            if (parent) task_signal_add_locked(parent, 20);
         }
         return 0;
     }
@@ -672,7 +681,7 @@ static int sys_setpgid(int pid, int pgid) {
     if (!current) return -1;
     if (pid == 0) pid = current->pid;
     if (pgid == 0) pgid = pid;
-    target = find_task_by_pid(pid);
+    target = find_task_by_pid_locked(pid);
     if (!target) return -1;
     target->pgid = pgid;
     return 0;

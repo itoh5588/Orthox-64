@@ -16,6 +16,7 @@ uint64_t spin_lock_irqsave(spinlock_t* lock);
 void spin_unlock_irqrestore(spinlock_t* lock, uint64_t flags);
 void kernel_lock_enter(void);
 void kernel_lock_exit(void);
+int kernel_lock_held(void);
 void kernel_yield(void);
 
 #endif
