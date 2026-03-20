@@ -6,6 +6,7 @@
 #include "usb.h"
 #include "lapic.h"
 #include "net_socket.h"
+#include "spinlock.h"
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -1584,7 +1585,7 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         const char* src = (const char*)buf;
         while (written < count) {
             if (pipe->count == PIPE_BUF_SIZE) {
-                schedule();
+                kernel_yield();
                 continue;
             }
             pipe->buffer[pipe->write_pos] = src[written];
@@ -1653,7 +1654,7 @@ int64_t sys_read(int fd, void* buf, size_t count) {
             if (pipe->ref_count < 2) {
                 return 0; // 書き込み側が閉じられた
             }
-            schedule();
+            kernel_yield();
         }
         size_t to_read = (count > pipe->count) ? pipe->count : count;
         char* dest = (char*)buf;

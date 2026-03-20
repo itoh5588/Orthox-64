@@ -4,6 +4,7 @@
 #include "task.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "spinlock.h"
 #include "lwip/udp.h"
 #include "lwip/tcp.h"
 #include "lwip/ip_addr.h"
@@ -298,7 +299,7 @@ static int64_t socket_recv_stream(file_descriptor_t* f, net_socket_backend_t* so
     while (!sock->rx_head) {
         if (sock->eof) return 0;
         if (f->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
-        schedule();
+        kernel_yield();
     }
 
     size_t copied = 0;
@@ -325,7 +326,7 @@ static int64_t socket_recv_stream(file_descriptor_t* f, net_socket_backend_t* so
 static int64_t socket_recv_dgram(file_descriptor_t* f, net_socket_backend_t* sock, void* buf, size_t len, void* src_addr, uint32_t* addrlen) {
     while (!sock->rx_head) {
         if (f->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
-        schedule();
+        kernel_yield();
     }
 
     socket_rx_chunk_t* chunk = sock->rx_head;
@@ -349,7 +350,7 @@ static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* so
         uint16_t wnd = tcp_sndbuf(sock->pcb.tcp);
         if (wnd == 0) {
             if (f->flags & ORTH_LINUX_O_NONBLOCK) return sent ? (int64_t)sent : -ORTH_ERR_EAGAIN;
-            schedule();
+            kernel_yield();
             continue;
         }
         uint16_t chunk = (uint16_t)(len - sent);
@@ -358,7 +359,7 @@ static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* so
         if (err == ERR_MEM) {
             if (f->flags & ORTH_LINUX_O_NONBLOCK) return sent ? (int64_t)sent : -ORTH_ERR_EAGAIN;
             (void)tcp_output(sock->pcb.tcp);
-            schedule();
+            kernel_yield();
             continue;
         }
         if (err != ERR_OK) return sent ? (int64_t)sent : -1;
@@ -472,7 +473,7 @@ int sys_connect(int fd, const void* addr, uint32_t addrlen) {
         }
 
         while (sock->connecting) {
-            schedule();
+            kernel_yield();
         }
         return sock->connected ? 0 : -1;
     }
@@ -512,7 +513,7 @@ int sys_accept(int fd, void* addr, uint32_t* addrlen) {
 
     while (!listener->accept_head) {
         if (listen_fd->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
-        schedule();
+        kernel_yield();
     }
 
     int newfd = alloc_fd_slot(current);

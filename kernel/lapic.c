@@ -5,6 +5,7 @@
 
 static volatile uint32_t* lapic_base;
 static volatile uint64_t g_ticks_ms = 0;
+static uint32_t g_timer_ticks_per_interval = 0;
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ( "outb %b0, %w1" : : "a"(val), "Nd"(port) );
@@ -63,10 +64,23 @@ void lapic_init(void) {
     
     pit_wait();
     
-    uint32_t ticks_per_interval = 0xFFFFFFFF - lapic_read(LAPIC_REG_TIMER_CUR);
+    g_timer_ticks_per_interval = 0xFFFFFFFF - lapic_read(LAPIC_REG_TIMER_CUR);
 
     // 定期的な割り込みの設定
     lapic_write(LAPIC_REG_LVT_TIMER, INT_VECTOR_TIMER | LAPIC_TIMER_PERIODIC);
     lapic_write(LAPIC_REG_TIMER_DIV, LAPIC_TIMER_DIV_16);
-    lapic_write(LAPIC_REG_TIMER_INIT, ticks_per_interval);
+    lapic_write(LAPIC_REG_TIMER_INIT, g_timer_ticks_per_interval);
+}
+
+void lapic_init_cpu(void) {
+    if (!lapic_base) {
+        lapic_base = (uint32_t*)PHYS_TO_VIRT(LAPIC_BASE_ADDR);
+    }
+
+    lapic_write(LAPIC_REG_SVR, lapic_read(LAPIC_REG_SVR) | 0x1FF);
+    lapic_write(LAPIC_REG_LVT_TIMER, INT_VECTOR_TIMER | LAPIC_TIMER_PERIODIC);
+    lapic_write(LAPIC_REG_TIMER_DIV, LAPIC_TIMER_DIV_16);
+    if (g_timer_ticks_per_interval) {
+        lapic_write(LAPIC_REG_TIMER_INIT, g_timer_ticks_per_interval);
+    }
 }

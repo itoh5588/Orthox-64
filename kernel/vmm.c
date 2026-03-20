@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "task.h"
+#include "spinlock.h"
 #include "limine.h"
 
 extern volatile struct limine_hhdm_request hhdm_request;
@@ -217,7 +218,7 @@ static void kill_current_task_on_user_fault(struct interrupt_frame* frame, uint6
             }
             current->exit_status = 139;
             current->state = TASK_ZOMBIE;
-            while (1) schedule();
+            while (1) kernel_yield();
         }
     }
 }

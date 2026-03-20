@@ -7,11 +7,13 @@
 #include "limine.h"
 #include "elf64.h"
 #include "net_socket.h"
+#include "spinlock.h"
 
 static struct cpu_local g_cpu_locals[ORTHOX_MAX_CPUS];
 struct task* task_list = NULL;
 static int next_pid = 1;
 static uint32_t g_cpu_count = 1;
+static spinlock_t g_task_lock;
 
 #define TASK_TIMESLICE_TICKS 5
 
@@ -78,8 +80,23 @@ static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
     cpu->current_task = current;
     cpu->idle_task = idle;
     cpu->resched_pending = 0;
+    cpu->kernel_lock_depth = 0;
     cpu->kernel_stack = kernel_stack;
     cpu->user_stack = 0;
+}
+
+void task_bind_cpu_local(uint32_t cpu_id, struct task* current, struct task* idle,
+                         uint64_t kernel_stack) {
+    struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
+    if (!cpu) return;
+    init_cpu_local(cpu, cpu_id, current, idle, kernel_stack);
+}
+
+void task_install_cpu_local(uint32_t cpu_id) {
+    struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
+    if (!cpu) return;
+    wrmsr(MSR_GS_BASE, (uintptr_t)cpu);
+    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
 }
 
 struct task* get_current_task(void) {
@@ -140,6 +157,15 @@ static void init_console_fds(struct task* t) {
     t->fds[2].type = FT_CONSOLE;
     t->fds[2].in_use = 1;
     t->fds[2].flags = O_WRONLY;
+}
+
+static struct task* alloc_task_struct(void) {
+    int task_pages = (sizeof(struct task) + PAGE_SIZE - 1) / PAGE_SIZE;
+    void* phys = pmm_alloc(task_pages);
+    if (!phys) return NULL;
+    struct task* t = (struct task*)PHYS_TO_VIRT(phys);
+    kernel_memset(t, 0, sizeof(struct task));
+    return t;
 }
 
 static int alloc_user_stack(uint64_t* pml4_virt, struct task* t, int stack_pages, uint8_t** stack_mem_out) {
@@ -367,10 +393,10 @@ void task_main(void) {
 
 void task_init(void) {
     // タスク構造体のサイズに合わせて必要なページを確保
-    int task_pages = (sizeof(struct task) + PAGE_SIZE - 1) / PAGE_SIZE;
-    void* phys = pmm_alloc(task_pages);
-    struct task* t = (struct task*)PHYS_TO_VIRT(phys);
-    kernel_memset(t, 0, sizeof(struct task));
+    struct task* t = alloc_task_struct();
+    if (!t) return;
+    spinlock_init(&g_task_lock);
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
     t->pid = next_pid++;
     t->pgid = t->pid;
     t->sid = t->pid;
@@ -386,17 +412,16 @@ void task_init(void) {
     struct cpu_local* cpu = &g_cpu_locals[0];
     init_cpu_local(cpu, 0, t, t, t->kstack_top);
     task_list = t;
+    spin_unlock_irqrestore(&g_task_lock, flags);
     init_console_fds(t);
-    wrmsr(MSR_GS_BASE, (uintptr_t)cpu);
-    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
+    task_install_cpu_local(0);
     puts("Task system initialized.\r\n");
 }
 
 struct task* task_create(uint64_t entry, uint64_t user_rsp) {
-    int task_pages = (sizeof(struct task) + PAGE_SIZE - 1) / PAGE_SIZE;
-    void* t_phys = pmm_alloc(task_pages);
-    struct task* t = (struct task*)PHYS_TO_VIRT(t_phys);
-    kernel_memset(t, 0, sizeof(struct task));
+    struct task* t = alloc_task_struct();
+    if (!t) return NULL;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
     t->pid = next_pid++;
     t->pgid = t->pid;
     t->sid = t->pid;
@@ -433,15 +458,42 @@ struct task* task_create(uint64_t entry, uint64_t user_rsp) {
     t->ctx.fxsave_area[24] = 0x80; t->ctx.fxsave_area[25] = 0x1f;
     t->next = task_list;
     task_list = t;
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return t;
+}
+
+struct task* task_create_idle(uint32_t cpu_id) {
+    struct task* t = alloc_task_struct();
+    if (!t) return NULL;
+    t->pid = 0;
+    t->state = TASK_RUNNING;
+    t->ctx.cr3 = vmm_get_kernel_pml4_phys();
+    t->mmap_end = 0x4000000000ULL;
+    t->timeslice_ticks = TASK_TIMESLICE_TICKS;
+    kernel_strcpy(t->cwd, "/", sizeof(t->cwd));
+    void* kstack_phys = pmm_alloc(4);
+    if (!kstack_phys) return NULL;
+    t->kstack_top = (uint64_t)PHYS_TO_VIRT(kstack_phys) + 4 * PAGE_SIZE;
+    t->os_stack_ptr = t->kstack_top;
+    t->ctx.rsp = t->kstack_top;
+    t->ctx.cs = 0x08;
+    t->ctx.ss = 0x10;
+    t->ctx.fxsave_area[0] = 0x7f;
+    t->ctx.fxsave_area[1] = 0x03;
+    t->ctx.fxsave_area[24] = 0x80;
+    t->ctx.fxsave_area[25] = 0x1f;
+    (void)cpu_id;
     return t;
 }
 
 int task_fork(struct syscall_frame* frame) {
     struct task* parent = get_current_task_raw();
-    int task_pages = (sizeof(struct task) + PAGE_SIZE - 1) / PAGE_SIZE;
-    void* child_phys = pmm_alloc(task_pages);
-    struct task* child = (struct task*)PHYS_TO_VIRT(child_phys);
-    kernel_memset(child, 0, sizeof(struct task));
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    struct task* child = alloc_task_struct();
+    if (!child) {
+        spin_unlock_irqrestore(&g_task_lock, flags);
+        return -1;
+    }
     child->pid = next_pid++;
     child->ppid = parent->pid;
     child->pgid = parent->pgid;
@@ -487,6 +539,7 @@ int task_fork(struct syscall_frame* frame) {
     }
     child->next = task_list;
     task_list = child;
+    spin_unlock_irqrestore(&g_task_lock, flags);
     return child->pid;
 }
 
@@ -494,22 +547,30 @@ void schedule(void) {
     struct cpu_local* cpu = this_cpu();
     struct task* current_task = cpu ? cpu->current_task : NULL;
     if (!current_task) return;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
     struct task* next = current_task->next;
     if (!next) next = task_list;
     struct task* start = next;
     while (next->state != TASK_READY && next->state != TASK_RUNNING) {
         next = next->next;
         if (!next) next = task_list;
-        if (next == start) return;
+        if (next == start) {
+            spin_unlock_irqrestore(&g_task_lock, flags);
+            return;
+        }
     }
-    if (next == current_task) return;
+    if (next == current_task) {
+        spin_unlock_irqrestore(&g_task_lock, flags);
+        return;
+    }
     struct task* prev = current_task;
     if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
     cpu->current_task = next;
     next->state = TASK_RUNNING;
     if (next->timeslice_ticks <= 0) next->timeslice_ticks = TASK_TIMESLICE_TICKS;
-    tss_set_stack(next->kstack_top);
+    tss_set_stack_for_cpu(cpu->cpu_id, next->kstack_top);
     cpu->kernel_stack = next->kstack_top;
     wrmsr(MSR_FS_BASE, next->user_fs_base);
+    spin_unlock_irqrestore(&g_task_lock, flags);
     switch_context(&next->ctx, &prev->ctx);
 }

@@ -11,6 +11,7 @@
 #include "task.h"
 #include "smp.h"
 #include "lapic.h"
+#include "spinlock.h"
 #include "pci.h"
 #include "net.h"
 #include "usb.h"
@@ -54,6 +55,30 @@ static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ( "outb %b0, %w1" : : "a"(val), "Nd"(port) );
 }
 
+static volatile uint32_t g_serial_lock = 0;
+
+static uint64_t serial_irq_save(void) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static void serial_irq_restore(uint64_t flags) {
+    if (flags & (1ULL << 9)) {
+        __asm__ volatile("sti" : : : "memory");
+    }
+}
+
+static void serial_lock(void) {
+    while (__atomic_exchange_n(&g_serial_lock, 1, __ATOMIC_ACQUIRE)) {
+        __asm__ volatile("pause");
+    }
+}
+
+static void serial_unlock(void) {
+    __atomic_store_n(&g_serial_lock, 0, __ATOMIC_RELEASE);
+}
+
 static void init_serial(void) {
     outb(0x3f8 + 1, 0x00); // Disable all interrupts
     outb(0x3f8 + 3, 0x80); // Enable DLAB (set baud rate divisor)
@@ -65,24 +90,36 @@ static void init_serial(void) {
 }
 
 void puts(const char *s) {
+    uint64_t flags = serial_irq_save();
+    serial_lock();
     for (size_t i = 0; s[i] != '\0'; i++) {
         if (s[i] == '\n') outb(0x3f8, '\r');
         outb(0x3f8, s[i]);
     }
+    serial_unlock();
+    serial_irq_restore(flags);
 }
 
 void puthex(uint64_t v) {
     const char *hex = "0123456789ABCDEF";
+    uint64_t flags = serial_irq_save();
+    serial_lock();
     for (int i = 60; i >= 0; i -= 4) {
         outb(0x3f8, hex[(v >> i) & 0xF]);
     }
+    serial_unlock();
+    serial_irq_restore(flags);
 }
 
 static void putdec(uint64_t v) {
     char buf[21];
     int i = 0;
+    uint64_t flags = serial_irq_save();
+    serial_lock();
     if (v == 0) {
         outb(0x3f8, '0');
+        serial_unlock();
+        serial_irq_restore(flags);
         return;
     }
     while (v && i < (int)sizeof(buf)) {
@@ -90,6 +127,8 @@ static void putdec(uint64_t v) {
         v /= 10;
     }
     while (i--) outb(0x3f8, buf[i]);
+    serial_unlock();
+    serial_irq_restore(flags);
 }
 
 static void enable_sse(void) {
@@ -137,6 +176,7 @@ void _start(void) {
         puts("SMP CPUs detected: ");
         putdec(smp_get_cpu_count());
         puts("\r\n");
+        smp_debug_dump();
 
         uint64_t* pml4 = vmm_get_kernel_pml4();
         struct limine_kernel_address_response* kaddr = kernel_address_request.response;
@@ -146,6 +186,15 @@ void _start(void) {
         
         vmm_activate(pml4);
         task_init();
+        smp_start_aps();
+        if (smp_wait_for_aps(100000000) == 0) {
+            puts("[smp] all APs reported online\r\n");
+        } else {
+            puts("[smp] AP startup timeout\r\n");
+        }
+        puts("[smp] started_cpus=");
+        putdec(smp_get_started_cpu_count());
+        puts("\r\n");
 
         if (module_request.response && module_request.response->module_count > 0) {
             struct limine_file* module = NULL;
@@ -186,7 +235,7 @@ void _start(void) {
 
                     puts("Starting first user task...\r\n");
                     __asm__ volatile("sti");
-                    schedule();
+                    kernel_yield();
                 }
             } else {
                 puts("user_test.elf not found!\r\n");
@@ -194,10 +243,9 @@ void _start(void) {
         }
     }
 
-    puts("Idle task running.\r\n");
     while(1) {
         net_poll();
         __asm__ volatile("hlt");
-        schedule();
+        kernel_yield();
     }
 }

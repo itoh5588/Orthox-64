@@ -20,6 +20,7 @@
 #include "lwip/prot/ethernet.h"
 #include "netif/ethernet.h"
 #include "task.h"
+#include "spinlock.h"
 
 void puts(const char* s);
 void puthex(uint64_t v);
@@ -422,7 +423,7 @@ int lwip_port_lookup_ipv4(const char* hostname, uint32_t* out_addr) {
     }
 
     while (!g_dns_done) {
-        schedule();
+        kernel_yield();
     }
     if (g_dns_result != ERR_OK || !IP_IS_V4(&g_dns_addr)) return -1;
     *out_addr = ip_2_ip4(&g_dns_addr)->addr;

@@ -12,6 +12,7 @@
 #include "usb.h"
 #include "net_socket.h"
 #include "lwip_port.h"
+#include "spinlock.h"
 
 void puts(const char *s);
 void puthex(uint64_t v);
@@ -300,7 +301,7 @@ static void sys_exit(int status) {
         struct task* parent = find_task_by_pid(current->ppid);
         if (parent) task_signal_add(parent, 20);
     }
-    while(1) schedule();
+    while(1) kernel_yield();
 }
 
 static uint64_t sys_brk(uint64_t addr) {
@@ -348,7 +349,7 @@ static int64_t sys_wait4(int pid, int* wstatus, int options) {
             curr = curr->next;
         }
         if (!found_child) return -1;
-        schedule();
+        kernel_yield();
     }
 }
 
@@ -548,7 +549,7 @@ static uint64_t sys_get_ticks_ms(void) {
 static int sys_sleep_ms(uint64_t ms) {
     uint64_t start = lapic_get_ticks_ms();
     while ((lapic_get_ticks_ms() - start) < ms) {
-        schedule();
+        kernel_yield();
     }
     return 0;
 }
@@ -880,6 +881,7 @@ extern int fs_get_mount_status(char* buf, size_t size);
 
 void syscall_dispatch(struct syscall_frame* frame) {
     uint64_t syscall_no = frame->rax;
+    kernel_lock_enter();
     switch (syscall_no) {
         case SYS_READ:
             frame->rax = (uint64_t)sys_read((int)frame->rdi, (void*)frame->rsi, (size_t)frame->rdx);
@@ -1151,6 +1153,7 @@ void syscall_dispatch(struct syscall_frame* frame) {
     // Timer IRQ sets resched pending; perform context switch at syscall boundary,
     // not in interrupt return path, to avoid iretq frame corruption.
     if (task_consume_resched()) {
-        schedule();
+        kernel_yield();
     }
+    kernel_lock_exit();
 }

@@ -22,6 +22,7 @@ struct idt_ptr {
 
 // IDT の初期化
 void idt_init(void);
+void idt_init_cpu(uint32_t cpu_id);
 
 // 割り込みゲートの設定
 void idt_set_gate(uint8_t num, void* handler, uint8_t ist, uint8_t type);

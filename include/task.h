@@ -26,6 +26,7 @@ struct cpu_local {
     struct task* current_task;
     struct task* idle_task;
     volatile int resched_pending;
+    uint32_t kernel_lock_depth;
 };
 
 struct task_context {
@@ -72,7 +73,11 @@ void task_init(void);
 void task_set_cpu_count(uint32_t cpu_count);
 uint32_t task_get_cpu_count(void);
 struct cpu_local* get_cpu_local_by_id(uint32_t cpu_id);
+void task_bind_cpu_local(uint32_t cpu_id, struct task* current, struct task* idle,
+                         uint64_t kernel_stack);
+void task_install_cpu_local(uint32_t cpu_id);
 struct task* task_create(uint64_t entry, uint64_t user_rsp);
+struct task* task_create_idle(uint32_t cpu_id);
 void schedule(void);
 struct cpu_local* get_cpu_local(void);
 struct task* get_current_task(void);

@@ -41,8 +41,11 @@ struct gdt_ptr {
 } __attribute__((packed));
 
 void gdt_init(void);
+void gdt_init_cpu(uint32_t cpu_id);
 void tss_set_stack(uint64_t stack);
+void tss_set_stack_for_cpu(uint32_t cpu_id, uint64_t stack);
 void tss_set_ist(int index, uint64_t stack);
+void tss_set_ist_for_cpu(uint32_t cpu_id, int index, uint64_t stack);
 
 #define GDT_KERNEL_CODE_IDX 1
 #define GDT_KERNEL_DATA_IDX 2

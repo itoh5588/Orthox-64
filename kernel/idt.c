@@ -3,6 +3,7 @@
 #include "lapic.h"
 #include "net.h"
 #include "task.h"
+#include "spinlock.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -18,8 +19,8 @@ struct interrupt_frame {
 
 static struct idt_entry idt[256];
 static struct idt_ptr idtr;
-
-static uint8_t exception_stack[8192] __attribute__((aligned(16)));
+static uint8_t exception_stacks[ORTHOX_MAX_CPUS][8192] __attribute__((aligned(16)));
+static int idt_built = 0;
 
 extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
 extern void isr4();  extern void isr5();  extern void isr6();  extern void isr7();
@@ -42,11 +43,11 @@ void idt_set_gate(uint8_t num, void* handler, uint8_t ist, uint8_t type) {
     idt[num].reserved = 0;
 }
 
-void idt_init(void) {
+static void idt_build_once(void) {
+    if (idt_built) return;
+
     idtr.limit = (sizeof(struct idt_entry) * 256) - 1;
     idtr.base = (uint64_t)&idt;
-
-    tss_set_ist(1, (uint64_t)&exception_stack[sizeof(exception_stack)]);
 
     for (int i = 0; i < 256; i++) {
         idt_set_gate(i, 0, 0, 0);
@@ -78,14 +79,26 @@ void idt_init(void) {
     idt_set_gate(INT_VECTOR_TIMER,    isr32, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_KEYBOARD, isr33, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_SERIAL,   isr36, 0, IDT_GATE_INTERRUPT);
+    idt_built = 1;
+}
 
+void idt_init_cpu(uint32_t cpu_id) {
+    if (cpu_id >= ORTHOX_MAX_CPUS) cpu_id = 0;
+    idt_build_once();
+    tss_set_ist_for_cpu(cpu_id, 1, (uint64_t)&exception_stacks[cpu_id][sizeof(exception_stacks[cpu_id])]);
     __asm__ volatile("lidt %0" : : "m"(idtr));
 }
 
+void idt_init(void) {
+    idt_init_cpu(0);
+}
+
 void interrupt_dispatch(struct interrupt_frame* frame) {
+    kernel_lock_enter();
     if (frame->int_no == INT_VECTOR_PAGE_FAULT) {
         extern void vmm_page_fault_handler(struct interrupt_frame* frame);
         vmm_page_fault_handler(frame);
+        kernel_lock_exit();
         return;
     }
 
@@ -94,6 +107,7 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
         lapic_timer_tick();
         task_on_timer_tick();
         lapic_eoi();
+        kernel_lock_exit();
         return;
     }
     
@@ -102,6 +116,7 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
         keyboard_handler();
         extern void pic_eoi(int irq);
         pic_eoi(1);
+        kernel_lock_exit();
         return;
     }
 
@@ -110,6 +125,7 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
         serial_handler();
         extern void pic_eoi(int irq);
         pic_eoi(4);
+        kernel_lock_exit();
         return;
     }
 
@@ -121,6 +137,7 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
     puts("\r\nRSP: 0x"); puthex(frame->rsp);
     puts(", SS: 0x"); puthex(frame->ss);
     puts("\r\nHALTING...\r\n");
+    kernel_lock_exit();
 
     for (;;) __asm__("hlt");
 }

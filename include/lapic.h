@@ -23,6 +23,7 @@
 #define PIT_COUNT_FOR_TICK    (PIT_FREQ / (1000 / SCHED_TICK_MS))
 
 void lapic_init(void);
+void lapic_init_cpu(void);
 void lapic_eoi(void);
 void lapic_timer_tick(void);
 uint64_t lapic_get_ticks_ms(void);
