@@ -5,6 +5,7 @@
 #include "gdt.h"
 #include "idt.h"
 #include "lapic.h"
+#include "syscall.h"
 
 static struct smp_cpu_info g_smp_cpus[ORTHOX_MAX_CPUS];
 static uint32_t g_smp_cpu_count = 1;
@@ -65,13 +66,6 @@ static void smp_log_cpu_line(const char* prefix, uint32_t cpu_index,
     append_str(buf, &pos, sizeof(buf), "\r\n");
     buf[pos] = '\0';
     puts(buf);
-}
-
-static void smp_ap_idle_loop(void) {
-    __asm__ volatile("sti");
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
 }
 
 void smp_init(struct limine_smp_response* response) {
@@ -135,6 +129,7 @@ static void smp_ap_entry(struct limine_smp_info* info) {
             task_install_cpu_local(cpu_index);
             gdt_init_cpu(cpu_index);
             idt_init_cpu(cpu_index);
+            syscall_init_cpu();
             tss_set_stack_for_cpu(cpu_index, stack_top);
             lapic_init_cpu();
         }
@@ -143,7 +138,7 @@ static void smp_ap_entry(struct limine_smp_info* info) {
     smp_log_cpu_line("[smp] AP online cpu", cpu_index, lapic_id, UINT64_MAX,
                      NULL, " entering idle-hlt");
     __atomic_add_fetch(&g_smp_started_cpu_count, 1, __ATOMIC_SEQ_CST);
-    smp_ap_idle_loop();
+    task_idle_loop(0);
 }
 
 void smp_debug_dump(void) {

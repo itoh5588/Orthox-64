@@ -163,6 +163,7 @@ struct orth_dirent {
 #endif
 
 void syscall_init(void);
+void syscall_init_cpu(void);
 int get_video_info(struct video_info* info);
 uint64_t map_framebuffer(void);
 uint64_t get_ticks_ms(void);

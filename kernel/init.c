@@ -243,9 +243,5 @@ void _start(void) {
         }
     }
 
-    while(1) {
-        net_poll();
-        __asm__ volatile("hlt");
-        kernel_yield();
-    }
+    task_idle_loop(1);
 }

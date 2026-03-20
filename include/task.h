@@ -52,6 +52,7 @@ struct task {
     uint32_t sig_action_flags[32];
     int exit_status;
     task_state_t state;
+    int cpu_affinity;
     uint64_t heap_break;
     uint64_t mmap_end;
     uint64_t user_entry;
@@ -87,5 +88,6 @@ void task_on_timer_tick(void);
 int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t,
                                     const struct elf_info* info,
                                     char* const argv[], char* const envp[]);
+void task_idle_loop(int poll_network);
 
 #endif

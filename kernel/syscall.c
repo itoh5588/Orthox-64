@@ -575,13 +575,17 @@ static int sys_sound_pcm_u8(const uint8_t* samples, uint32_t count, uint32_t sam
     return sound_pcm_play_u8(samples, count, sample_rate);
 }
 
-void syscall_init(void) {
+void syscall_init_cpu(void) {
     uint64_t efer = rdmsr(MSR_EFER);
     wrmsr(MSR_EFER, efer | 1);
     uint64_t star = (0x10ULL << 48) | (0x08ULL << 32);
     wrmsr(MSR_STAR, star);
     wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
     wrmsr(MSR_SFMASK, 0x200);
+}
+
+void syscall_init(void) {
+    syscall_init_cpu();
 }
 
 static uint64_t sys_getpid(void) {

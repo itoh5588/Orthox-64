@@ -7,6 +7,7 @@
 #include "limine.h"
 #include "elf64.h"
 #include "net_socket.h"
+#include "net.h"
 #include "spinlock.h"
 
 static struct cpu_local g_cpu_locals[ORTHOX_MAX_CPUS];
@@ -43,6 +44,10 @@ extern void switch_context(struct task_context* next_ctx, struct task_context* p
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
 extern void fork_child_entry(void);
+
+static void idle_task_entry(void) {
+    task_idle_loop(0);
+}
 
 static inline struct cpu_local* this_cpu(void) {
     return (struct cpu_local*)(uintptr_t)rdmsr(MSR_KERNEL_GS_BASE);
@@ -394,13 +399,16 @@ void task_main(void) {
 void task_init(void) {
     // タスク構造体のサイズに合わせて必要なページを確保
     struct task* t = alloc_task_struct();
+    struct task* idle = task_create_idle(0);
     if (!t) return;
+    if (!idle) return;
     spinlock_init(&g_task_lock);
     uint64_t flags = spin_lock_irqsave(&g_task_lock);
     t->pid = next_pid++;
     t->pgid = t->pid;
     t->sid = t->pid;
     t->state = TASK_RUNNING;
+    t->cpu_affinity = 0;
     t->ctx.cr3 = vmm_get_kernel_pml4_phys();
     uint64_t sp; __asm__ volatile("mov %%rsp, %0" : "=r"(sp));
     t->kstack_top = (sp & ~(PAGE_SIZE - 1)) + PAGE_SIZE; 
@@ -410,7 +418,7 @@ void task_init(void) {
     t->timeslice_ticks = TASK_TIMESLICE_TICKS;
     kernel_strcpy(t->cwd, "/", sizeof(t->cwd));
     struct cpu_local* cpu = &g_cpu_locals[0];
-    init_cpu_local(cpu, 0, t, t, t->kstack_top);
+    init_cpu_local(cpu, 0, t, idle, t->kstack_top);
     task_list = t;
     spin_unlock_irqrestore(&g_task_lock, flags);
     init_console_fds(t);
@@ -426,6 +434,7 @@ struct task* task_create(uint64_t entry, uint64_t user_rsp) {
     t->pgid = t->pid;
     t->sid = t->pid;
     t->state = TASK_READY;
+    t->cpu_affinity = 0;
     t->user_entry = entry;
     t->user_stack = user_rsp;
     t->user_stack_top = USER_STACK_TOP_VADDR;
@@ -467,6 +476,7 @@ struct task* task_create_idle(uint32_t cpu_id) {
     if (!t) return NULL;
     t->pid = 0;
     t->state = TASK_RUNNING;
+    t->cpu_affinity = (int)cpu_id;
     t->ctx.cr3 = vmm_get_kernel_pml4_phys();
     t->mmap_end = 0x4000000000ULL;
     t->timeslice_ticks = TASK_TIMESLICE_TICKS;
@@ -475,7 +485,17 @@ struct task* task_create_idle(uint32_t cpu_id) {
     if (!kstack_phys) return NULL;
     t->kstack_top = (uint64_t)PHYS_TO_VIRT(kstack_phys) + 4 * PAGE_SIZE;
     t->os_stack_ptr = t->kstack_top;
-    t->ctx.rsp = t->kstack_top;
+    uint64_t* sp = (uint64_t*)(t->kstack_top - 8);
+    *sp = (uint64_t)idle_task_entry;
+    *(--sp) = 0x202;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    t->ctx.rsp = (uint64_t)sp;
+    t->ctx.rip = (uint64_t)idle_task_entry;
     t->ctx.cs = 0x08;
     t->ctx.ss = 0x10;
     t->ctx.fxsave_area[0] = 0x7f;
@@ -499,6 +519,7 @@ int task_fork(struct syscall_frame* frame) {
     child->pgid = parent->pgid;
     child->sid = parent->sid;
     child->state = TASK_READY;
+    child->cpu_affinity = parent->cpu_affinity;
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;
     child->user_entry = parent->user_entry;
@@ -551,13 +572,20 @@ void schedule(void) {
     struct task* next = current_task->next;
     if (!next) next = task_list;
     struct task* start = next;
-    while (next->state != TASK_READY && next->state != TASK_RUNNING) {
+    while (next->state != TASK_READY || next->cpu_affinity != (int)cpu->cpu_id) {
         next = next->next;
         if (!next) next = task_list;
         if (next == start) {
+            next = NULL;
+            break;
+        }
+    }
+    if (!next) {
+        if (current_task == cpu->idle_task && current_task->state == TASK_RUNNING) {
             spin_unlock_irqrestore(&g_task_lock, flags);
             return;
         }
+        next = cpu->idle_task;
     }
     if (next == current_task) {
         spin_unlock_irqrestore(&g_task_lock, flags);
@@ -573,4 +601,17 @@ void schedule(void) {
     wrmsr(MSR_FS_BASE, next->user_fs_base);
     spin_unlock_irqrestore(&g_task_lock, flags);
     switch_context(&next->ctx, &prev->ctx);
+}
+
+void task_idle_loop(int poll_network) {
+    __asm__ volatile("sti");
+    for (;;) {
+        if (poll_network) {
+            net_poll();
+        }
+        __asm__ volatile("hlt");
+        if (task_consume_resched()) {
+            kernel_yield();
+        }
+    }
 }
