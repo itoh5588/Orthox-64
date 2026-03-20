@@ -61,6 +61,205 @@ static inline uint64_t rdmsr(uint32_t msr) {
     return ((uint64_t)high << 32) | low;
 }
 
+static inline void outb_u8(uint16_t port, uint8_t value) {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline uint8_t inb_u8(uint16_t port) {
+    uint8_t value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
+static inline uint64_t rdtsc_u64(void) {
+    uint32_t lo;
+    uint32_t hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void cpuid_leaf(uint32_t leaf, uint32_t subleaf,
+    uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx) {
+    uint32_t a;
+    uint32_t b;
+    uint32_t c;
+    uint32_t d;
+    __asm__ volatile("cpuid"
+        : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+        : "a"(leaf), "c"(subleaf));
+    if (eax) *eax = a;
+    if (ebx) *ebx = b;
+    if (ecx) *ecx = c;
+    if (edx) *edx = d;
+}
+
+static int cpu_has_rdrand(void) {
+    uint32_t eax;
+    uint32_t ebx;
+    uint32_t ecx;
+    uint32_t edx;
+    cpuid_leaf(1, 0, &eax, &ebx, &ecx, &edx);
+    (void)eax;
+    (void)ebx;
+    (void)edx;
+    return (ecx & (1U << 30)) != 0;
+}
+
+static int rdrand_u64(uint64_t* out) {
+    unsigned char ok;
+    uint64_t value;
+    if (!out) return 0;
+    __asm__ volatile("rdrand %0; setc %1" : "=r"(value), "=qm"(ok));
+    if (!ok) return 0;
+    *out = value;
+    return 1;
+}
+
+struct orth_timeval_k {
+    int64_t tv_sec;
+    int64_t tv_usec;
+};
+
+struct orth_timespec_k {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+
+static int is_leap_year(int year) {
+    if ((year % 4) != 0) return 0;
+    if ((year % 100) != 0) return 1;
+    return (year % 400) == 0;
+}
+
+static uint32_t days_before_month(int year, int month) {
+    static const uint16_t base[12] = {
+        0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+    };
+    uint32_t days = 0;
+    if (month < 1) month = 1;
+    if (month > 12) month = 12;
+    days = base[month - 1];
+    if (month > 2 && is_leap_year(year)) days++;
+    return days;
+}
+
+static uint64_t days_since_year_zero(int year, int month, int day) {
+    uint64_t y = (uint64_t)year;
+    uint64_t days = y * 365ULL + y / 4ULL - y / 100ULL + y / 400ULL;
+    days += days_before_month(year, month);
+    if (day > 0) days += (uint64_t)(day - 1);
+    return days;
+}
+
+static uint8_t cmos_read(uint8_t reg) {
+    outb_u8(0x70, reg);
+    return inb_u8(0x71);
+}
+
+static int cmos_bcd_to_bin(int value) {
+    return ((value >> 4) * 10) + (value & 0x0F);
+}
+
+static uint64_t sys_realtime_seconds(void) {
+    int second;
+    int minute;
+    int hour;
+    int day;
+    int month;
+    int year;
+    int regb;
+    uint64_t days;
+
+    while (cmos_read(0x0A) & 0x80) {
+    }
+
+    second = cmos_read(0x00);
+    minute = cmos_read(0x02);
+    hour = cmos_read(0x04);
+    day = cmos_read(0x07);
+    month = cmos_read(0x08);
+    year = cmos_read(0x09);
+    regb = cmos_read(0x0B);
+
+    if ((regb & 0x04) == 0) {
+        second = cmos_bcd_to_bin(second);
+        minute = cmos_bcd_to_bin(minute);
+        hour = cmos_bcd_to_bin(hour & 0x7F) | (hour & 0x80);
+        day = cmos_bcd_to_bin(day);
+        month = cmos_bcd_to_bin(month);
+        year = cmos_bcd_to_bin(year);
+    }
+
+    if ((regb & 0x02) == 0 && (hour & 0x80)) {
+        hour = ((hour & 0x7F) + 12) % 24;
+    }
+
+    year += (year >= 70) ? 1900 : 2000;
+    days = days_since_year_zero(year, month, day);
+    if (days < 719528ULL) return 0;
+    return (days - 719528ULL) * 86400ULL
+        + (uint64_t)hour * 3600ULL
+        + (uint64_t)minute * 60ULL
+        + (uint64_t)second;
+}
+
+static int sys_gettimeofday(struct orth_timeval_k* tv) {
+    if (!tv) return -1;
+    tv->tv_sec = (int64_t)sys_realtime_seconds();
+    tv->tv_usec = 0;
+    return 0;
+}
+
+static int sys_clock_gettime(int clock_id, struct orth_timespec_k* ts) {
+    uint64_t ms;
+    if (!ts) return -1;
+    if (clock_id == 0) {
+        ts->tv_sec = (int64_t)sys_realtime_seconds();
+        ts->tv_nsec = 0;
+        return 0;
+    }
+    if (clock_id != 1) return -1;
+    ms = lapic_get_ticks_ms();
+    ts->tv_sec = (int64_t)(ms / 1000ULL);
+    ts->tv_nsec = (int64_t)((ms % 1000ULL) * 1000000ULL);
+    return 0;
+}
+
+static int64_t sys_getrandom(void* buf, size_t len, unsigned flags) {
+    uint8_t* out = (uint8_t*)buf;
+    static uint64_t fallback_state = 0;
+    uint64_t mix = 0;
+    size_t off = 0;
+    (void)flags;
+    if (!out) return -1;
+    if (fallback_state == 0) {
+        fallback_state = rdtsc_u64() ^ (lapic_get_ticks_ms() << 17) ^ 0x9E3779B97F4A7C15ULL;
+    }
+    while (off < len) {
+        uint64_t word = 0;
+        size_t take;
+        if (cpu_has_rdrand() && rdrand_u64(&word)) {
+            mix ^= word;
+        } else {
+            fallback_state ^= fallback_state >> 12;
+            fallback_state ^= fallback_state << 25;
+            fallback_state ^= fallback_state >> 27;
+            mix ^= fallback_state * 0x2545F4914F6CDD1DULL;
+        }
+        mix ^= rdtsc_u64();
+        mix ^= lapic_get_ticks_ms() << 9;
+        mix ^= (uint64_t)(uintptr_t)get_current_task();
+        word = mix;
+        take = len - off;
+        if (take > sizeof(word)) take = sizeof(word);
+        for (size_t i = 0; i < take; i++) {
+            out[off + i] = (uint8_t)(word >> (i * 8));
+        }
+        off += take;
+    }
+    return (int64_t)len;
+}
+
 int64_t sys_write_serial(const char* buf, size_t count) {
     for (size_t i = 0; i < count; i++) {
         if (buf[i] == '\n') {
@@ -844,8 +1043,14 @@ void syscall_dispatch(struct syscall_frame* frame) {
         case SYS_KILL:
             frame->rax = (uint64_t)sys_kill((int)frame->rdi, (int)frame->rsi);
             break;
+        case SYS_GETTIMEOFDAY:
+            frame->rax = (uint64_t)sys_gettimeofday((struct orth_timeval_k*)frame->rdi);
+            break;
         case SYS_GETPGRP:
             frame->rax = (uint64_t)sys_getpgrp();
+            break;
+        case SYS_CLOCK_GETTIME:
+            frame->rax = (uint64_t)sys_clock_gettime((int)frame->rdi, (struct orth_timespec_k*)frame->rsi);
             break;
         case SYS_SETPGID:
             frame->rax = (uint64_t)sys_setpgid((int)frame->rdi, (int)frame->rsi);
@@ -931,6 +1136,9 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case SYS_SET_TID_ADDRESS:
             frame->rax = (uint64_t)sys_set_tid_address((int*)frame->rdi);
+            break;
+        case SYS_GETRANDOM:
+            frame->rax = (uint64_t)sys_getrandom((void*)frame->rdi, (size_t)frame->rsi, (unsigned)frame->rdx);
             break;
         case SYS_EXIT_GROUP:
             sys_exit((int)frame->rdi);

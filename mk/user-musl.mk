@@ -1,5 +1,5 @@
 MUSL_USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 -Wno-shift-op-parentheses \
-	-I$(MUSL_SYSROOT)/include -Iinclude -MMD -MP
+	-I$(MUSL_SYSROOT)/include -Iinclude -Iports/BearSSL/inc -MMD -MP
 
 $(USER_BUILD_DIR)/crt0.o: user/crt0_musl.S
 	@mkdir -p $(@D)
@@ -43,6 +43,9 @@ user/pipetest.elf: $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/pipe_test.o $(USER
 	$(LD) $(USER_LDFLAGS) $^ $(LIBGCC) -o $@
 
 user/%.elf: $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/%.o $(USER_COMMON_OBJS) $(LIBC)
+	$(LD) $(USER_LDFLAGS) $^ $(LIBGCC) -o $@
+
+$(HTTPS_FETCH_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/httpsfetch.o $(USER_COMMON_OBJS) $(LIBC) $(BEARSSL_A)
 	$(LD) $(USER_LDFLAGS) $^ $(LIBGCC) -o $@
 
 $(MUSL_USER_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/user_test.o $(USER_COMMON_OBJS) $(LIBC)

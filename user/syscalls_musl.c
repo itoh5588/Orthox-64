@@ -11,10 +11,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/random.h>
 #include <sys/times.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <utime.h>
 #include <unistd.h>
 #ifdef sa_handler
@@ -208,6 +210,30 @@ int _pipe(int pipefd[2]) { return (int)orth_syscall3(SYS_PIPE, (uint64_t)pipefd,
 int pipe2(int pipefd[2], int flags) { return (int)orth_syscall3(SYS_PIPE2, (uint64_t)pipefd, (uint64_t)flags, 0); }
 int _dup2(int oldfd, int newfd) { return (int)orth_syscall3(SYS_DUP2, (uint64_t)oldfd, (uint64_t)newfd, 0); }
 int _kill(int pid, int sig) { return (int)orth_syscall3(SYS_KILL, (uint64_t)pid, (uint64_t)sig, 0); }
+int gettimeofday(struct timeval *tv, void *tz) {
+    int ret = (int)orth_syscall3(SYS_GETTIMEOFDAY, (uint64_t)tv, (uint64_t)tz, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+int clock_gettime(clockid_t clock_id, struct timespec *tp) {
+    int ret = (int)orth_syscall3(SYS_CLOCK_GETTIME, (uint64_t)clock_id, (uint64_t)tp, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+ssize_t getrandom(void *buf, size_t buflen, unsigned flags) {
+    ssize_t ret = (ssize_t)orth_syscall3(SYS_GETRANDOM, (uint64_t)buf, (uint64_t)buflen, (uint64_t)flags);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return ret;
+}
 int socket(int domain, int type, int protocol) { return (int)orth_syscall3(SYS_SOCKET, (uint64_t)domain, (uint64_t)type, (uint64_t)protocol); }
 int connect(int fd, const struct sockaddr *addr, socklen_t addrlen) { return (int)orth_syscall3(SYS_CONNECT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
 int accept(int fd, struct sockaddr *addr, socklen_t *addrlen) { return (int)orth_syscall3(SYS_ACCEPT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }

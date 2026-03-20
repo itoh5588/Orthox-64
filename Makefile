@@ -78,6 +78,7 @@ WADHEAD_TEST_ELF = user/wadheadtest.elf
 TICKRATE_TEST_ELF = user/tickratecheck.elf
 UDP_ECHO_TEST_ELF = user/udpecho.elf
 UDP_NB_TEST_ELF = user/udpnb.elf
+HTTPS_FETCH_ELF = user/httpsfetch.elf
 CC1_ELF = ports/gcc-4.7.4/build/gcc/cc1
 CC1_SRC_MUSL = ports/gcc-4.7.4/build-musl/gcc/cc1
 CC1_MUSL_ELF = user/cc1-musl.elf
@@ -131,6 +132,9 @@ LWIP_IPV4_SRCS = \
 	ports/lwip/src/core/ipv4/ip4_addr.c
 LWIP_NETIF_SRCS = ports/lwip/src/netif/ethernet.c
 LWIP_SRCS = $(LWIP_CORE_SRCS) $(LWIP_IPV4_SRCS) $(LWIP_NETIF_SRCS)
+BEARSSL_SRCS = $(shell find ports/BearSSL/src -type f -name '*.c' 2>/dev/null)
+BEARSSL_OBJS = $(patsubst ports/BearSSL/src/%.c, $(BUILD_DIR)/bearssl/%.o, $(BEARSSL_SRCS))
+BEARSSL_A = $(BUILD_DIR)/bearssl/libbearssl.a
 
 # オブジェクトファイル (build ディレクトリ以下に配置)
 OBJS = $(patsubst kernel/%.c, $(BUILD_DIR)/kernel/%.o, $(filter %.c, $(SRCS))) \
@@ -231,6 +235,14 @@ $(BUILD_DIR)/lwip/%.o: ports/lwip/src/%.c
 	@mkdir -p $(@D)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/bearssl/%.o: ports/BearSSL/src/%.c
+	@mkdir -p $(@D)
+	$(CC) -target $(TARGET) -std=c99 -ffreestanding -fno-PIE -O2 -Iports/BearSSL/inc -Iports/BearSSL/src -I$(MUSL_SYSROOT)/include -MMD -MP -c $< -o $@
+
+$(BEARSSL_A): $(BEARSSL_OBJS)
+	@mkdir -p $(@D)
+	ar rcs $@ $^
+
 limine/limine:
 	CC=cc CFLAGS="-O2 -pipe" LDFLAGS="" $(MAKE) -C limine limine
 
@@ -238,7 +250,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF)
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF)
 	mkdir -p rootfs/bin
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
@@ -246,6 +258,7 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(MUSL_SYSROOT)/lib/libc.a rootfs/libc.a
 	cp $(UDP_ECHO_TEST_ELF) rootfs/bin/udpecho.elf
 	cp $(UDP_NB_TEST_ELF) rootfs/bin/udpnb.elf
+	cp $(HTTPS_FETCH_ELF) rootfs/bin/httpsfetch.elf
 	# Remove old bin-musl if it exists to avoid confusion
 	rm -rf rootfs/bin-musl
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .

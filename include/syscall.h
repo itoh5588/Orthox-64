@@ -38,6 +38,7 @@
 #define SYS_WAIT4   61
 #define SYS_KILL    62
 #define SYS_FCNTL   72
+#define SYS_GETTIMEOFDAY 96
 #define SYS_GETCWD  79
 #define SYS_CHDIR   80
 #define SYS_FCHDIR  81
@@ -53,6 +54,7 @@
 #define SYS_FUTEX   202
 #define SYS_GETDENTS64 217
 #define SYS_SET_TID_ADDRESS 218
+#define SYS_CLOCK_GETTIME 228
 #define SYS_EXIT_GROUP 231
 #define SYS_OPENAT  257
 #define SYS_MKDIRAT 258
@@ -60,6 +62,7 @@
 #define SYS_UNLINKAT 263
 #define SYS_UTIMENSAT 280
 #define SYS_PIPE2   293
+#define SYS_GETRANDOM 318
 
 #define ARCH_SET_FS 0x1002
 #define ARCH_GET_FS 0x1003
