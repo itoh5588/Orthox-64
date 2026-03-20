@@ -8,16 +8,10 @@
 #include "elf64.h"
 #include "net_socket.h"
 
-struct cpu_data {
-    uint64_t kernel_stack;
-    uint64_t user_stack;
-};
-
-static struct cpu_data g_cpu_data;
-struct task* current_task = NULL;
+static struct cpu_local g_cpu_locals[ORTHOX_MAX_CPUS];
 struct task* task_list = NULL;
 static int next_pid = 1;
-static volatile int g_resched_pending = 0;
+static uint32_t g_cpu_count = 1;
 
 #define TASK_TIMESLICE_TICKS 5
 
@@ -37,26 +31,75 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
     __asm__ volatile("wrmsr" : : "c"(msr), "a"(low), "d"(high));
 }
 
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t low, high;
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return ((uint64_t)high << 32) | low;
+}
+
 extern void switch_context(struct task_context* next_ctx, struct task_context* prev_ctx);
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
 extern void fork_child_entry(void);
 
+static inline struct cpu_local* this_cpu(void) {
+    return (struct cpu_local*)(uintptr_t)rdmsr(MSR_KERNEL_GS_BASE);
+}
+
+struct cpu_local* get_cpu_local(void) {
+    return this_cpu();
+}
+
+struct cpu_local* get_cpu_local_by_id(uint32_t cpu_id) {
+    if (cpu_id >= g_cpu_count || cpu_id >= ORTHOX_MAX_CPUS) return NULL;
+    return &g_cpu_locals[cpu_id];
+}
+
+void task_set_cpu_count(uint32_t cpu_count) {
+    if (cpu_count == 0) cpu_count = 1;
+    if (cpu_count > ORTHOX_MAX_CPUS) cpu_count = ORTHOX_MAX_CPUS;
+    g_cpu_count = cpu_count;
+}
+
+uint32_t task_get_cpu_count(void) {
+    return g_cpu_count;
+}
+
+static inline struct task* get_current_task_raw(void) {
+    struct cpu_local* cpu = this_cpu();
+    return cpu ? cpu->current_task : NULL;
+}
+
+static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
+                           struct task* current, struct task* idle,
+                           uint64_t kernel_stack) {
+    if (!cpu) return;
+    cpu->cpu_id = cpu_id;
+    cpu->current_task = current;
+    cpu->idle_task = idle;
+    cpu->resched_pending = 0;
+    cpu->kernel_stack = kernel_stack;
+    cpu->user_stack = 0;
+}
+
 struct task* get_current_task(void) {
-    return current_task;
+    return get_current_task_raw();
 }
 
 void task_request_resched(void) {
-    g_resched_pending = 1;
+    struct cpu_local* cpu = this_cpu();
+    if (cpu) cpu->resched_pending = 1;
 }
 
 int task_consume_resched(void) {
-    if (!g_resched_pending) return 0;
-    g_resched_pending = 0;
+    struct cpu_local* cpu = this_cpu();
+    if (!cpu || !cpu->resched_pending) return 0;
+    cpu->resched_pending = 0;
     return 1;
 }
 
 void task_on_timer_tick(void) {
+    struct task* current_task = get_current_task_raw();
     if (!current_task || current_task->state != TASK_RUNNING) return;
     if (current_task->timeslice_ticks > 1) {
         current_task->timeslice_ticks--;
@@ -265,7 +308,7 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
         puts("Exec: File not found: "); puts(path); puts("\r\n");
         return -1;
     }
-    struct task* t = current_task;
+    struct task* t = get_current_task_raw();
     void* pml4_phys = pmm_alloc(1);
     uint64_t* pml4_virt = (uint64_t*)PHYS_TO_VIRT(pml4_phys);
     uint64_t* kernel_pml4 = vmm_get_kernel_pml4();
@@ -340,12 +383,12 @@ void task_init(void) {
     t->user_fs_base = 0;
     t->timeslice_ticks = TASK_TIMESLICE_TICKS;
     kernel_strcpy(t->cwd, "/", sizeof(t->cwd));
-    current_task = t;
+    struct cpu_local* cpu = &g_cpu_locals[0];
+    init_cpu_local(cpu, 0, t, t, t->kstack_top);
     task_list = t;
     init_console_fds(t);
-    g_cpu_data.kernel_stack = t->kstack_top;
-    wrmsr(MSR_GS_BASE, (uintptr_t)&g_cpu_data);
-    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)&g_cpu_data);
+    wrmsr(MSR_GS_BASE, (uintptr_t)cpu);
+    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
     puts("Task system initialized.\r\n");
 }
 
@@ -394,7 +437,7 @@ struct task* task_create(uint64_t entry, uint64_t user_rsp) {
 }
 
 int task_fork(struct syscall_frame* frame) {
-    struct task* parent = current_task;
+    struct task* parent = get_current_task_raw();
     int task_pages = (sizeof(struct task) + PAGE_SIZE - 1) / PAGE_SIZE;
     void* child_phys = pmm_alloc(task_pages);
     struct task* child = (struct task*)PHYS_TO_VIRT(child_phys);
@@ -448,6 +491,8 @@ int task_fork(struct syscall_frame* frame) {
 }
 
 void schedule(void) {
+    struct cpu_local* cpu = this_cpu();
+    struct task* current_task = cpu ? cpu->current_task : NULL;
     if (!current_task) return;
     struct task* next = current_task->next;
     if (!next) next = task_list;
@@ -460,11 +505,11 @@ void schedule(void) {
     if (next == current_task) return;
     struct task* prev = current_task;
     if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
-    current_task = next;
+    cpu->current_task = next;
     next->state = TASK_RUNNING;
     if (next->timeslice_ticks <= 0) next->timeslice_ticks = TASK_TIMESLICE_TICKS;
     tss_set_stack(next->kstack_top);
-    g_cpu_data.kernel_stack = next->kstack_top;
+    cpu->kernel_stack = next->kstack_top;
     wrmsr(MSR_FS_BASE, next->user_fs_base);
     switch_context(&next->ctx, &prev->ctx);
 }

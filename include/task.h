@@ -14,6 +14,20 @@ typedef enum {
     TASK_DEAD
 } task_state_t;
 
+struct task;
+
+#define ORTHOX_MAX_CPUS 64
+
+struct cpu_local {
+    uint64_t kernel_stack;
+    uint64_t user_stack;
+    uint32_t cpu_id;
+    uint32_t reserved;
+    struct task* current_task;
+    struct task* idle_task;
+    volatile int resched_pending;
+};
+
 struct task_context {
     uint64_t cr3, rip, rflags, reserved1; // 0, 8, 16, 24
     uint64_t cs, ss, fs, gs;             // 32, 40, 48, 56
@@ -55,8 +69,12 @@ struct task {
 };
 
 void task_init(void);
+void task_set_cpu_count(uint32_t cpu_count);
+uint32_t task_get_cpu_count(void);
+struct cpu_local* get_cpu_local_by_id(uint32_t cpu_id);
 struct task* task_create(uint64_t entry, uint64_t user_rsp);
 void schedule(void);
+struct cpu_local* get_cpu_local(void);
 struct task* get_current_task(void);
 void task_request_resched(void);
 int task_consume_resched(void);

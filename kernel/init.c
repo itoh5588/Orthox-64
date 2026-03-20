@@ -9,6 +9,7 @@
 #include "syscall.h"
 #include "elf64.h"
 #include "task.h"
+#include "smp.h"
 #include "lapic.h"
 #include "pci.h"
 #include "net.h"
@@ -41,6 +42,12 @@ volatile struct limine_framebuffer_request framebuffer_request = {
     .revision = 0
 };
 
+volatile struct limine_smp_request smp_request = {
+    .id = LIMINE_SMP_REQUEST,
+    .revision = 0,
+    .flags = 0
+};
+
 extern void sys_brk_init(uint64_t initial_break);
 
 static inline void outb(uint16_t port, uint8_t val) {
@@ -69,6 +76,20 @@ void puthex(uint64_t v) {
     for (int i = 60; i >= 0; i -= 4) {
         outb(0x3f8, hex[(v >> i) & 0xF]);
     }
+}
+
+static void putdec(uint64_t v) {
+    char buf[21];
+    int i = 0;
+    if (v == 0) {
+        outb(0x3f8, '0');
+        return;
+    }
+    while (v && i < (int)sizeof(buf)) {
+        buf[i++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (i--) outb(0x3f8, buf[i]);
 }
 
 static void enable_sse(void) {
@@ -112,6 +133,10 @@ void _start(void) {
         pci_init();
         net_init();
         usb_init();
+        smp_init(smp_request.response);
+        puts("SMP CPUs detected: ");
+        putdec(smp_get_cpu_count());
+        puts("\r\n");
 
         uint64_t* pml4 = vmm_get_kernel_pml4();
         struct limine_kernel_address_response* kaddr = kernel_address_request.response;
