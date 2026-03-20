@@ -32,6 +32,7 @@ void idt_set_gate(uint8_t num, void* handler, uint8_t ist, uint8_t type);
 #define INT_VECTOR_TIMER      32
 #define INT_VECTOR_KEYBOARD   33
 #define INT_VECTOR_SERIAL     36
+#define INT_VECTOR_RESCHED    48
 
 // type_attributes の定義
 #define IDT_GATE_INTERRUPT 0x8E // Present, Ring 0, Interrupt Gate

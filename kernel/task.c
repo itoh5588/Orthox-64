@@ -8,6 +8,7 @@
 #include "elf64.h"
 #include "net_socket.h"
 #include "net.h"
+#include "smp.h"
 #include "spinlock.h"
 
 static struct cpu_local g_cpu_locals[ORTHOX_MAX_CPUS];
@@ -127,7 +128,12 @@ void task_request_resched(void) {
 
 void task_request_resched_cpu(uint32_t cpu_id) {
     struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
-    if (cpu) cpu->resched_pending = 1;
+    struct cpu_local* self = this_cpu();
+    if (!cpu) return;
+    cpu->resched_pending = 1;
+    if (!self || self->cpu_id != cpu_id) {
+        smp_send_resched_ipi(cpu_id);
+    }
 }
 
 int task_consume_resched(void) {

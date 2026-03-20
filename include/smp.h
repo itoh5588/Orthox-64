@@ -20,5 +20,7 @@ void smp_debug_dump(void);
 void smp_start_aps(void);
 uint32_t smp_get_started_cpu_count(void);
 int smp_wait_for_aps(uint32_t spin_limit);
+void smp_send_resched_ipi(uint32_t cpu_id);
+void smp_send_resched_ipi_selftest(void);
 
 #endif

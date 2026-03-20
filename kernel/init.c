@@ -195,6 +195,7 @@ void _start(void) {
         puts("[smp] started_cpus=");
         putdec(smp_get_started_cpu_count());
         puts("\r\n");
+        smp_send_resched_ipi_selftest();
 
         if (module_request.response && module_request.response->module_count > 0) {
             struct limine_file* module = NULL;

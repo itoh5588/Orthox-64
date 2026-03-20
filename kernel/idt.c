@@ -21,6 +21,7 @@ static struct idt_entry idt[256];
 static struct idt_ptr idtr;
 static uint8_t exception_stacks[ORTHOX_MAX_CPUS][8192] __attribute__((aligned(16)));
 static int idt_built = 0;
+static uint8_t resched_ipi_seen[ORTHOX_MAX_CPUS];
 
 extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
 extern void isr4();  extern void isr5();  extern void isr6();  extern void isr7();
@@ -31,6 +32,7 @@ extern void isr20(); extern void isr21();
 extern void isr32();
 extern void isr33();
 extern void isr36();
+extern void isr48();
 
 void idt_set_gate(uint8_t num, void* handler, uint8_t ist, uint8_t type) {
     uint64_t addr = (uint64_t)handler;
@@ -79,6 +81,7 @@ static void idt_build_once(void) {
     idt_set_gate(INT_VECTOR_TIMER,    isr32, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_KEYBOARD, isr33, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_SERIAL,   isr36, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(INT_VECTOR_RESCHED,  isr48, 0, IDT_GATE_INTERRUPT);
     idt_built = 1;
 }
 
@@ -125,6 +128,19 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
         serial_handler();
         extern void pic_eoi(int irq);
         pic_eoi(4);
+        kernel_lock_exit();
+        return;
+    }
+
+    if (frame->int_no == INT_VECTOR_RESCHED) {
+        struct cpu_local* cpu = get_cpu_local();
+        if (cpu && cpu->cpu_id < ORTHOX_MAX_CPUS && !resched_ipi_seen[cpu->cpu_id]) {
+            resched_ipi_seen[cpu->cpu_id] = 1;
+            puts("[smp] cpu");
+            puthex((uint64_t)cpu->cpu_id);
+            puts(" resched IPI received\r\n");
+        }
+        lapic_eoi();
         kernel_lock_exit();
         return;
     }

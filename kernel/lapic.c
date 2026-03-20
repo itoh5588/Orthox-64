@@ -52,6 +52,15 @@ static uint32_t lapic_read(uint32_t reg) {
     return lapic_base[reg >> 2];
 }
 
+void lapic_send_ipi(uint32_t lapic_id, uint8_t vector) {
+    if (!lapic_base) return;
+    lapic_write(LAPIC_REG_ICR_HIGH, lapic_id << 24);
+    lapic_write(LAPIC_REG_ICR_LOW, vector);
+    while (lapic_read(LAPIC_REG_ICR_LOW) & (1U << 12)) {
+        __asm__ volatile("pause");
+    }
+}
+
 void lapic_eoi(void) {
     lapic_write(LAPIC_REG_EOI, 0);
 }

@@ -8,6 +8,8 @@
 // LAPIC レジスタオフセット
 #define LAPIC_REG_EOI         0x0B0
 #define LAPIC_REG_SVR         0x0F0
+#define LAPIC_REG_ICR_LOW     0x300
+#define LAPIC_REG_ICR_HIGH    0x310
 #define LAPIC_REG_LVT_TIMER   0x320
 #define LAPIC_REG_TIMER_INIT  0x380
 #define LAPIC_REG_TIMER_CUR   0x390
@@ -28,5 +30,6 @@ void lapic_eoi(void);
 void lapic_timer_tick(void);
 uint64_t lapic_get_ticks_ms(void);
 uint64_t lapic_get_cpu_ticks_ms(uint32_t cpu_id);
+void lapic_send_ipi(uint32_t lapic_id, uint8_t vector);
 
 #endif

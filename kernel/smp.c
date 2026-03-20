@@ -205,3 +205,18 @@ int smp_wait_for_aps(uint32_t spin_limit) {
     }
     return -1;
 }
+
+void smp_send_resched_ipi(uint32_t cpu_id) {
+    const struct smp_cpu_info* cpu = smp_get_cpu_info(cpu_id);
+    if (!cpu || !cpu->started) return;
+    lapic_send_ipi(cpu->lapic_id, INT_VECTOR_RESCHED);
+}
+
+void smp_send_resched_ipi_selftest(void) {
+    if (g_smp_cpu_count <= 1) return;
+    puts("[smp] sending resched IPI self-test\r\n");
+    for (uint32_t i = 0; i < g_smp_cpu_count; i++) {
+        if (!g_smp_cpus[i].started || g_smp_cpus[i].is_bsp) continue;
+        smp_send_resched_ipi(i);
+    }
+}
