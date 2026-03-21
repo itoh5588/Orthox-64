@@ -250,7 +250,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF)
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF)
 	mkdir -p rootfs/bin
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
@@ -259,6 +259,8 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(UDP_ECHO_TEST_ELF) rootfs/bin/udpecho.elf
 	cp $(UDP_NB_TEST_ELF) rootfs/bin/udpnb.elf
 	cp $(HTTPS_FETCH_ELF) rootfs/bin/httpsfetch.elf
+	cp $(TIME_TEST_ELF) rootfs/bin/testtime.elf
+	cp $(TICKRATE_TEST_ELF) rootfs/bin/tickratecheck.elf
 	# Remove old bin-musl if it exists to avoid confusion
 	rm -rf rootfs/bin-musl
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .

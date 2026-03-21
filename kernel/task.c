@@ -10,6 +10,7 @@
 #include "net.h"
 #include "smp.h"
 #include "spinlock.h"
+#include "lapic.h"
 
 static struct cpu_local g_cpu_locals[ORTHOX_MAX_CPUS];
 struct task* task_list = NULL;
@@ -145,6 +146,20 @@ int task_consume_resched(void) {
 
 void task_on_timer_tick(void) {
     struct task* current_task = get_current_task_raw();
+    struct cpu_local* cpu = this_cpu();
+    if (cpu && cpu->cpu_id == 0) {
+        uint64_t now = lapic_get_ticks_ms();
+        uint64_t flags = spin_lock_irqsave(&g_task_lock);
+        struct task* t = task_list;
+        while (t) {
+            if (t->state == TASK_SLEEPING && t->sleep_until_ms != 0 && t->sleep_until_ms <= now) {
+                t->sleep_until_ms = 0;
+                task_wake(t);
+            }
+            t = t->next;
+        }
+        spin_unlock_irqrestore(&g_task_lock, flags);
+    }
     if (!current_task || current_task->state != TASK_RUNNING) return;
     if (current_task->timeslice_ticks > 1) {
         current_task->timeslice_ticks--;
@@ -464,6 +479,7 @@ int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id) {
 
 int task_mark_sleeping(struct task* t) {
     if (!t) return -1;
+    t->sleep_until_ms = 0;
     t->state = TASK_SLEEPING;
     return 0;
 }
@@ -478,6 +494,7 @@ int task_mark_zombie(struct task* t, int exit_status) {
 int task_wake(struct task* t) {
     if (!t) return -1;
     if (t->state == TASK_ZOMBIE || t->state == TASK_DEAD) return -1;
+    t->sleep_until_ms = 0;
     task_mark_ready_on_cpu(t, (uint32_t)t->cpu_affinity);
     task_request_resched_cpu((uint32_t)t->cpu_affinity);
     return 0;

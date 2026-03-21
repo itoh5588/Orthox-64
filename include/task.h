@@ -64,6 +64,7 @@ struct task {
     uint64_t user_argv;
     uint64_t user_envp;
     uint64_t user_fs_base;
+    uint64_t sleep_until_ms;
     int timeslice_ticks;
     char cwd[256];
     file_descriptor_t fds[MAX_FDS];

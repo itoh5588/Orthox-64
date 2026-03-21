@@ -558,8 +558,11 @@ static uint64_t sys_get_ticks_ms(void) {
 }
 
 static int sys_sleep_ms(uint64_t ms) {
-    uint64_t start = lapic_get_ticks_ms();
-    while ((lapic_get_ticks_ms() - start) < ms) {
+    struct task* current = get_current_task();
+    if (!current) return -1;
+    task_mark_sleeping(current);
+    current->sleep_until_ms = lapic_get_ticks_ms() + ms;
+    while (current->state == TASK_SLEEPING) {
         kernel_yield();
     }
     return 0;

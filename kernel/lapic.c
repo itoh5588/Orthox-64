@@ -67,9 +67,11 @@ void lapic_eoi(void) {
 
 void lapic_timer_tick(void) {
     struct cpu_local* cpu = get_cpu_local();
-    g_ticks_ms += SCHED_TICK_MS;
     if (cpu && cpu->cpu_id < ORTHOX_MAX_CPUS) {
         uint32_t cpu_id = cpu->cpu_id;
+        if (cpu_id == 0) {
+            g_ticks_ms += SCHED_TICK_MS;
+        }
         g_ticks_ms_per_cpu[cpu_id] += SCHED_TICK_MS;
         if (cpu_id != 0 && !g_timer_seen[cpu_id]) {
             char buf[96];

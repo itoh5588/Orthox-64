@@ -46,6 +46,7 @@ static volatile int g_dns_pending = 0;
 static volatile int g_dns_done = 0;
 static volatile err_t g_dns_result = ERR_OK;
 static ip_addr_t g_dns_addr;
+static struct task* g_dns_waiter = 0;
 
 static err_t orthox_lwip_output(struct netif* netif, struct pbuf* p);
 static err_t orthox_lwip_init_netif(struct netif* netif);
@@ -56,6 +57,14 @@ static u8_t orthox_lwip_icmp_recv(void* arg, struct raw_pcb* pcb, struct pbuf* p
 static void orthox_lwip_ping_gateway(void);
 static void orthox_lwip_udp_echo_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip_addr_t* addr, u16_t port);
 static void orthox_lwip_dns_found(const char* name, const ip_addr_t* ipaddr, void* arg);
+
+static void orthox_lwip_wake_dns_waiter(void) {
+    if (!g_dns_waiter) return;
+    if (g_dns_waiter->state == TASK_SLEEPING) {
+        task_wake(g_dns_waiter);
+    }
+    g_dns_waiter = 0;
+}
 
 static void putdec_u8(uint8_t v) {
     char buf[4];
@@ -241,6 +250,7 @@ static void orthox_lwip_dns_found(const char* name, const ip_addr_t* ipaddr, voi
     }
     g_dns_done = 1;
     g_dns_pending = 0;
+    orthox_lwip_wake_dns_waiter();
 }
 
 static err_t orthox_lwip_output(struct netif* netif, struct pbuf* p) {
@@ -405,6 +415,7 @@ int lwip_port_is_ready(void) {
 }
 
 int lwip_port_lookup_ipv4(const char* hostname, uint32_t* out_addr) {
+    struct task* current = get_current_task();
     if (!g_lwip_ready || !g_dhcp_ready || !hostname || !out_addr) return -1;
     if (g_dns_pending) return -1;
 
@@ -423,7 +434,14 @@ int lwip_port_lookup_ipv4(const char* hostname, uint32_t* out_addr) {
     }
 
     while (!g_dns_done) {
+        if (current) {
+            task_mark_sleeping(current);
+            g_dns_waiter = current;
+        }
         kernel_yield();
+        if (g_dns_waiter == current) {
+            g_dns_waiter = 0;
+        }
     }
     if (g_dns_result != ERR_OK || !IP_IS_V4(&g_dns_addr)) return -1;
     *out_addr = ip_2_ip4(&g_dns_addr)->addr;
