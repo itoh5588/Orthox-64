@@ -21,6 +21,7 @@ struct task;
 struct cpu_local {
     uint64_t kernel_stack;
     uint64_t user_stack;
+    struct cpu_local* self;
     uint32_t cpu_id;
     uint32_t reserved;
     struct task* current_task;

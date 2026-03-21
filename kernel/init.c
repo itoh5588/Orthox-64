@@ -235,7 +235,6 @@ void _start(void) {
                     user_task->user_entry = (uint64_t)info.entry;
 
                     puts("Starting first user task...\r\n");
-                    __asm__ volatile("sti");
                     kernel_yield();
                 }
             } else {

@@ -17,12 +17,17 @@ struct task* task_list = NULL;
 static int next_pid = 1;
 static uint32_t g_cpu_count = 1;
 static spinlock_t g_task_lock;
+static uint32_t g_next_spawn_cpu = 0;
 
 #define TASK_TIMESLICE_TICKS 5
 
 #define USER_STACK_TOP_VADDR   0x7FFFFFFFF000ULL
-#define USER_STACK_PAGES       256
+#define USER_STACK_PAGES       64
 #define USER_STACK_GUARD_PAGES 1
+#define EXEC_COPY_PAGES        4
+#define EXEC_MAX_PATH_LEN      1024
+#define EXEC_MAX_VEC_STRINGS   32
+#define EXEC_MAX_VEC_STR_LEN   160
 
 extern volatile struct limine_module_request module_request;
 
@@ -49,6 +54,48 @@ extern void fork_child_entry(void);
 
 static void idle_task_entry(void) {
     task_idle_loop(0);
+}
+
+struct exec_copy_buf {
+    char path[EXEC_MAX_PATH_LEN];
+    char argv_storage[EXEC_MAX_VEC_STRINGS][EXEC_MAX_VEC_STR_LEN];
+    char envp_storage[EXEC_MAX_VEC_STRINGS][EXEC_MAX_VEC_STR_LEN];
+    char* argv[EXEC_MAX_VEC_STRINGS + 1];
+    char* envp[EXEC_MAX_VEC_STRINGS + 1];
+};
+
+static int copy_user_cstring(const char* src, char* dst, int size) {
+    if (!src || !dst || size <= 0) return -1;
+    if ((uint64_t)src < 0x1000ULL) return -1;
+    int i = 0;
+    for (; i + 1 < size; i++) {
+        char ch = src[i];
+        dst[i] = ch;
+        if (!ch) return 0;
+    }
+    dst[size - 1] = '\0';
+    return -1;
+}
+
+static int copy_user_string_vector(char* const user_vec[], char** kernel_vec,
+                                   char storage[][EXEC_MAX_VEC_STR_LEN]) {
+    int count = 0;
+    if (!kernel_vec) return -1;
+    if (!user_vec) {
+        kernel_vec[0] = 0;
+        return 0;
+    }
+    while (count < EXEC_MAX_VEC_STRINGS) {
+        const char* src = user_vec[count];
+        if (!src) break;
+        if (copy_user_cstring(src, storage[count], EXEC_MAX_VEC_STR_LEN) < 0) {
+            return -1;
+        }
+        kernel_vec[count] = storage[count];
+        count++;
+    }
+    kernel_vec[count] = 0;
+    return 0;
 }
 
 static inline struct cpu_local* this_cpu(void) {
@@ -91,11 +138,31 @@ static int normalize_cpu_affinity(uint32_t cpu_id) {
     return (int)cpu_id;
 }
 
+static uint32_t choose_spawn_cpu(uint32_t fallback_cpu) {
+    uint32_t cpu_count = task_get_cpu_count();
+    uint32_t started = smp_get_started_cpu_count();
+    if (cpu_count == 0) cpu_count = 1;
+    if (started == 0 || started > cpu_count) started = cpu_count;
+    if (started <= 1) return (uint32_t)normalize_cpu_affinity(fallback_cpu);
+
+    uint32_t start = g_next_spawn_cpu;
+    for (uint32_t attempt = 0; attempt < started; attempt++) {
+        uint32_t cpu_id = (start + attempt) % started;
+        const struct smp_cpu_info* cpu = smp_get_cpu_info(cpu_id);
+        if (cpu && cpu->started) {
+            g_next_spawn_cpu = (cpu_id + 1) % started;
+            return cpu_id;
+        }
+    }
+    return (uint32_t)normalize_cpu_affinity(fallback_cpu);
+}
+
 static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
                            struct task* current, struct task* idle,
                            uint64_t kernel_stack) {
     if (!cpu) return;
     cpu->cpu_id = cpu_id;
+    cpu->self = cpu;
     cpu->current_task = current;
     cpu->idle_task = idle;
     cpu->resched_pending = 0;
@@ -211,26 +278,58 @@ static struct task* alloc_task_struct(void) {
     return t;
 }
 
-static int alloc_user_stack(uint64_t* pml4_virt, struct task* t, int stack_pages, uint8_t** stack_mem_out) {
+static int alloc_user_stack(uint64_t* pml4_virt, struct task* t, int stack_pages, uint8_t* stack_pages_out[]) {
     if (!pml4_virt || !t || stack_pages <= USER_STACK_GUARD_PAGES) return -1;
-    void* stack_phys = pmm_alloc(stack_pages - USER_STACK_GUARD_PAGES);
-    if (!stack_phys) return -1;
     uint64_t stack_bottom_vaddr = USER_STACK_TOP_VADDR - (uint64_t)stack_pages * PAGE_SIZE;
     uint64_t mapped_bottom_vaddr = stack_bottom_vaddr + USER_STACK_GUARD_PAGES * PAGE_SIZE;
     for (int i = 0; i < stack_pages - USER_STACK_GUARD_PAGES; i++) {
+        void* stack_phys = pmm_alloc(1);
+        if (!stack_phys) return -1;
+        uint8_t* stack_mem = (uint8_t*)PHYS_TO_VIRT(stack_phys);
+        kernel_memset(stack_mem, 0, PAGE_SIZE);
         vmm_map_page(pml4_virt,
                      mapped_bottom_vaddr + (uint64_t)i * PAGE_SIZE,
-                     (uint64_t)stack_phys + (uint64_t)i * PAGE_SIZE,
+                     (uint64_t)stack_phys,
                      PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        if (stack_pages_out) stack_pages_out[i] = stack_mem;
     }
     t->user_stack_top = USER_STACK_TOP_VADDR;
     t->user_stack_bottom = mapped_bottom_vaddr;
     t->user_stack_guard = stack_bottom_vaddr;
-    if (stack_mem_out) *stack_mem_out = (uint8_t*)PHYS_TO_VIRT(stack_phys);
     return 0;
 }
 
-static int copy_user_string_to_stack(uint8_t* stack_mem, uint64_t mapped_bottom_vaddr,
+static int stack_write_bytes(uint8_t* stack_pages[], uint64_t mapped_bottom_vaddr,
+                             uint64_t stack_top_vaddr, uint64_t user_addr,
+                             const void* src, int len) {
+    const uint8_t* in = (const uint8_t*)src;
+    if (!stack_pages || !src || len < 0) return -1;
+    if (user_addr < mapped_bottom_vaddr || user_addr + (uint64_t)len > stack_top_vaddr) return -1;
+    uint64_t rel = user_addr - mapped_bottom_vaddr;
+    int remaining = len;
+    while (remaining > 0) {
+        uint64_t page_index = rel / PAGE_SIZE;
+        uint64_t page_off = rel % PAGE_SIZE;
+        int chunk = (int)(PAGE_SIZE - page_off);
+        if (chunk > remaining) chunk = remaining;
+        if (!stack_pages[page_index]) return -1;
+        for (int i = 0; i < chunk; i++) {
+            stack_pages[page_index][page_off + (uint64_t)i] = in[i];
+        }
+        in += chunk;
+        rel += (uint64_t)chunk;
+        remaining -= chunk;
+    }
+    return 0;
+}
+
+static int stack_write_u64(uint8_t* stack_pages[], uint64_t mapped_bottom_vaddr,
+                           uint64_t stack_top_vaddr, uint64_t user_addr, uint64_t value) {
+    return stack_write_bytes(stack_pages, mapped_bottom_vaddr, stack_top_vaddr,
+                             user_addr, &value, (int)sizeof(value));
+}
+
+static int copy_user_string_to_stack(uint8_t* stack_pages[], uint64_t mapped_bottom_vaddr,
                                      uint64_t stack_top_vaddr, uint64_t* current_sp,
                                      const char* src, uint64_t* user_addr_out) {
     if ((uint64_t)src < 0x1000ULL) {
@@ -244,9 +343,10 @@ static int copy_user_string_to_stack(uint8_t* stack_mem, uint64_t mapped_bottom_
     len++;
     if (*current_sp < mapped_bottom_vaddr + (uint64_t)len) return -1;
     *current_sp -= (uint64_t)len;
-    uint64_t offset = *current_sp - mapped_bottom_vaddr;
     if (*current_sp < mapped_bottom_vaddr || *current_sp >= stack_top_vaddr) return -1;
-    for (int j = 0; j < len; j++) stack_mem[offset + (uint64_t)j] = (uint8_t)src[j];
+    if (stack_write_bytes(stack_pages, mapped_bottom_vaddr, stack_top_vaddr, *current_sp, src, len) < 0) {
+        return -1;
+    }
     *user_addr_out = *current_sp;
     return 0;
 }
@@ -272,8 +372,10 @@ struct syscall_frame {
 };
 
 int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const struct elf_info* info, char* const argv[], char* const envp[]) {
-    uint8_t* stack_mem = 0;
-    if (alloc_user_stack(pml4_virt, t, USER_STACK_PAGES, &stack_mem) < 0) {
+    uint8_t* stack_pages[USER_STACK_PAGES];
+    for (int i = 0; i < USER_STACK_PAGES; i++) stack_pages[i] = 0;
+    if (alloc_user_stack(pml4_virt, t, USER_STACK_PAGES, stack_pages) < 0) {
+        puts("Exec: alloc_user_stack failed\r\n");
         return -1;
     }
 
@@ -281,21 +383,24 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const s
     int envc = 0; if (envp) while (envp[envc]) envc++;
     uint64_t env_ptrs[32]; uint64_t arg_ptrs[32];
     if (argc > 32) argc = 32; if (envc > 32) envc = 32;
-
     uint64_t current_str_addr = t->user_stack_top;
     current_str_addr -= 16;
     uint64_t random_base = current_str_addr;
-    *(uint64_t*)(stack_mem + (random_base - t->user_stack_bottom)) = 0x0123456789abcdefULL;
-    *(uint64_t*)(stack_mem + (random_base - t->user_stack_bottom) + 8) = 0xfedcba9876543210ULL;
+    if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top,
+                        random_base, 0x0123456789abcdefULL) < 0 ||
+        stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top,
+                        random_base + 8, 0xfedcba9876543210ULL) < 0) {
+        return -1;
+    }
 
     for (int i = envc - 1; i >= 0; i--) {
-        if (copy_user_string_to_stack(stack_mem, t->user_stack_bottom, t->user_stack_top,
+        if (copy_user_string_to_stack(stack_pages, t->user_stack_bottom, t->user_stack_top,
                                       &current_str_addr, envp[i], &env_ptrs[i]) < 0) {
             return -1;
         }
     }
     for (int i = argc - 1; i >= 0; i--) {
-        if (copy_user_string_to_stack(stack_mem, t->user_stack_bottom, t->user_stack_top,
+        if (copy_user_string_to_stack(stack_pages, t->user_stack_bottom, t->user_stack_top,
                                       &current_str_addr, argv[i], &arg_ptrs[i]) < 0) {
             return -1;
         }
@@ -307,61 +412,61 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const s
     }
 
     // auxv (push value first, then type)
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_NULL;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_NULL) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = random_base;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_RANDOM;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, random_base) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_RANDOM) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_SECURE;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_SECURE) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_EGID;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_EGID) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_GID;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_GID) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_EUID;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_EUID) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_UID;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_UID) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = (uint64_t)info->entry;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_ENTRY;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, (uint64_t)info->entry) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_ENTRY) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = PAGE_SIZE;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_PAGESZ;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, PAGE_SIZE) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PAGESZ) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = info->phnum;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_PHNUM;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, info->phnum) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PHNUM) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = info->phent;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_PHENT;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, info->phent) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PHENT) < 0) return -1;
 
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = info->phdr_vaddr;
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = AT_PHDR;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, info->phdr_vaddr) < 0) return -1;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PHDR) < 0) return -1;
 
     // NULL sentinel for envp must appear before auxv in the user-visible stack layout.
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
 
     // envp
     for (int i = envc - 1; i >= 0; i--) {
-        current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = env_ptrs[i];
+        current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, env_ptrs[i]) < 0) return -1;
     }
     t->user_envp = current_str_addr;
 
     // NULL sentinel for argv
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = 0;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
     // argv
     for (int i = argc - 1; i >= 0; i--) {
-        current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = arg_ptrs[i];
+        current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, arg_ptrs[i]) < 0) return -1;
     }
     t->user_argv = current_str_addr;
 
     // argc
-    current_str_addr -= 8; *(uint64_t*)(stack_mem + (current_str_addr - t->user_stack_bottom)) = (uint64_t)argc;
+    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, (uint64_t)argc) < 0) return -1;
     t->user_argc = (uint64_t)argc;
 
     t->user_stack = current_str_addr;
@@ -371,10 +476,25 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const s
 int task_execve(struct syscall_frame* frame, const char* path, char* const argv[], char* const envp[]) {
     void* file_addr = NULL;
     size_t file_size = 0;
+    void* exec_copy_phys = 0;
+    struct exec_copy_buf* exec_copy = 0;
     extern int fs_get_file_data(const char* path, void** data, size_t* size);
     extern int sys_close(int fd);
-    if (fs_get_file_data(path, &file_addr, &file_size) < 0) {
-        puts("Exec: File not found: "); puts(path); puts("\r\n");
+    exec_copy_phys = pmm_alloc(EXEC_COPY_PAGES);
+    if (!exec_copy_phys) {
+        return -1;
+    }
+    exec_copy = (struct exec_copy_buf*)PHYS_TO_VIRT(exec_copy_phys);
+    kernel_memset(exec_copy, 0, EXEC_COPY_PAGES * PAGE_SIZE);
+    if (copy_user_cstring(path, exec_copy->path, EXEC_MAX_PATH_LEN) < 0 ||
+        copy_user_string_vector(argv, exec_copy->argv, exec_copy->argv_storage) < 0 ||
+        copy_user_string_vector(envp, exec_copy->envp, exec_copy->envp_storage) < 0) {
+        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
+        return -1;
+    }
+    if (fs_get_file_data(exec_copy->path, &file_addr, &file_size) < 0) {
+        puts("Exec: File not found: "); puts(exec_copy->path); puts("\r\n");
+        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
         return -1;
     }
     struct task* t = get_current_task_raw();
@@ -386,12 +506,12 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     }
     struct elf_info info = elf_load(pml4_virt, file_addr);
     if (!info.entry) {
-        puts("Exec: ELF load failed\r\n");
+        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
         return -1;
     }
 
-    if (task_prepare_initial_user_stack(pml4_virt, t, &info, argv, envp) < 0) {
-        puts("Exec: stack preparation failed\r\n");
+    if (task_prepare_initial_user_stack(pml4_virt, t, &info, exec_copy->argv, exec_copy->envp) < 0) {
+        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
         return -1;
     }
 
@@ -422,6 +542,7 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     frame->rdx = t->user_envp;
     __asm__ volatile("mov %0, %%cr3" : : "r"(t->ctx.cr3) : "memory");
     wrmsr(MSR_FS_BASE, t->user_fs_base);
+    pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
     return 0;
 }
 
@@ -429,7 +550,7 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
 void task_main(void) {
     struct task* t = get_current_task();
     extern int call_app(int argc, char** argv, uint16_t ss, uint64_t rip, uint64_t rsp, uint64_t* os_stack_ptr);
-    call_app(0, NULL, 0x1B, t->user_entry, t->user_stack, &t->os_stack_ptr);
+    call_app((int)t->user_argc, (char**)t->user_argv, 0x1B, t->user_entry, t->user_stack, &t->os_stack_ptr);
     t->state = TASK_ZOMBIE;
     while(1) schedule();
 }
@@ -531,7 +652,7 @@ struct task* task_create_on_cpu(uint64_t entry, uint64_t user_rsp, uint32_t cpu_
     t->ctx.rip = (uint64_t)task_main;
     uint64_t* sp = (uint64_t*)(t->kstack_top - 8);
     *sp = t->ctx.rip;
-    *(--sp) = 0x202;
+    *(--sp) = 0;
     *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0;
     t->ctx.rsp = (uint64_t)sp;
     t->ctx.cs = 0x08;
@@ -575,6 +696,7 @@ struct task* task_create_idle(uint32_t cpu_id) {
     t->ctx.rip = (uint64_t)idle_task_entry;
     t->ctx.cs = 0x08;
     t->ctx.ss = 0x10;
+    t->ctx.rflags = 0;
     t->ctx.fxsave_area[0] = 0x7f;
     t->ctx.fxsave_area[1] = 0x03;
     t->ctx.fxsave_area[24] = 0x80;
@@ -595,7 +717,8 @@ int task_fork(struct syscall_frame* frame) {
     child->ppid = parent->pid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
-    task_mark_ready_on_cpu(child, (uint32_t)parent->cpu_affinity);
+    uint32_t spawn_cpu = choose_spawn_cpu((uint32_t)parent->cpu_affinity);
+    task_mark_ready_on_cpu(child, spawn_cpu);
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;
     child->user_entry = parent->user_entry;

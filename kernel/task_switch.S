@@ -57,14 +57,9 @@ call_app:
     mov %r10, %ds
     mov %r10, %es
 
-    swapgs
-    
     xor %rax, %rax
     xor %rbx, %rbx
     xor %rcx, %rcx
-    xor %rdx, %rdx
-    xor %rsi, %rsi
-    xor %rdi, %rdi
     xor %r8, %r8
     xor %r9, %r9
     xor %r10, %r10
@@ -97,5 +92,4 @@ fork_child_entry:
     mov %r11, %ds
     mov %r11, %es
 
-    swapgs
     iretq
