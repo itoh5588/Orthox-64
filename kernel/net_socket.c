@@ -63,10 +63,32 @@ typedef struct net_socket_backend {
     } pcb;
     socket_rx_chunk_t* rx_head;
     socket_rx_chunk_t* rx_tail;
+    struct task* rx_waiter;
+    struct task* tx_waiter;
+    struct task* connect_waiter;
+    struct task* accept_waiter;
     struct net_socket_backend* accept_head;
     struct net_socket_backend* accept_tail;
     struct net_socket_backend* accept_next;
 } net_socket_backend_t;
+
+static void socket_wake_waiter(struct task** waiter) {
+    if (!waiter || !*waiter) return;
+    if ((*waiter)->state == TASK_SLEEPING) {
+        task_wake(*waiter);
+    }
+    *waiter = 0;
+}
+
+static void socket_set_waiter(struct task** waiter, struct task* task) {
+    if (!waiter) return;
+    *waiter = task;
+}
+
+static void socket_clear_waiter(struct task** waiter, struct task* task) {
+    if (!waiter) return;
+    if (*waiter == task) *waiter = 0;
+}
 
 static uint16_t be16_to_cpu(uint16_t v) {
     return (uint16_t)((v >> 8) | (v << 8));
@@ -194,6 +216,7 @@ static void udp_socket_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p, cons
         return;
     }
     pbuf_free(p);
+    socket_wake_waiter(&sock->rx_waiter);
 }
 
 static err_t tcp_stream_recv(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, err_t err) {
@@ -210,15 +233,18 @@ static err_t tcp_stream_recv(void* arg, struct tcp_pcb* tpcb, struct pbuf* p, er
     }
     if (!p) {
         sock->eof = 1;
+        socket_wake_waiter(&sock->rx_waiter);
         return ERR_OK;
     }
     if (queue_pbuf_data(sock, p, NULL, 0) < 0) {
         pbuf_free(p);
         sock->error = ERR_MEM;
+        socket_wake_waiter(&sock->rx_waiter);
         return ERR_MEM;
     }
     tcp_recved(tpcb, p->tot_len);
     pbuf_free(p);
+    socket_wake_waiter(&sock->rx_waiter);
     return ERR_OK;
 }
 
@@ -228,12 +254,16 @@ static void tcp_stream_err(void* arg, err_t err) {
     sock->pcb.tcp = 0;
     sock->eof = 1;
     sock->error = err;
+    socket_wake_waiter(&sock->rx_waiter);
+    socket_wake_waiter(&sock->tx_waiter);
+    socket_wake_waiter(&sock->connect_waiter);
 }
 
 static err_t tcp_stream_sent(void* arg, struct tcp_pcb* tpcb, u16_t len) {
-    (void)arg;
+    net_socket_backend_t* sock = (net_socket_backend_t*)arg;
     (void)tpcb;
     (void)len;
+    if (sock) socket_wake_waiter(&sock->tx_waiter);
     return ERR_OK;
 }
 
@@ -243,6 +273,7 @@ static err_t tcp_client_connected(void* arg, struct tcp_pcb* tpcb, err_t err) {
     sock->connecting = 0;
     if (err != ERR_OK) {
         sock->error = err;
+        socket_wake_waiter(&sock->connect_waiter);
         return err;
     }
     sock->connected = 1;
@@ -250,6 +281,7 @@ static err_t tcp_client_connected(void* arg, struct tcp_pcb* tpcb, err_t err) {
     sock->peer_port = cpu_to_be16(tpcb->remote_port);
     sock->local_addr = ip_2_ip4(&tpcb->local_ip)->addr;
     sock->peer_addr = ip_2_ip4(&tpcb->remote_ip)->addr;
+    socket_wake_waiter(&sock->connect_waiter);
     return ERR_OK;
 }
 
@@ -281,6 +313,7 @@ static err_t tcp_listener_accept(void* arg, struct tcp_pcb* newpcb, err_t err) {
     if (listener->accept_tail) listener->accept_tail->accept_next = child;
     else listener->accept_head = child;
     listener->accept_tail = child;
+    socket_wake_waiter(&listener->accept_waiter);
     return ERR_OK;
 }
 
@@ -296,10 +329,14 @@ static int fill_sockaddr_in(void* addr, uint32_t* addrlen, uint32_t ip, uint16_t
 }
 
 static int64_t socket_recv_stream(file_descriptor_t* f, net_socket_backend_t* sock, void* buf, size_t len) {
+    struct task* current = get_current_task();
     while (!sock->rx_head) {
         if (sock->eof) return 0;
         if (f->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
+        task_mark_sleeping(current);
+        socket_set_waiter(&sock->rx_waiter, current);
         kernel_yield();
+        socket_clear_waiter(&sock->rx_waiter, current);
     }
 
     size_t copied = 0;
@@ -324,9 +361,13 @@ static int64_t socket_recv_stream(file_descriptor_t* f, net_socket_backend_t* so
 }
 
 static int64_t socket_recv_dgram(file_descriptor_t* f, net_socket_backend_t* sock, void* buf, size_t len, void* src_addr, uint32_t* addrlen) {
+    struct task* current = get_current_task();
     while (!sock->rx_head) {
         if (f->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
+        task_mark_sleeping(current);
+        socket_set_waiter(&sock->rx_waiter, current);
         kernel_yield();
+        socket_clear_waiter(&sock->rx_waiter, current);
     }
 
     socket_rx_chunk_t* chunk = sock->rx_head;
@@ -345,12 +386,16 @@ static int64_t socket_recv_dgram(file_descriptor_t* f, net_socket_backend_t* soc
 
 static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* sock, const void* buf, size_t len) {
     size_t sent = 0;
+    struct task* current = get_current_task();
     if (!sock->pcb.tcp) return -1;
     while (sent < len) {
         uint16_t wnd = tcp_sndbuf(sock->pcb.tcp);
         if (wnd == 0) {
             if (f->flags & ORTH_LINUX_O_NONBLOCK) return sent ? (int64_t)sent : -ORTH_ERR_EAGAIN;
+            task_mark_sleeping(current);
+            socket_set_waiter(&sock->tx_waiter, current);
             kernel_yield();
+            socket_clear_waiter(&sock->tx_waiter, current);
             continue;
         }
         uint16_t chunk = (uint16_t)(len - sent);
@@ -359,7 +404,10 @@ static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* so
         if (err == ERR_MEM) {
             if (f->flags & ORTH_LINUX_O_NONBLOCK) return sent ? (int64_t)sent : -ORTH_ERR_EAGAIN;
             (void)tcp_output(sock->pcb.tcp);
+            task_mark_sleeping(current);
+            socket_set_waiter(&sock->tx_waiter, current);
             kernel_yield();
+            socket_clear_waiter(&sock->tx_waiter, current);
             continue;
         }
         if (err != ERR_OK) return sent ? (int64_t)sent : -1;
@@ -473,7 +521,10 @@ int sys_connect(int fd, const void* addr, uint32_t addrlen) {
         }
 
         while (sock->connecting) {
+            task_mark_sleeping(current);
+            socket_set_waiter(&sock->connect_waiter, current);
             kernel_yield();
+            socket_clear_waiter(&sock->connect_waiter, current);
         }
         return sock->connected ? 0 : -1;
     }
@@ -513,7 +564,10 @@ int sys_accept(int fd, void* addr, uint32_t* addrlen) {
 
     while (!listener->accept_head) {
         if (listen_fd->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
+        task_mark_sleeping(current);
+        socket_set_waiter(&listener->accept_waiter, current);
         kernel_yield();
+        socket_clear_waiter(&listener->accept_waiter, current);
     }
 
     int newfd = alloc_fd_slot(current);
