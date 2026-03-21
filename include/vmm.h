@@ -38,6 +38,7 @@ void vmm_map_range(uint64_t* pml4, uint64_t vaddr, uint64_t paddr, uint64_t size
 uint64_t vmm_get_phys(uint64_t* pml4, uint64_t vaddr);
 void vmm_activate(uint64_t* pml4);
 uint64_t vmm_copy_pml4(uint64_t* old_pml4);
+void vmm_free_user_pml4(uint64_t pml4_phys);
 void vmm_dump_path(uint64_t* pml4, uint64_t vaddr);
 
 struct interrupt_frame;

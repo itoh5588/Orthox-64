@@ -350,8 +350,7 @@ static int64_t sys_wait4(int pid, int* wstatus, int options) {
                         int child_pid = curr->pid;
                         if (wstatus) *wstatus = curr->exit_status << 8;
                         current->sig_pending &= ~(1ULL << 20);
-                        task_mark_sleeping(curr);
-                        curr->ppid = 0;
+                        (void)task_reap(curr);
                         return child_pid;
                     }
                 }
@@ -1146,6 +1145,12 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case ORTH_SYS_DNS_LOOKUP:
             frame->rax = (uint64_t)lwip_port_lookup_ipv4((const char*)frame->rdi, (uint32_t*)frame->rsi);
+            break;
+        case ORTH_SYS_GET_CPU_ID:
+            {
+                struct cpu_local* cpu = get_cpu_local();
+                frame->rax = (uint64_t)(cpu ? (int)cpu->cpu_id : -1);
+            }
             break;
         case SYS_GETDENTS:
             frame->rax = (uint64_t)sys_getdents((int)frame->rdi, (struct orth_dirent*)frame->rsi, (size_t)frame->rdx);

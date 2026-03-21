@@ -99,6 +99,8 @@ static int copy_user_string_vector(char* const user_vec[], char** kernel_vec,
 }
 
 static inline struct cpu_local* this_cpu(void) {
+    struct cpu_local* cpu = (struct cpu_local*)(uintptr_t)rdmsr(MSR_GS_BASE);
+    if (cpu) return cpu;
     return (struct cpu_local*)(uintptr_t)rdmsr(MSR_KERNEL_GS_BASE);
 }
 
@@ -276,6 +278,13 @@ static struct task* alloc_task_struct(void) {
     struct task* t = (struct task*)PHYS_TO_VIRT(phys);
     kernel_memset(t, 0, sizeof(struct task));
     return t;
+}
+
+static int free_task_struct(struct task* t) {
+    if (!t) return -1;
+    int task_pages = (sizeof(struct task) + PAGE_SIZE - 1) / PAGE_SIZE;
+    pmm_free((void*)VIRT_TO_PHYS(t), task_pages);
+    return 0;
 }
 
 static int alloc_user_stack(uint64_t* pml4_virt, struct task* t, int stack_pages, uint8_t* stack_pages_out[]) {
@@ -478,6 +487,7 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     size_t file_size = 0;
     void* exec_copy_phys = 0;
     struct exec_copy_buf* exec_copy = 0;
+    uint64_t old_cr3 = 0;
     extern int fs_get_file_data(const char* path, void** data, size_t* size);
     extern int sys_close(int fd);
     exec_copy_phys = pmm_alloc(EXEC_COPY_PAGES);
@@ -499,6 +509,11 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     }
     struct task* t = get_current_task_raw();
     void* pml4_phys = pmm_alloc(1);
+    if (!pml4_phys) {
+        puts("Exec: pml4 alloc failed\r\n");
+        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
+        return -1;
+    }
     uint64_t* pml4_virt = (uint64_t*)PHYS_TO_VIRT(pml4_phys);
     uint64_t* kernel_pml4 = vmm_get_kernel_pml4();
     for (int i = 0; i < 512; i++) {
@@ -512,9 +527,11 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
 
     if (task_prepare_initial_user_stack(pml4_virt, t, &info, exec_copy->argv, exec_copy->envp) < 0) {
         pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
+        pmm_free(pml4_phys, 1);
         return -1;
     }
 
+    old_cr3 = t->ctx.cr3;
     t->ctx.cr3 = (uint64_t)pml4_phys;
     t->heap_break = info.max_vaddr;
     t->mmap_end = 0x4000000000ULL;
@@ -542,6 +559,9 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     frame->rdx = t->user_envp;
     __asm__ volatile("mov %0, %%cr3" : : "r"(t->ctx.cr3) : "memory");
     wrmsr(MSR_FS_BASE, t->user_fs_base);
+    if (old_cr3 && old_cr3 != t->ctx.cr3 && old_cr3 != vmm_get_kernel_pml4_phys()) {
+        vmm_free_user_pml4(old_cr3);
+    }
     pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
     return 0;
 }
@@ -619,6 +639,34 @@ int task_wake(struct task* t) {
     task_mark_ready_on_cpu(t, (uint32_t)t->cpu_affinity);
     task_request_resched_cpu((uint32_t)t->cpu_affinity);
     return 0;
+}
+
+int task_reap(struct task* t) {
+    if (!t) return -1;
+    if (t->state != TASK_ZOMBIE && t->state != TASK_DEAD) return -1;
+
+    struct task** link = &task_list;
+    while (*link && *link != t) {
+        link = &(*link)->next;
+    }
+    if (*link != t) return -1;
+    *link = t->next;
+
+    t->state = TASK_DEAD;
+
+    if (t->ctx.cr3 && t->ctx.cr3 != vmm_get_kernel_pml4_phys()) {
+        vmm_free_user_pml4(t->ctx.cr3);
+        t->ctx.cr3 = 0;
+    }
+
+    if (t->kstack_top) {
+        uint64_t kstack_phys = VIRT_TO_PHYS((void*)(t->kstack_top - 4 * PAGE_SIZE));
+        pmm_free((void*)kstack_phys, 4);
+        t->kstack_top = 0;
+    }
+
+    t->next = 0;
+    return free_task_struct(t);
 }
 
 struct task* task_create_on_cpu(uint64_t entry, uint64_t user_rsp, uint32_t cpu_id) {

@@ -77,6 +77,15 @@ void pmm_init(void) {
     // low memory (<16MiB and no 64KiB boundary crossing).
     uint64_t limit_page = (0x01000000ULL / PAGE_SIZE);
     if (limit_page > max_pages) limit_page = max_pages;
+
+    // Never hand out physical page 0. Many kernel call sites use NULL as
+    // the allocation-failure sentinel, so treating page 0 as allocatable
+    // would turn a valid allocation into a false failure.
+    if (max_pages > 0) {
+        bitmap_set(0);
+        ref_counts[0] = 1;
+    }
+
     for (uint64_t page = 0; page < limit_page; page++) {
         if (bitmap_test(page)) continue;
         uint64_t phys = page * PAGE_SIZE;

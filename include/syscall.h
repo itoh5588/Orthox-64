@@ -95,6 +95,7 @@
 #define ORTH_SYS_SIGPENDING       (ORTH_SYS_BASE + 19)
 #define ORTH_SYS_SIGACTION        (ORTH_SYS_BASE + 20)
 #define ORTH_SYS_DNS_LOOKUP       (ORTH_SYS_BASE + 21)
+#define ORTH_SYS_GET_CPU_ID       (ORTH_SYS_BASE + 22)
 
 // mmap flags/protection (Linux-compatible subset)
 #ifndef PROT_NONE
@@ -192,5 +193,6 @@ int sigprocmask_sys(int how, const uint64_t* set, uint64_t* oldset);
 int sigpending_sys(uint64_t* set);
 int sigaction_sys(int sig, const struct orth_sigaction* act, struct orth_sigaction* oldact);
 int dns_lookup_ipv4(const char* hostname, uint32_t* out_addr);
+int get_cpu_id(void);
 
 #endif

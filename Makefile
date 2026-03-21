@@ -62,6 +62,7 @@ COW_TEST_ELF = user/cowtest.elf
 RO_TEST_ELF = user/rotest.elf
 VRAM_TEST_ELF = user/testvram.elf
 TIME_TEST_ELF = user/testtime.elf
+SHOWCPU_ELF = user/showcpu.elf
 KEY_TEST_ELF = user/testkey.elf
 SOUND_TEST_ELF = user/testsound.elf
 MMAP_TEST_ELF = user/mmaptest.elf
@@ -148,6 +149,7 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/sh.d $(USER_BUILD_DIR)/gcc.d $(USER_BUILD_DIR)/as.d $(USER_BUILD_DIR)/ld.d \
        $(USER_BUILD_DIR)/loop.d $(USER_BUILD_DIR)/cowtest.d $(USER_BUILD_DIR)/rotest.d \
        $(USER_BUILD_DIR)/testvram.d $(USER_BUILD_DIR)/testtime.d $(USER_BUILD_DIR)/testkey.d \
+       $(USER_BUILD_DIR)/showcpu.d \
        $(USER_BUILD_DIR)/testsound.d $(USER_BUILD_DIR)/mmaptest.d $(USER_BUILD_DIR)/reaptest.d \
        $(USER_BUILD_DIR)/robusttest.d $(USER_BUILD_DIR)/signaltest.d $(USER_BUILD_DIR)/ttytest.d \
        $(USER_BUILD_DIR)/sigmasktest.d $(USER_BUILD_DIR)/sigactiontest.d \
@@ -250,7 +252,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF)
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF)
 	mkdir -p rootfs/bin
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
@@ -261,6 +263,7 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(HTTPS_FETCH_ELF) rootfs/bin/httpsfetch.elf
 	cp $(TIME_TEST_ELF) rootfs/bin/testtime.elf
 	cp $(TICKRATE_TEST_ELF) rootfs/bin/tickratecheck.elf
+	cp $(SHOWCPU_ELF) rootfs/bin/showcpu.elf
 	# Remove old bin-musl if it exists to avoid confusion
 	rm -rf rootfs/bin-musl
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .

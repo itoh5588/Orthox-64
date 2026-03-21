@@ -189,6 +189,43 @@ uint64_t vmm_copy_pml4(uint64_t* old_pml4) {
     return (uint64_t)new_pml4_phys;
 }
 
+void vmm_free_user_pml4(uint64_t pml4_phys) {
+    if (!pml4_phys) return;
+
+    uint64_t* pml4 = (uint64_t*)PHYS_TO_VIRT((void*)pml4_phys);
+    for (int i = 0; i < 256; i++) {
+        if (!(pml4[i] & PTE_PRESENT)) continue;
+
+        uint64_t pdp_phys = pml4[i] & PTE_ADDR_MASK;
+        uint64_t* pdp = (uint64_t*)PHYS_TO_VIRT((void*)pdp_phys);
+        for (int j = 0; j < 512; j++) {
+            if (!(pdp[j] & PTE_PRESENT)) continue;
+
+            uint64_t pd_phys = pdp[j] & PTE_ADDR_MASK;
+            uint64_t* pd = (uint64_t*)PHYS_TO_VIRT((void*)pd_phys);
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_PRESENT)) continue;
+
+                if (pd[k] & PTE_HUGE) {
+                    pmm_free((void*)(pd[k] & PTE_ADDR_MASK), 512);
+                    continue;
+                }
+
+                uint64_t pt_phys = pd[k] & PTE_ADDR_MASK;
+                uint64_t* pt = (uint64_t*)PHYS_TO_VIRT((void*)pt_phys);
+                for (int l = 0; l < 512; l++) {
+                    if (!(pt[l] & PTE_PRESENT)) continue;
+                    pmm_free((void*)(pt[l] & PTE_ADDR_MASK), 1);
+                }
+                pmm_free((void*)pt_phys, 1);
+            }
+            pmm_free((void*)pd_phys, 1);
+        }
+        pmm_free((void*)pdp_phys, 1);
+    }
+    pmm_free((void*)pml4_phys, 1);
+}
+
 struct interrupt_frame {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
