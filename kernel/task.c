@@ -202,24 +202,44 @@ static int normalize_cpu_affinity(uint32_t cpu_id) {
     return (int)cpu_id;
 }
 
-static uint32_t choose_spawn_cpu(uint32_t fallback_cpu) {
+static uint32_t task_cpu_load_locked(uint32_t cpu_id) {
+    struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
+    uint32_t load = 0;
+    if (!cpu) return UINT32_MAX;
+    load = cpu->runq_count;
+    if (cpu->current_task && cpu->current_task != cpu->idle_task &&
+        cpu->current_task->state == TASK_RUNNING) {
+        load++;
+    }
+    return load;
+}
+
+static uint32_t choose_spawn_cpu_locked(uint32_t fallback_cpu) {
     static uint32_t next_cpu = 0;
     uint32_t cpu_count = task_get_cpu_count();
     uint32_t started = smp_get_started_cpu_count();
+    uint32_t best_cpu;
+    uint32_t best_load;
     if (cpu_count == 0) cpu_count = 1;
     if (started == 0 || started > cpu_count) started = cpu_count;
     if (started <= 1) return (uint32_t)normalize_cpu_affinity(fallback_cpu);
 
+    best_cpu = (uint32_t)normalize_cpu_affinity(fallback_cpu);
+    best_load = task_cpu_load_locked(best_cpu);
     uint32_t start = next_cpu;
     for (uint32_t attempt = 0; attempt < started; attempt++) {
         uint32_t cpu_id = (start + attempt) % started;
         const struct smp_cpu_info* cpu = smp_get_cpu_info(cpu_id);
         if (cpu && cpu->started) {
-            next_cpu = (cpu_id + 1) % started;
-            return cpu_id;
+            uint32_t load = task_cpu_load_locked(cpu_id);
+            if (load < best_load) {
+                best_load = load;
+                best_cpu = cpu_id;
+            }
         }
     }
-    return (uint32_t)normalize_cpu_affinity(fallback_cpu);
+    next_cpu = (best_cpu + 1) % started;
+    return best_cpu;
 }
 
 int task_set_fork_spread(int enabled) {
@@ -812,9 +832,13 @@ int task_set_affinity(struct task* t, uint32_t cpu_id) {
 
 int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id) {
     int ret;
+    uint32_t target_cpu = (uint32_t)normalize_cpu_affinity(cpu_id);
     uint64_t flags = spin_lock_irqsave(&g_task_lock);
-    ret = task_mark_ready_on_cpu_locked(t, cpu_id);
+    ret = task_mark_ready_on_cpu_locked(t, target_cpu);
     spin_unlock_irqrestore(&g_task_lock, flags);
+    if (ret >= 0) {
+        task_request_resched_cpu(target_cpu);
+    }
     return ret;
 }
 
@@ -952,7 +976,7 @@ int task_fork(struct syscall_frame* frame) {
     child->pgid = parent->pgid;
     child->sid = parent->sid;
     uint32_t spawn_cpu = g_fork_spread_enabled
-        ? choose_spawn_cpu((uint32_t)parent->cpu_affinity)
+        ? choose_spawn_cpu_locked((uint32_t)parent->cpu_affinity)
         : (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
     task_mark_ready_on_cpu_locked(child, spawn_cpu);
     if (g_fork_spread_enabled) {
@@ -1003,6 +1027,7 @@ int task_fork(struct syscall_frame* frame) {
     child->next = task_list;
     task_list = child;
     spin_unlock_irqrestore(&g_task_lock, flags);
+    task_request_resched_cpu(spawn_cpu);
     return child->pid;
 }
 
