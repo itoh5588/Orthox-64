@@ -439,4 +439,6 @@ int mount_module_root(void) { return (int)orth_syscall3(ORTH_SYS_MOUNT_MODULE_RO
 int get_mount_status(char *buf, uint32_t size) { return (int)orth_syscall3(ORTH_SYS_GET_MOUNT_STATUS, (uint64_t)buf, (uint64_t)size, 0); }
 int dns_lookup_ipv4(const char *hostname, uint32_t *out_addr) { return (int)orth_syscall3(ORTH_SYS_DNS_LOOKUP, (uint64_t)hostname, (uint64_t)out_addr, 0); }
 int get_cpu_id(void) { return (int)orth_syscall3(ORTH_SYS_GET_CPU_ID, 0, 0, 0); }
+int set_fork_spread(int enabled) { return (int)orth_syscall3(ORTH_SYS_SET_FORK_SPREAD, (uint64_t)enabled, 0, 0); }
+int get_fork_spread(void) { return (int)orth_syscall3(ORTH_SYS_GET_FORK_SPREAD, 0, 0, 0); }
 int getdents_sys(int fd, struct orth_dirent *dirp, uint32_t count) { return (int)orth_syscall3(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count); }

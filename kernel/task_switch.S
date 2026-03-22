@@ -69,6 +69,9 @@ call_app:
     xor %r14, %r14
     xor %r15, %r15
 
+    # Entering user mode directly from kernel context; restore user GS base
+    # so the next syscall swapgs lands on the per-CPU area.
+    swapgs
     iretq
 
 .global fork_child_entry
@@ -92,4 +95,7 @@ fork_child_entry:
     mov %r11, %ds
     mov %r11, %es
 
+    # fork child returns to user without passing through syscall exit, so we
+    # must restore the user GS base here as well.
+    swapgs
     iretq

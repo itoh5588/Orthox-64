@@ -10,6 +10,15 @@
 void puts(const char *s);
 void puthex(uint64_t v);
 
+#define MSR_GS_BASE        0xC0000101
+#define MSR_KERNEL_GS_BASE 0xC0000102
+
+static uint64_t rdmsr_local(uint32_t msr) {
+    uint32_t low, high;
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return ((uint64_t)high << 32) | low;
+}
+
 struct interrupt_frame {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
@@ -181,6 +190,14 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
     puts(", CS: 0x"); puthex(frame->cs);
     puts("\r\nRSP: 0x"); puthex(frame->rsp);
     puts(", SS: 0x"); puthex(frame->ss);
+    {
+        struct cpu_local* cpu = get_cpu_local();
+        struct task* current = get_current_task();
+        puts("\r\nCPU: "); puthex(cpu ? (uint64_t)cpu->cpu_id : 0xFFFFFFFFFFFFFFFFULL);
+        puts(", CUR: 0x"); puthex((uint64_t)(uintptr_t)current);
+        puts(", GS: 0x"); puthex(rdmsr_local(MSR_GS_BASE));
+        puts(", KGS: 0x"); puthex(rdmsr_local(MSR_KERNEL_GS_BASE));
+    }
     puts("\r\nHALTING...\r\n");
     kernel_lock_exit();
 

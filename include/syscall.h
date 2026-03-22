@@ -96,6 +96,8 @@
 #define ORTH_SYS_SIGACTION        (ORTH_SYS_BASE + 20)
 #define ORTH_SYS_DNS_LOOKUP       (ORTH_SYS_BASE + 21)
 #define ORTH_SYS_GET_CPU_ID       (ORTH_SYS_BASE + 22)
+#define ORTH_SYS_SET_FORK_SPREAD  (ORTH_SYS_BASE + 23)
+#define ORTH_SYS_GET_FORK_SPREAD  (ORTH_SYS_BASE + 24)
 
 // mmap flags/protection (Linux-compatible subset)
 #ifndef PROT_NONE
@@ -194,5 +196,7 @@ int sigpending_sys(uint64_t* set);
 int sigaction_sys(int sig, const struct orth_sigaction* act, struct orth_sigaction* oldact);
 int dns_lookup_ipv4(const char* hostname, uint32_t* out_addr);
 int get_cpu_id(void);
+int set_fork_spread(int enabled);
+int get_fork_spread(void);
 
 #endif

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "spinlock.h"
 
 #define MAX_FDS 32
 
@@ -52,6 +53,7 @@ typedef enum {
 #define PIPE_BUF_SIZE 4000
 
 typedef struct {
+    spinlock_t lock;
     char buffer[PIPE_BUF_SIZE];
     uint32_t read_pos;
     uint32_t write_pos;

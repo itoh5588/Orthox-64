@@ -30,12 +30,19 @@ extern void puthex(uint64_t v);
 #define ORTH_LINUX_O_APPEND  0x400
 #define ORTH_LEGACY_O_DIRECTORY 0x200000
 
-static void pipe_wake_waiter(struct task** waiter) {
-    if (!waiter || !*waiter) return;
-    if ((*waiter)->state == TASK_SLEEPING) {
-        task_wake(*waiter);
+static void pipe_wake_task(struct task* waiter) {
+    if (!waiter) return;
+    if (waiter->state == TASK_SLEEPING) {
+        task_wake(waiter);
     }
+}
+
+static struct task* pipe_take_waiter_locked(struct task** waiter) {
+    struct task* task;
+    if (!waiter) return 0;
+    task = *waiter;
     *waiter = 0;
+    return task;
 }
 
 static void pipe_set_waiter(struct task** waiter, struct task* task) {
@@ -1602,18 +1609,27 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         size_t written = 0;
         const char* src = (const char*)buf;
         while (written < count) {
+            struct task* reader_to_wake = 0;
+            uint64_t flags = spin_lock_irqsave(&pipe->lock);
             if (pipe->count == PIPE_BUF_SIZE) {
                 task_mark_sleeping(current);
                 pipe_set_waiter(&pipe->write_waiter, current);
+                spin_unlock_irqrestore(&pipe->lock, flags);
                 kernel_yield();
+                flags = spin_lock_irqsave(&pipe->lock);
                 pipe_clear_waiter(&pipe->write_waiter, current);
+                spin_unlock_irqrestore(&pipe->lock, flags);
                 continue;
             }
-            pipe->buffer[pipe->write_pos] = src[written];
-            pipe->write_pos = (pipe->write_pos + 1) % PIPE_BUF_SIZE;
-            pipe->count++;
-            written++;
-            pipe_wake_waiter(&pipe->read_waiter);
+            while (written < count && pipe->count < PIPE_BUF_SIZE) {
+                pipe->buffer[pipe->write_pos] = src[written];
+                pipe->write_pos = (pipe->write_pos + 1) % PIPE_BUF_SIZE;
+                pipe->count++;
+                written++;
+            }
+            reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
+            spin_unlock_irqrestore(&pipe->lock, flags);
+            pipe_wake_task(reader_to_wake);
         }
         return (int64_t)written;
     }
@@ -1677,24 +1693,36 @@ int64_t sys_read(int fd, void* buf, size_t count) {
 
     if (f->type == FT_PIPE) {
         pipe_t* pipe = (pipe_t*)f->data;
-        while (pipe->count == 0) {
-            if (pipe->ref_count < 2) {
+        while (1) {
+            size_t to_read;
+            struct task* writer_to_wake = 0;
+            uint64_t flags = spin_lock_irqsave(&pipe->lock);
+            if (pipe->count == 0 && pipe->ref_count < 2) {
+                spin_unlock_irqrestore(&pipe->lock, flags);
                 return 0; // 書き込み側が閉じられた
             }
-            task_mark_sleeping(current);
-            pipe_set_waiter(&pipe->read_waiter, current);
-            kernel_yield();
-            pipe_clear_waiter(&pipe->read_waiter, current);
+            if (pipe->count == 0) {
+                task_mark_sleeping(current);
+                pipe_set_waiter(&pipe->read_waiter, current);
+                spin_unlock_irqrestore(&pipe->lock, flags);
+                kernel_yield();
+                flags = spin_lock_irqsave(&pipe->lock);
+                pipe_clear_waiter(&pipe->read_waiter, current);
+                spin_unlock_irqrestore(&pipe->lock, flags);
+                continue;
+            }
+            to_read = (count > pipe->count) ? pipe->count : count;
+            char* dest = (char*)buf;
+            for (size_t i = 0; i < to_read; i++) {
+                dest[i] = pipe->buffer[pipe->read_pos];
+                pipe->read_pos = (pipe->read_pos + 1) % PIPE_BUF_SIZE;
+                pipe->count--;
+            }
+            writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
+            spin_unlock_irqrestore(&pipe->lock, flags);
+            pipe_wake_task(writer_to_wake);
+            return (int64_t)to_read;
         }
-        size_t to_read = (count > pipe->count) ? pipe->count : count;
-        char* dest = (char*)buf;
-        for (size_t i = 0; i < to_read; i++) {
-            dest[i] = pipe->buffer[pipe->read_pos];
-            pipe->read_pos = (pipe->read_pos + 1) % PIPE_BUF_SIZE;
-            pipe->count--;
-        }
-        pipe_wake_waiter(&pipe->write_waiter);
-        return (int64_t)to_read;
     }
 
     if (f->type == FT_SOCKET) {
@@ -1757,10 +1785,20 @@ int sys_close(int fd) {
     
     if (current->fds[fd].type == FT_PIPE) {
         pipe_t* pipe = (pipe_t*)current->fds[fd].data;
+        struct task* reader_to_wake;
+        struct task* writer_to_wake;
+        int free_pipe = 0;
+        uint64_t flags = spin_lock_irqsave(&pipe->lock);
         pipe->ref_count--;
-        pipe_wake_waiter(&pipe->read_waiter);
-        pipe_wake_waiter(&pipe->write_waiter);
+        reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
+        writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
         if (pipe->ref_count == 0) {
+            free_pipe = 1;
+        }
+        spin_unlock_irqrestore(&pipe->lock, flags);
+        pipe_wake_task(reader_to_wake);
+        pipe_wake_task(writer_to_wake);
+        if (free_pipe) {
             pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
         }
     } else if (current->fds[fd].type == FT_SOCKET) {
@@ -1793,7 +1831,9 @@ int sys_dup2(int oldfd, int newfd) {
     current->fds[newfd] = current->fds[oldfd];
     if (current->fds[newfd].type == FT_PIPE) {
         pipe_t* pipe = (pipe_t*)current->fds[newfd].data;
+        uint64_t flags = spin_lock_irqsave(&pipe->lock);
         pipe->ref_count++;
+        spin_unlock_irqrestore(&pipe->lock, flags);
     } else if (current->fds[newfd].type == FT_SOCKET) {
         net_socket_dup_fd(&current->fds[newfd]);
     }
@@ -1861,6 +1901,7 @@ int sys_pipe(int pipefd[2]) {
     pipe->ref_count = 2;
     pipe->read_waiter = 0;
     pipe->write_waiter = 0;
+    spinlock_init(&pipe->lock);
 
     current->fds[fd1].type = FT_PIPE;
     current->fds[fd1].data = pipe;

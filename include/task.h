@@ -88,6 +88,8 @@ int task_mark_sleeping(struct task* t);
 int task_mark_zombie(struct task* t, int exit_status);
 int task_wake(struct task* t);
 int task_reap(struct task* t);
+int task_set_fork_spread(int enabled);
+int task_get_fork_spread(void);
 void schedule(void);
 struct cpu_local* get_cpu_local(void);
 struct task* get_current_task(void);

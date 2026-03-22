@@ -986,6 +986,14 @@ int get_cpu_id(void) {
     return (int)syscall(ORTH_SYS_GET_CPU_ID, 0, 0, 0);
 }
 
+int set_fork_spread(int enabled) {
+    return (int)syscall(ORTH_SYS_SET_FORK_SPREAD, (uint64_t)enabled, 0, 0);
+}
+
+int get_fork_spread(void) {
+    return (int)syscall(ORTH_SYS_GET_FORK_SPREAD, 0, 0, 0);
+}
+
 int getdents_sys(int fd, struct orth_dirent* dirp, uint32_t count) {
     return (int)syscall(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count);
 }

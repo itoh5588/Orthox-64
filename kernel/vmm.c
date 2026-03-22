@@ -15,6 +15,28 @@ static uint64_t* kernel_pml4;
 void puts(const char* s);
 void puthex(uint64_t v);
 
+#define MSR_GS_BASE        0xC0000101
+#define MSR_KERNEL_GS_BASE 0xC0000102
+
+static uint64_t rdmsr_local(uint32_t msr) {
+    uint32_t low, high;
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return ((uint64_t)high << 32) | low;
+}
+
+static void dump_fault_cpu_state(void) {
+    uint64_t gs_base = rdmsr_local(MSR_GS_BASE);
+    uint64_t kernel_gs_base = rdmsr_local(MSR_KERNEL_GS_BASE);
+    struct cpu_local* cpu = get_cpu_local();
+    struct task* current = get_current_task();
+
+    puts(" GS_BASE: "); puthex(gs_base);
+    puts(" KGS_BASE: "); puthex(kernel_gs_base);
+    puts(" CPU: "); puthex(cpu ? (uint64_t)cpu->cpu_id : 0xFFFFFFFFFFFFFFFFULL);
+    puts(" CUR: "); puthex((uint64_t)(uintptr_t)current);
+    puts("\r\n");
+}
+
 static uint64_t* get_next_level(uint64_t* current_table, uint64_t index, bool allocate, uint64_t flags) {
     if (current_table[index] & PTE_PRESENT) {
         if (current_table[index] & PTE_HUGE) {
@@ -245,6 +267,7 @@ static void kill_current_task_on_user_fault(struct interrupt_frame* frame, uint6
             puts(" PID: "); puthex((uint64_t)current->pid);
             puts(" RIP: "); puthex(frame->rip);
             puts(" RSP: "); puthex(frame->rsp);
+            dump_fault_cpu_state();
             puts("\r\n");
             if (vmm_get_phys(pml4, frame->rsp) != 0) {
                 uint64_t* user_rsp = (uint64_t*)frame->rsp;
@@ -280,6 +303,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
         puts(" RIP: "); puthex(frame->rip);
         puts(" RSP: "); puthex(frame->rsp);
         puts(" ERR: "); puthex(frame->error_code);
+        dump_fault_cpu_state();
         puts("\r\n");
         for(;;) __asm__("hlt");
     }
@@ -290,6 +314,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
         puts(" RIP: "); puthex(frame->rip);
         puts(" RSP: "); puthex(frame->rsp);
         puts(" ERR: "); puthex(frame->error_code);
+        dump_fault_cpu_state();
         puts("\r\n");
         for(;;) __asm__("hlt");
     }
@@ -305,6 +330,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
         puts(" RIP: "); puthex(frame->rip);
         puts(" RSP: "); puthex(frame->rsp);
         puts(" ERR: "); puthex(frame->error_code);
+        dump_fault_cpu_state();
         puts("\r\n");
         for(;;) __asm__("hlt");
     }
@@ -316,6 +342,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
         puts(" RIP: "); puthex(frame->rip);
         puts(" RSP: "); puthex(frame->rsp);
         puts(" ERR: "); puthex(frame->error_code);
+        dump_fault_cpu_state();
         puts("\r\n");
         for(;;) __asm__("hlt");
     }
@@ -344,6 +371,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
             puts(" RIP: "); puthex(frame->rip);
             puts(" RSP: "); puthex(frame->rsp);
             puts(" ERR: "); puthex(frame->error_code);
+            dump_fault_cpu_state();
             puts("\r\n");
             for(;;) __asm__("hlt");
         }
@@ -371,6 +399,8 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
     puts("#PF: Unexpected page fault at 0x"); puthex(fault_vaddr);
     puts(" RIP: "); puthex(frame->rip);
     puts(" RSP: "); puthex(frame->rsp);
-    puts(" ERR: "); puthex(frame->error_code); puts("\r\n");
+    puts(" ERR: "); puthex(frame->error_code);
+    dump_fault_cpu_state();
+    puts("\r\n");
     for(;;) __asm__("hlt");
 }

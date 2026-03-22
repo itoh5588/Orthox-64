@@ -17,6 +17,7 @@ struct task* task_list = NULL;
 static int next_pid = 1;
 static uint32_t g_cpu_count = 1;
 static spinlock_t g_task_lock;
+static int g_fork_spread_enabled = 1;
 
 #define TASK_TIMESLICE_TICKS 5
 
@@ -50,6 +51,67 @@ extern void switch_context(struct task_context* next_ctx, struct task_context* p
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
 extern void fork_child_entry(void);
+
+static void task_log_fork_spawn(int parent_pid, int child_pid, uint32_t cpu_id) {
+    char buf[96];
+    int pos = 0;
+    int v;
+
+    const char* prefix = "[task] fork parent=";
+    while (*prefix && pos + 1 < (int)sizeof(buf)) buf[pos++] = *prefix++;
+
+    v = parent_pid;
+    if (v == 0) {
+        if (pos + 1 < (int)sizeof(buf)) buf[pos++] = '0';
+    } else {
+        char tmp[16];
+        int n = 0;
+        while (v > 0 && n < (int)sizeof(tmp)) {
+            tmp[n++] = (char)('0' + (v % 10));
+            v /= 10;
+        }
+        while (n-- > 0 && pos + 1 < (int)sizeof(buf)) buf[pos++] = tmp[n];
+    }
+
+    const char* mid = " child=";
+    while (*mid && pos + 1 < (int)sizeof(buf)) buf[pos++] = *mid++;
+
+    v = child_pid;
+    if (v == 0) {
+        if (pos + 1 < (int)sizeof(buf)) buf[pos++] = '0';
+    } else {
+        char tmp[16];
+        int n = 0;
+        while (v > 0 && n < (int)sizeof(tmp)) {
+            tmp[n++] = (char)('0' + (v % 10));
+            v /= 10;
+        }
+        while (n-- > 0 && pos + 1 < (int)sizeof(buf)) buf[pos++] = tmp[n];
+    }
+
+    const char* suffix = " cpu=";
+    while (*suffix && pos + 1 < (int)sizeof(buf)) buf[pos++] = *suffix++;
+
+    v = (int)cpu_id;
+    if (v == 0) {
+        if (pos + 1 < (int)sizeof(buf)) buf[pos++] = '0';
+    } else {
+        char tmp[16];
+        int n = 0;
+        while (v > 0 && n < (int)sizeof(tmp)) {
+            tmp[n++] = (char)('0' + (v % 10));
+            v /= 10;
+        }
+        while (n-- > 0 && pos + 1 < (int)sizeof(buf)) buf[pos++] = tmp[n];
+    }
+
+    if (pos + 2 < (int)sizeof(buf)) {
+        buf[pos++] = '\r';
+        buf[pos++] = '\n';
+    }
+    buf[pos] = '\0';
+    puts(buf);
+}
 
 static void idle_task_entry(void) {
     task_idle_loop(0);
@@ -139,6 +201,35 @@ static int normalize_cpu_affinity(uint32_t cpu_id) {
     return (int)cpu_id;
 }
 
+static uint32_t choose_spawn_cpu(uint32_t fallback_cpu) {
+    static uint32_t next_cpu = 0;
+    uint32_t cpu_count = task_get_cpu_count();
+    uint32_t started = smp_get_started_cpu_count();
+    if (cpu_count == 0) cpu_count = 1;
+    if (started == 0 || started > cpu_count) started = cpu_count;
+    if (started <= 1) return (uint32_t)normalize_cpu_affinity(fallback_cpu);
+
+    uint32_t start = next_cpu;
+    for (uint32_t attempt = 0; attempt < started; attempt++) {
+        uint32_t cpu_id = (start + attempt) % started;
+        const struct smp_cpu_info* cpu = smp_get_cpu_info(cpu_id);
+        if (cpu && cpu->started) {
+            next_cpu = (cpu_id + 1) % started;
+            return cpu_id;
+        }
+    }
+    return (uint32_t)normalize_cpu_affinity(fallback_cpu);
+}
+
+int task_set_fork_spread(int enabled) {
+    g_fork_spread_enabled = enabled ? 1 : 0;
+    return 0;
+}
+
+int task_get_fork_spread(void) {
+    return g_fork_spread_enabled;
+}
+
 static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
                            struct task* current, struct task* idle,
                            uint64_t kernel_stack) {
@@ -153,6 +244,12 @@ static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
     cpu->user_stack = 0;
 }
 
+static void task_refresh_cpu_local_msrs(struct cpu_local* cpu) {
+    if (!cpu) return;
+    wrmsr(MSR_GS_BASE, (uintptr_t)cpu);
+    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
+}
+
 void task_bind_cpu_local(uint32_t cpu_id, struct task* current, struct task* idle,
                          uint64_t kernel_stack) {
     struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
@@ -162,9 +259,7 @@ void task_bind_cpu_local(uint32_t cpu_id, struct task* current, struct task* idl
 
 void task_install_cpu_local(uint32_t cpu_id) {
     struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
-    if (!cpu) return;
-    wrmsr(MSR_GS_BASE, (uintptr_t)cpu);
-    wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
+    task_refresh_cpu_local_msrs(cpu);
 }
 
 struct task* get_current_task(void) {
@@ -745,11 +840,13 @@ int task_fork(struct syscall_frame* frame) {
     child->ppid = parent->pid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
-    // Keep forked user tasks on the parent's CPU for now. SMP wakeups are in
-    // place, but spreading short-lived user processes across APs is still
-    // unstable under syscall-heavy pipeline workloads.
-    uint32_t spawn_cpu = (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
+    uint32_t spawn_cpu = g_fork_spread_enabled
+        ? choose_spawn_cpu((uint32_t)parent->cpu_affinity)
+        : (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
     task_mark_ready_on_cpu(child, spawn_cpu);
+    if (g_fork_spread_enabled) {
+        task_log_fork_spawn(parent->pid, child->pid, spawn_cpu);
+    }
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;
     child->user_entry = parent->user_entry;
@@ -783,7 +880,11 @@ int task_fork(struct syscall_frame* frame) {
         child->fds[i] = parent->fds[i];
         if (child->fds[i].in_use && child->fds[i].type == FT_PIPE) {
             pipe_t* pipe = (pipe_t*)child->fds[i].data;
-            if (pipe) pipe->ref_count++;
+            if (pipe) {
+                uint64_t pipe_flags = spin_lock_irqsave(&pipe->lock);
+                pipe->ref_count++;
+                spin_unlock_irqrestore(&pipe->lock, pipe_flags);
+            }
         } else if (child->fds[i].in_use && child->fds[i].type == FT_SOCKET) {
             net_socket_dup_fd(&child->fds[i]);
         }
@@ -830,6 +931,7 @@ void schedule(void) {
     if (next->timeslice_ticks <= 0) next->timeslice_ticks = TASK_TIMESLICE_TICKS;
     tss_set_stack_for_cpu(cpu->cpu_id, next->kstack_top);
     cpu->kernel_stack = next->kstack_top;
+    task_refresh_cpu_local_msrs(cpu);
     wrmsr(MSR_FS_BASE, next->user_fs_base);
     spin_unlock_irqrestore(&g_task_lock, flags);
     switch_context(&next->ctx, &prev->ctx);

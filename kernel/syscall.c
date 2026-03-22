@@ -567,6 +567,14 @@ static uint64_t sys_get_ticks_ms(void) {
     return lapic_get_ticks_ms();
 }
 
+static int sys_set_fork_spread(int enabled) {
+    return task_set_fork_spread(enabled);
+}
+
+static int sys_get_fork_spread(void) {
+    return task_get_fork_spread();
+}
+
 static int sys_sleep_ms(uint64_t ms) {
     struct task* current = get_current_task();
     if (!current) return -1;
@@ -1162,6 +1170,12 @@ void syscall_dispatch(struct syscall_frame* frame) {
                 struct cpu_local* cpu = get_cpu_local();
                 frame->rax = (uint64_t)(cpu ? (int)cpu->cpu_id : -1);
             }
+            break;
+        case ORTH_SYS_SET_FORK_SPREAD:
+            frame->rax = (uint64_t)sys_set_fork_spread((int)frame->rdi);
+            break;
+        case ORTH_SYS_GET_FORK_SPREAD:
+            frame->rax = (uint64_t)sys_get_fork_spread();
             break;
         case SYS_GETDENTS:
             frame->rax = (uint64_t)sys_getdents((int)frame->rdi, (struct orth_dirent*)frame->rsi, (size_t)frame->rdx);
