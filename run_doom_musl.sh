@@ -73,7 +73,7 @@ try:
             pass
 
     time.sleep(0.5)
-    for ch in "/boot/doom-musl.elf\n":
+    for ch in "/bin/doom-musl.elf\n":
         send(f"sendkey {mapping.get(ch, ch)}")
         time.sleep(0.12)
 finally:

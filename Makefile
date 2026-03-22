@@ -259,7 +259,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF)
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(DOOM_MUSL_ELF)
 	mkdir -p rootfs/bin
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
@@ -273,6 +273,7 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(SHOWCPU_ELF) rootfs/bin/showcpu.elf
 	cp $(RUNQSTAT_ELF) rootfs/bin/runqstat.elf
 	cp $(TCPHELLO_ELF) rootfs/bin/tcphello.elf
+	cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf
 	cp $(FORKCPU_TEST_ELF) rootfs/bin/forkcputest.elf
 	cp $(FORKMODE_ELF) rootfs/bin/forkmode.elf
 	cp $(PIPE_STRESS_ELF) rootfs/bin/pipestress.elf
@@ -283,11 +284,12 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	rm -rf rootfs/bin-musl
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .
 
-$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR)
+$(ISO): $(KERNEL_ELF) $(SH_ELF) $(DOOM_MUSL_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR)
 	rm -rf iso_root
 	mkdir -p iso_root/boot/limine
 	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
 	cp $(SH_ELF) iso_root/boot/sh.elf
+	cp $(DOOM_MUSL_ELF) iso_root/boot/doom-musl.elf
 	cp $(ROOTFS_TAR) iso_root/boot/rootfs.tar
 	cp iso/limine.conf iso_root/boot/limine/limine.conf
 
