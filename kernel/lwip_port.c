@@ -66,6 +66,16 @@ static void orthox_lwip_wake_dns_waiter(void) {
     g_dns_waiter = 0;
 }
 
+static void orthox_lwip_set_dns_waiter(struct task* task) {
+    g_dns_waiter = task;
+}
+
+static void orthox_lwip_clear_dns_waiter(struct task* task) {
+    if (g_dns_waiter == task) {
+        g_dns_waiter = 0;
+    }
+}
+
 static void putdec_u8(uint8_t v) {
     char buf[4];
     int pos = 0;
@@ -436,11 +446,18 @@ int lwip_port_lookup_ipv4(const char* hostname, uint32_t* out_addr) {
     while (!g_dns_done) {
         if (current) {
             task_mark_sleeping(current);
-            g_dns_waiter = current;
+            orthox_lwip_set_dns_waiter(current);
+            if (g_dns_done) {
+                orthox_lwip_clear_dns_waiter(current);
+                if (current->state == TASK_SLEEPING) {
+                    task_wake(current);
+                }
+                break;
+            }
         }
         kernel_yield();
-        if (g_dns_waiter == current) {
-            g_dns_waiter = 0;
+        if (current) {
+            orthox_lwip_clear_dns_waiter(current);
         }
     }
     if (g_dns_result != ERR_OK || !IP_IS_V4(&g_dns_addr)) return -1;

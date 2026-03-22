@@ -17,7 +17,6 @@ struct task* task_list = NULL;
 static int next_pid = 1;
 static uint32_t g_cpu_count = 1;
 static spinlock_t g_task_lock;
-static uint32_t g_next_spawn_cpu = 0;
 
 #define TASK_TIMESLICE_TICKS 5
 
@@ -138,25 +137,6 @@ static int normalize_cpu_affinity(uint32_t cpu_id) {
     if (cpu_count == 0) cpu_count = 1;
     if (cpu_id >= cpu_count) return 0;
     return (int)cpu_id;
-}
-
-static uint32_t choose_spawn_cpu(uint32_t fallback_cpu) {
-    uint32_t cpu_count = task_get_cpu_count();
-    uint32_t started = smp_get_started_cpu_count();
-    if (cpu_count == 0) cpu_count = 1;
-    if (started == 0 || started > cpu_count) started = cpu_count;
-    if (started <= 1) return (uint32_t)normalize_cpu_affinity(fallback_cpu);
-
-    uint32_t start = g_next_spawn_cpu;
-    for (uint32_t attempt = 0; attempt < started; attempt++) {
-        uint32_t cpu_id = (start + attempt) % started;
-        const struct smp_cpu_info* cpu = smp_get_cpu_info(cpu_id);
-        if (cpu && cpu->started) {
-            g_next_spawn_cpu = (cpu_id + 1) % started;
-            return cpu_id;
-        }
-    }
-    return (uint32_t)normalize_cpu_affinity(fallback_cpu);
 }
 
 static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
@@ -765,7 +745,10 @@ int task_fork(struct syscall_frame* frame) {
     child->ppid = parent->pid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
-    uint32_t spawn_cpu = choose_spawn_cpu((uint32_t)parent->cpu_affinity);
+    // Keep forked user tasks on the parent's CPU for now. SMP wakeups are in
+    // place, but spreading short-lived user processes across APs is still
+    // unstable under syscall-heavy pipeline workloads.
+    uint32_t spawn_cpu = (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
     task_mark_ready_on_cpu(child, spawn_cpu);
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;

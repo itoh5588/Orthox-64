@@ -6,6 +6,8 @@
 
 #define MAX_FDS 32
 
+struct task;
+
 // USTAR TAR ヘッダ構造
 struct tar_header {
     char name[100];     // ファイル名
@@ -55,6 +57,8 @@ typedef struct {
     uint32_t write_pos;
     uint32_t count;
     int ref_count;
+    struct task* read_waiter;
+    struct task* write_waiter;
 } pipe_t;
 
 typedef struct {

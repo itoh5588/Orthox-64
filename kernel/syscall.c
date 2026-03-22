@@ -297,6 +297,11 @@ static void task_signal_add_locked(struct task* t, int sig) {
     }
 }
 
+static int task_signal_pending(const struct task* t, int sig) {
+    if (!t || sig <= 0 || sig >= 64) return 0;
+    return (t->sig_pending & (1ULL << sig)) != 0;
+}
+
 static void sys_exit(int status) {
     struct task* current = get_current_task();
     // Ensure no speaker tone leaks when a user task exits abruptly.
@@ -359,6 +364,12 @@ static int64_t sys_wait4(int pid, int* wstatus, int options) {
         }
         if (!found_child) return -1;
         task_mark_sleeping(current);
+        if (task_signal_pending(current, 20)) {
+            if (current->state == TASK_SLEEPING) {
+                task_wake(current);
+            }
+            continue;
+        }
         kernel_yield();
     }
 }

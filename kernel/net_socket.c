@@ -335,6 +335,11 @@ static int64_t socket_recv_stream(file_descriptor_t* f, net_socket_backend_t* so
         if (f->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
         task_mark_sleeping(current);
         socket_set_waiter(&sock->rx_waiter, current);
+        if (sock->rx_head || sock->eof) {
+            socket_clear_waiter(&sock->rx_waiter, current);
+            if (current->state == TASK_SLEEPING) task_wake(current);
+            continue;
+        }
         kernel_yield();
         socket_clear_waiter(&sock->rx_waiter, current);
     }
@@ -366,6 +371,11 @@ static int64_t socket_recv_dgram(file_descriptor_t* f, net_socket_backend_t* soc
         if (f->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
         task_mark_sleeping(current);
         socket_set_waiter(&sock->rx_waiter, current);
+        if (sock->rx_head) {
+            socket_clear_waiter(&sock->rx_waiter, current);
+            if (current->state == TASK_SLEEPING) task_wake(current);
+            continue;
+        }
         kernel_yield();
         socket_clear_waiter(&sock->rx_waiter, current);
     }
@@ -394,6 +404,11 @@ static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* so
             if (f->flags & ORTH_LINUX_O_NONBLOCK) return sent ? (int64_t)sent : -ORTH_ERR_EAGAIN;
             task_mark_sleeping(current);
             socket_set_waiter(&sock->tx_waiter, current);
+            if (tcp_sndbuf(sock->pcb.tcp) != 0) {
+                socket_clear_waiter(&sock->tx_waiter, current);
+                if (current->state == TASK_SLEEPING) task_wake(current);
+                continue;
+            }
             kernel_yield();
             socket_clear_waiter(&sock->tx_waiter, current);
             continue;
@@ -406,6 +421,11 @@ static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* so
             (void)tcp_output(sock->pcb.tcp);
             task_mark_sleeping(current);
             socket_set_waiter(&sock->tx_waiter, current);
+            if (tcp_sndbuf(sock->pcb.tcp) != 0) {
+                socket_clear_waiter(&sock->tx_waiter, current);
+                if (current->state == TASK_SLEEPING) task_wake(current);
+                continue;
+            }
             kernel_yield();
             socket_clear_waiter(&sock->tx_waiter, current);
             continue;
@@ -523,6 +543,11 @@ int sys_connect(int fd, const void* addr, uint32_t addrlen) {
         while (sock->connecting) {
             task_mark_sleeping(current);
             socket_set_waiter(&sock->connect_waiter, current);
+            if (!sock->connecting) {
+                socket_clear_waiter(&sock->connect_waiter, current);
+                if (current->state == TASK_SLEEPING) task_wake(current);
+                continue;
+            }
             kernel_yield();
             socket_clear_waiter(&sock->connect_waiter, current);
         }
@@ -566,6 +591,11 @@ int sys_accept(int fd, void* addr, uint32_t* addrlen) {
         if (listen_fd->flags & ORTH_LINUX_O_NONBLOCK) return -ORTH_ERR_EAGAIN;
         task_mark_sleeping(current);
         socket_set_waiter(&listener->accept_waiter, current);
+        if (listener->accept_head) {
+            socket_clear_waiter(&listener->accept_waiter, current);
+            if (current->state == TASK_SLEEPING) task_wake(current);
+            continue;
+        }
         kernel_yield();
         socket_clear_waiter(&listener->accept_waiter, current);
     }

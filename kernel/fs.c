@@ -30,6 +30,24 @@ extern void puthex(uint64_t v);
 #define ORTH_LINUX_O_APPEND  0x400
 #define ORTH_LEGACY_O_DIRECTORY 0x200000
 
+static void pipe_wake_waiter(struct task** waiter) {
+    if (!waiter || !*waiter) return;
+    if ((*waiter)->state == TASK_SLEEPING) {
+        task_wake(*waiter);
+    }
+    *waiter = 0;
+}
+
+static void pipe_set_waiter(struct task** waiter, struct task* task) {
+    if (!waiter) return;
+    *waiter = task;
+}
+
+static void pipe_clear_waiter(struct task** waiter, struct task* task) {
+    if (!waiter) return;
+    if (*waiter == task) *waiter = 0;
+}
+
 static int strcmp_exact(const char* s1, const char* s2) {
     while (*s1 && *s2) {
         if (*s1 != *s2) return 0;
@@ -1585,13 +1603,17 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         const char* src = (const char*)buf;
         while (written < count) {
             if (pipe->count == PIPE_BUF_SIZE) {
+                task_mark_sleeping(current);
+                pipe_set_waiter(&pipe->write_waiter, current);
                 kernel_yield();
+                pipe_clear_waiter(&pipe->write_waiter, current);
                 continue;
             }
             pipe->buffer[pipe->write_pos] = src[written];
             pipe->write_pos = (pipe->write_pos + 1) % PIPE_BUF_SIZE;
             pipe->count++;
             written++;
+            pipe_wake_waiter(&pipe->read_waiter);
         }
         return (int64_t)written;
     }
@@ -1659,7 +1681,10 @@ int64_t sys_read(int fd, void* buf, size_t count) {
             if (pipe->ref_count < 2) {
                 return 0; // 書き込み側が閉じられた
             }
+            task_mark_sleeping(current);
+            pipe_set_waiter(&pipe->read_waiter, current);
             kernel_yield();
+            pipe_clear_waiter(&pipe->read_waiter, current);
         }
         size_t to_read = (count > pipe->count) ? pipe->count : count;
         char* dest = (char*)buf;
@@ -1668,6 +1693,7 @@ int64_t sys_read(int fd, void* buf, size_t count) {
             pipe->read_pos = (pipe->read_pos + 1) % PIPE_BUF_SIZE;
             pipe->count--;
         }
+        pipe_wake_waiter(&pipe->write_waiter);
         return (int64_t)to_read;
     }
 
@@ -1732,6 +1758,8 @@ int sys_close(int fd) {
     if (current->fds[fd].type == FT_PIPE) {
         pipe_t* pipe = (pipe_t*)current->fds[fd].data;
         pipe->ref_count--;
+        pipe_wake_waiter(&pipe->read_waiter);
+        pipe_wake_waiter(&pipe->write_waiter);
         if (pipe->ref_count == 0) {
             pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
         }
@@ -1831,6 +1859,8 @@ int sys_pipe(int pipefd[2]) {
     pipe->write_pos = 0;
     pipe->count = 0;
     pipe->ref_count = 2;
+    pipe->read_waiter = 0;
+    pipe->write_waiter = 0;
 
     current->fds[fd1].type = FT_PIPE;
     current->fds[fd1].data = pipe;
