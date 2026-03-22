@@ -441,4 +441,5 @@ int dns_lookup_ipv4(const char *hostname, uint32_t *out_addr) { return (int)orth
 int get_cpu_id(void) { return (int)orth_syscall3(ORTH_SYS_GET_CPU_ID, 0, 0, 0); }
 int set_fork_spread(int enabled) { return (int)orth_syscall3(ORTH_SYS_SET_FORK_SPREAD, (uint64_t)enabled, 0, 0); }
 int get_fork_spread(void) { return (int)orth_syscall3(ORTH_SYS_GET_FORK_SPREAD, 0, 0, 0); }
+int get_runq_stats(struct orth_runq_stat *out, uint32_t max_count) { return (int)orth_syscall3(ORTH_SYS_GET_RUNQ_STATS, (uint64_t)out, (uint64_t)max_count, 0); }
 int getdents_sys(int fd, struct orth_dirent *dirp, uint32_t count) { return (int)orth_syscall3(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count); }

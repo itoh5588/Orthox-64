@@ -29,6 +29,7 @@ switch_context:
     pop %r12
     pop %rbx
     pop %rbp
+    andq $~0x100, (%rsp)
     popfq
     ret
 

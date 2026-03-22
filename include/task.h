@@ -5,6 +5,7 @@
 #include "fs.h"
 
 struct elf_info;
+struct orth_runq_stat;
 
 typedef enum {
     TASK_RUNNING,
@@ -81,6 +82,7 @@ struct task {
 void task_init(void);
 void task_set_cpu_count(uint32_t cpu_count);
 uint32_t task_get_cpu_count(void);
+int task_get_runq_stats(struct orth_runq_stat* out, uint32_t max_count);
 struct cpu_local* get_cpu_local_by_id(uint32_t cpu_id);
 void task_bind_cpu_local(uint32_t cpu_id, struct task* current, struct task* idle,
                          uint64_t kernel_stack);

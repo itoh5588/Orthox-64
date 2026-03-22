@@ -53,6 +53,7 @@ EXEC_ELF = user/exec_test.elf
 PIPE_TEST_ELF = user/pipetest.elf
 PIPE_STRESS_ELF = user/pipestress.elf
 SMP_STRESS_ELF = user/smpstress.elf
+SCHEDMIX_ELF = user/schedmix.elf
 SH_ELF = user/sh.elf
 MUSL_SH_ELF = user/sh-musl.elf
 AT_TEST_MUSL_ELF = user/attest-musl.elf
@@ -65,6 +66,7 @@ RO_TEST_ELF = user/rotest.elf
 VRAM_TEST_ELF = user/testvram.elf
 TIME_TEST_ELF = user/testtime.elf
 SHOWCPU_ELF = user/showcpu.elf
+RUNQSTAT_ELF = user/runqstat.elf
 FORKCPU_TEST_ELF = user/forkcputest.elf
 FORKMODE_ELF = user/forkmode.elf
 KEY_TEST_ELF = user/testkey.elf
@@ -148,12 +150,12 @@ OBJS = $(patsubst kernel/%.c, $(BUILD_DIR)/kernel/%.o, $(filter %.c, $(SRCS))) \
 
 DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/crt0.d $(USER_BUILD_DIR)/syscalls.d $(USER_BUILD_DIR)/syscalls_musl.d $(USER_BUILD_DIR)/syscall_wrap.d \
-       $(USER_BUILD_DIR)/user_test.d $(USER_BUILD_DIR)/exec_test.d $(USER_BUILD_DIR)/pipe_test.d $(USER_BUILD_DIR)/pipestress.d $(USER_BUILD_DIR)/smpstress.d \
+       $(USER_BUILD_DIR)/user_test.d $(USER_BUILD_DIR)/exec_test.d $(USER_BUILD_DIR)/pipe_test.d $(USER_BUILD_DIR)/pipestress.d $(USER_BUILD_DIR)/smpstress.d $(USER_BUILD_DIR)/schedmix.d \
        $(USER_BUILD_DIR)/at_test.d \
        $(USER_BUILD_DIR)/sh.d $(USER_BUILD_DIR)/gcc.d $(USER_BUILD_DIR)/as.d $(USER_BUILD_DIR)/ld.d \
        $(USER_BUILD_DIR)/loop.d $(USER_BUILD_DIR)/cowtest.d $(USER_BUILD_DIR)/rotest.d \
        $(USER_BUILD_DIR)/testvram.d $(USER_BUILD_DIR)/testtime.d $(USER_BUILD_DIR)/testkey.d \
-       $(USER_BUILD_DIR)/showcpu.d \
+       $(USER_BUILD_DIR)/showcpu.d $(USER_BUILD_DIR)/runqstat.d \
        $(USER_BUILD_DIR)/testsound.d $(USER_BUILD_DIR)/mmaptest.d $(USER_BUILD_DIR)/reaptest.d \
        $(USER_BUILD_DIR)/robusttest.d $(USER_BUILD_DIR)/signaltest.d $(USER_BUILD_DIR)/ttytest.d \
        $(USER_BUILD_DIR)/sigmasktest.d $(USER_BUILD_DIR)/sigactiontest.d \
@@ -256,7 +258,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(REAP_TEST_ELF)
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF)
 	mkdir -p rootfs/bin
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
@@ -268,10 +270,12 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(TIME_TEST_ELF) rootfs/bin/testtime.elf
 	cp $(TICKRATE_TEST_ELF) rootfs/bin/tickratecheck.elf
 	cp $(SHOWCPU_ELF) rootfs/bin/showcpu.elf
+	cp $(RUNQSTAT_ELF) rootfs/bin/runqstat.elf
 	cp $(FORKCPU_TEST_ELF) rootfs/bin/forkcputest.elf
 	cp $(FORKMODE_ELF) rootfs/bin/forkmode.elf
 	cp $(PIPE_STRESS_ELF) rootfs/bin/pipestress.elf
 	cp $(SMP_STRESS_ELF) rootfs/bin/smpstress.elf
+	cp $(SCHEDMIX_ELF) rootfs/bin/schedmix.elf
 	cp $(REAP_TEST_ELF) rootfs/bin/reaptest.elf
 	# Remove old bin-musl if it exists to avoid confusion
 	rm -rf rootfs/bin-musl

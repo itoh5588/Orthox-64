@@ -109,10 +109,10 @@ static void idt_build_once(void) {
     idt_set_gate(20, isr20, 1, IDT_GATE_INTERRUPT);
     idt_set_gate(21, isr21, 1, IDT_GATE_INTERRUPT);
 
-    idt_set_gate(INT_VECTOR_TIMER,    isr32, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(INT_VECTOR_TIMER,    isr32, 1, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_KEYBOARD, isr33, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_SERIAL,   isr36, 0, IDT_GATE_INTERRUPT);
-    idt_set_gate(INT_VECTOR_RESCHED,  isr48, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(INT_VECTOR_RESCHED,  isr48, 1, IDT_GATE_INTERRUPT);
     idt_built = 1;
 }
 
@@ -188,6 +188,7 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
     puts(", Error Code: "); puthex(frame->error_code);
     puts("\r\nRIP: 0x"); puthex(frame->rip);
     puts(", CS: 0x"); puthex(frame->cs);
+    puts(", RFLAGS: 0x"); puthex(frame->rflags);
     puts("\r\nRSP: 0x"); puthex(frame->rsp);
     puts(", SS: 0x"); puthex(frame->ss);
     {
@@ -195,6 +196,8 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
         struct task* current = get_current_task();
         puts("\r\nCPU: "); puthex(cpu ? (uint64_t)cpu->cpu_id : 0xFFFFFFFFFFFFFFFFULL);
         puts(", CUR: 0x"); puthex((uint64_t)(uintptr_t)current);
+        puts(", PID: "); puthex(current ? (uint64_t)(uint32_t)current->pid : 0xFFFFFFFFFFFFFFFFULL);
+        puts(", STATE: "); puthex(current ? (uint64_t)(uint32_t)current->state : 0xFFFFFFFFFFFFFFFFULL);
         puts(", GS: 0x"); puthex(rdmsr_local(MSR_GS_BASE));
         puts(", KGS: 0x"); puthex(rdmsr_local(MSR_KERNEL_GS_BASE));
     }

@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "task.h"
+#include "syscall.h"
 #include "pmm.h"
 #include "vmm.h"
 #include "gdt.h"
@@ -52,70 +53,30 @@ extern void puts(const char* s);
 extern void puthex(uint64_t v);
 extern void fork_child_entry(void);
 static int free_task_struct(struct task* t);
-
-static void task_log_fork_spawn(int parent_pid, int child_pid, uint32_t cpu_id) {
-    char buf[96];
-    int pos = 0;
-    int v;
-
-    const char* prefix = "[task] fork parent=";
-    while (*prefix && pos + 1 < (int)sizeof(buf)) buf[pos++] = *prefix++;
-
-    v = parent_pid;
-    if (v == 0) {
-        if (pos + 1 < (int)sizeof(buf)) buf[pos++] = '0';
-    } else {
-        char tmp[16];
-        int n = 0;
-        while (v > 0 && n < (int)sizeof(tmp)) {
-            tmp[n++] = (char)('0' + (v % 10));
-            v /= 10;
-        }
-        while (n-- > 0 && pos + 1 < (int)sizeof(buf)) buf[pos++] = tmp[n];
-    }
-
-    const char* mid = " child=";
-    while (*mid && pos + 1 < (int)sizeof(buf)) buf[pos++] = *mid++;
-
-    v = child_pid;
-    if (v == 0) {
-        if (pos + 1 < (int)sizeof(buf)) buf[pos++] = '0';
-    } else {
-        char tmp[16];
-        int n = 0;
-        while (v > 0 && n < (int)sizeof(tmp)) {
-            tmp[n++] = (char)('0' + (v % 10));
-            v /= 10;
-        }
-        while (n-- > 0 && pos + 1 < (int)sizeof(buf)) buf[pos++] = tmp[n];
-    }
-
-    const char* suffix = " cpu=";
-    while (*suffix && pos + 1 < (int)sizeof(buf)) buf[pos++] = *suffix++;
-
-    v = (int)cpu_id;
-    if (v == 0) {
-        if (pos + 1 < (int)sizeof(buf)) buf[pos++] = '0';
-    } else {
-        char tmp[16];
-        int n = 0;
-        while (v > 0 && n < (int)sizeof(tmp)) {
-            tmp[n++] = (char)('0' + (v % 10));
-            v /= 10;
-        }
-        while (n-- > 0 && pos + 1 < (int)sizeof(buf)) buf[pos++] = tmp[n];
-    }
-
-    if (pos + 2 < (int)sizeof(buf)) {
-        buf[pos++] = '\r';
-        buf[pos++] = '\n';
-    }
-    buf[pos] = '\0';
-    puts(buf);
-}
+static int task_is_idle_task(struct task* t);
+static int task_can_migrate_locked(struct task* t);
 
 static void idle_task_entry(void) {
     task_idle_loop(0);
+}
+
+static void task_init_idle_context(struct task* t) {
+    uint64_t* sp;
+    if (!t || !task_is_idle_task(t)) return;
+    sp = (uint64_t*)(t->kstack_top - 8);
+    *sp = (uint64_t)idle_task_entry;
+    *(--sp) = 0x202;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    *(--sp) = 0;
+    t->ctx.rsp = (uint64_t)sp;
+    t->ctx.rip = (uint64_t)idle_task_entry;
+    t->ctx.cs = 0x08;
+    t->ctx.ss = 0x10;
+    t->ctx.rflags = 0;
 }
 
 struct exec_copy_buf {
@@ -183,6 +144,44 @@ void task_set_cpu_count(uint32_t cpu_count) {
 
 uint32_t task_get_cpu_count(void) {
     return g_cpu_count;
+}
+
+int task_get_runq_stats(struct orth_runq_stat* out, uint32_t max_count) {
+    uint32_t cpu_count = task_get_cpu_count();
+    uint32_t started = smp_get_started_cpu_count();
+    uint32_t count = 0;
+    uint64_t flags;
+
+    if (!out || max_count == 0) return -1;
+    if (cpu_count == 0) cpu_count = 1;
+    if (started == 0 || started > cpu_count) started = cpu_count;
+
+    flags = spin_lock_irqsave(&g_task_lock);
+    for (uint32_t cpu_id = 0; cpu_id < started && count < max_count; cpu_id++) {
+        struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
+        struct task* current;
+        uint32_t migratable = 0;
+        if (!cpu) continue;
+        current = cpu->current_task;
+        for (struct task* t = cpu->runq_head; t; t = t->runq_next) {
+            if (task_can_migrate_locked(t)) migratable++;
+        }
+        out[count].cpu_id = cpu_id;
+        out[count].runq_count = cpu->runq_count;
+        out[count].total_load = cpu->runq_count;
+        out[count].current_pid = current ? current->pid : -1;
+        out[count].current_state = current ? (int32_t)current->state : -1;
+        out[count].runq_head_pid = cpu->runq_head ? cpu->runq_head->pid : -1;
+        out[count].runq_tail_pid = cpu->runq_tail ? cpu->runq_tail->pid : -1;
+        out[count].current_is_idle = (current && current == cpu->idle_task) ? 1U : 0U;
+        out[count].migratable_count = migratable;
+        if (current && current != cpu->idle_task && current->state == TASK_RUNNING) {
+            out[count].total_load++;
+        }
+        count++;
+    }
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return (int)count;
 }
 
 static inline struct task* get_current_task_raw(void) {
@@ -278,6 +277,18 @@ static struct cpu_local* task_get_ready_cpu_locked(uint32_t cpu_id) {
     return get_cpu_local_by_id(normalize_cpu_affinity(cpu_id));
 }
 
+static int task_is_idle_task(struct task* t) {
+    return t && t->pid == 0;
+}
+
+static int task_can_migrate_locked(struct task* t) {
+    if (!t) return 0;
+    if (task_is_idle_task(t)) return 0;
+    if (t->state != TASK_READY) return 0;
+    if (!t->on_runq) return 0;
+    return 1;
+}
+
 static void task_runq_remove_locked(struct task* t) {
     struct cpu_local* cpu;
     if (!t || !t->on_runq) return;
@@ -295,7 +306,7 @@ static void task_runq_remove_locked(struct task* t) {
 
 static void task_runq_push_locked(struct task* t, uint32_t cpu_id) {
     struct cpu_local* cpu;
-    if (!t) return;
+    if (!t || task_is_idle_task(t)) return;
     cpu_id = (uint32_t)normalize_cpu_affinity(cpu_id);
     if (t->on_runq) task_runq_remove_locked(t);
     cpu = task_get_ready_cpu_locked(cpu_id);
@@ -322,13 +333,17 @@ static struct task* task_runq_pop_locked(struct cpu_local* cpu) {
 static int task_set_affinity_locked(struct task* t, uint32_t cpu_id) {
     if (!t) return -1;
     cpu_id = (uint32_t)normalize_cpu_affinity(cpu_id);
-    if (t->on_runq) task_runq_push_locked(t, cpu_id);
-    else t->cpu_affinity = (int)cpu_id;
+    if (!task_can_migrate_locked(t)) {
+        if (t->cpu_affinity == (int)cpu_id) return 0;
+        return -1;
+    }
+    task_runq_push_locked(t, cpu_id);
     return 0;
 }
 
 static int task_mark_ready_on_cpu_locked(struct task* t, uint32_t cpu_id) {
     if (!t) return -1;
+    if (task_is_idle_task(t)) return -1;
     if (t->state == TASK_ZOMBIE || t->state == TASK_DEAD) return -1;
     t->state = TASK_READY;
     t->sleep_until_ms = 0;
@@ -941,20 +956,7 @@ struct task* task_create_idle(uint32_t cpu_id) {
     if (!kstack_phys) return NULL;
     t->kstack_top = (uint64_t)PHYS_TO_VIRT(kstack_phys) + 4 * PAGE_SIZE;
     t->os_stack_ptr = t->kstack_top;
-    uint64_t* sp = (uint64_t*)(t->kstack_top - 8);
-    *sp = (uint64_t)idle_task_entry;
-    *(--sp) = 0x202;
-    *(--sp) = 0;
-    *(--sp) = 0;
-    *(--sp) = 0;
-    *(--sp) = 0;
-    *(--sp) = 0;
-    *(--sp) = 0;
-    t->ctx.rsp = (uint64_t)sp;
-    t->ctx.rip = (uint64_t)idle_task_entry;
-    t->ctx.cs = 0x08;
-    t->ctx.ss = 0x10;
-    t->ctx.rflags = 0;
+    task_init_idle_context(t);
     t->ctx.fxsave_area[0] = 0x7f;
     t->ctx.fxsave_area[1] = 0x03;
     t->ctx.fxsave_area[24] = 0x80;
@@ -979,9 +981,6 @@ int task_fork(struct syscall_frame* frame) {
         ? choose_spawn_cpu_locked((uint32_t)parent->cpu_affinity)
         : (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
     task_mark_ready_on_cpu_locked(child, spawn_cpu);
-    if (g_fork_spread_enabled) {
-        task_log_fork_spawn(parent->pid, child->pid, spawn_cpu);
-    }
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;
     child->user_entry = parent->user_entry;
@@ -1051,7 +1050,7 @@ void schedule(void) {
         return;
     }
     prev = current_task;
-    if (prev->state == TASK_RUNNING) {
+    if (prev->state == TASK_RUNNING && !task_is_idle_task(prev)) {
         task_mark_ready_on_cpu_locked(prev, (uint32_t)prev->cpu_affinity);
     }
     cpu->current_task = next;

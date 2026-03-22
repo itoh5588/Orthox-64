@@ -994,6 +994,10 @@ int get_fork_spread(void) {
     return (int)syscall(ORTH_SYS_GET_FORK_SPREAD, 0, 0, 0);
 }
 
+int get_runq_stats(struct orth_runq_stat* out, uint32_t max_count) {
+    return (int)syscall(ORTH_SYS_GET_RUNQ_STATS, (uint64_t)out, (uint64_t)max_count, 0);
+}
+
 int getdents_sys(int fd, struct orth_dirent* dirp, uint32_t count) {
     return (int)syscall(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count);
 }

@@ -1177,6 +1177,9 @@ void syscall_dispatch(struct syscall_frame* frame) {
         case ORTH_SYS_GET_FORK_SPREAD:
             frame->rax = (uint64_t)sys_get_fork_spread();
             break;
+        case ORTH_SYS_GET_RUNQ_STATS:
+            frame->rax = (uint64_t)task_get_runq_stats((struct orth_runq_stat*)frame->rdi, (uint32_t)frame->rsi);
+            break;
         case SYS_GETDENTS:
             frame->rax = (uint64_t)sys_getdents((int)frame->rdi, (struct orth_dirent*)frame->rsi, (size_t)frame->rdx);
             break;

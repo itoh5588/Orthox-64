@@ -98,6 +98,7 @@
 #define ORTH_SYS_GET_CPU_ID       (ORTH_SYS_BASE + 22)
 #define ORTH_SYS_SET_FORK_SPREAD  (ORTH_SYS_BASE + 23)
 #define ORTH_SYS_GET_FORK_SPREAD  (ORTH_SYS_BASE + 24)
+#define ORTH_SYS_GET_RUNQ_STATS   (ORTH_SYS_BASE + 25)
 
 // mmap flags/protection (Linux-compatible subset)
 #ifndef PROT_NONE
@@ -156,6 +157,18 @@ struct orth_sigaction {
     uint32_t reserved;
 };
 
+struct orth_runq_stat {
+    uint32_t cpu_id;
+    uint32_t runq_count;
+    uint32_t total_load;
+    int32_t current_pid;
+    int32_t current_state;
+    int32_t runq_head_pid;
+    int32_t runq_tail_pid;
+    uint32_t current_is_idle;
+    uint32_t migratable_count;
+};
+
 #ifndef ORTH_DIRENT_DEFINED
 #define ORTH_DIRENT_DEFINED
 struct orth_dirent {
@@ -198,5 +211,6 @@ int dns_lookup_ipv4(const char* hostname, uint32_t* out_addr);
 int get_cpu_id(void);
 int set_fork_spread(int enabled);
 int get_fork_spread(void);
+int get_runq_stats(struct orth_runq_stat* out, uint32_t max_count);
 
 #endif
