@@ -33,7 +33,7 @@ sock = None
 serial_log = Path("serial_doom_musl.log")
 for _ in range(400):
     try:
-        if "Welcome to OrthOS Shell!" in serial_log.read_text(errors="ignore"):
+        if "Welcome to Orthox-64 Shell!" in serial_log.read_text(errors="ignore"):
             break
     except FileNotFoundError:
         pass

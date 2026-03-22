@@ -67,6 +67,7 @@ VRAM_TEST_ELF = user/testvram.elf
 TIME_TEST_ELF = user/testtime.elf
 SHOWCPU_ELF = user/showcpu.elf
 RUNQSTAT_ELF = user/runqstat.elf
+TCPHELLO_ELF = user/tcphello.elf
 FORKCPU_TEST_ELF = user/forkcputest.elf
 FORKMODE_ELF = user/forkmode.elf
 KEY_TEST_ELF = user/testkey.elf
@@ -155,7 +156,7 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/sh.d $(USER_BUILD_DIR)/gcc.d $(USER_BUILD_DIR)/as.d $(USER_BUILD_DIR)/ld.d \
        $(USER_BUILD_DIR)/loop.d $(USER_BUILD_DIR)/cowtest.d $(USER_BUILD_DIR)/rotest.d \
        $(USER_BUILD_DIR)/testvram.d $(USER_BUILD_DIR)/testtime.d $(USER_BUILD_DIR)/testkey.d \
-       $(USER_BUILD_DIR)/showcpu.d $(USER_BUILD_DIR)/runqstat.d \
+       $(USER_BUILD_DIR)/showcpu.d $(USER_BUILD_DIR)/runqstat.d $(USER_BUILD_DIR)/tcphello.d \
        $(USER_BUILD_DIR)/testsound.d $(USER_BUILD_DIR)/mmaptest.d $(USER_BUILD_DIR)/reaptest.d \
        $(USER_BUILD_DIR)/robusttest.d $(USER_BUILD_DIR)/signaltest.d $(USER_BUILD_DIR)/ttytest.d \
        $(USER_BUILD_DIR)/sigmasktest.d $(USER_BUILD_DIR)/sigactiontest.d \
@@ -271,6 +272,7 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(TICKRATE_TEST_ELF) rootfs/bin/tickratecheck.elf
 	cp $(SHOWCPU_ELF) rootfs/bin/showcpu.elf
 	cp $(RUNQSTAT_ELF) rootfs/bin/runqstat.elf
+	cp $(TCPHELLO_ELF) rootfs/bin/tcphello.elf
 	cp $(FORKCPU_TEST_ELF) rootfs/bin/forkcputest.elf
 	cp $(FORKMODE_ELF) rootfs/bin/forkmode.elf
 	cp $(PIPE_STRESS_ELF) rootfs/bin/pipestress.elf

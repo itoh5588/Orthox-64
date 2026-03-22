@@ -59,6 +59,7 @@ interrupt_common:
     swapgs
 2:
     POP_ALL
+    btrq $8, 32(%rsp)
     add $16, %rsp
     iretq
 

@@ -4,9 +4,9 @@ qemu-system-x86_64 -M pc -m 2G -cdrom orthos.iso -boot d -display none \
     -serial file:serial.log -monitor unix:qemu.sock,server,nowait -k en-us &
 QEMU_PID=$!
 
-echo "Waiting for OrthOS Shell..."
+echo "Waiting for Orthox-64 Shell..."
 for i in {1..30}; do
-    if grep -q "Welcome to OrthOS Shell!" serial.log 2>/dev/null; then
+    if grep -q "Welcome to Orthox-64 Shell!" serial.log 2>/dev/null; then
         echo "Shell started!"
         break
     fi

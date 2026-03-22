@@ -20,6 +20,7 @@
 #define LWIP_DHCP_DOES_ACD_CHECK     0
 #define LWIP_AUTOIP                  0
 #define LWIP_DNS                     1
+#define SO_REUSE                     1
 #define LWIP_IGMP                    0
 #define PPP_SUPPORT                  0
 #define LWIP_HAVE_LOOPIF             0

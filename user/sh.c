@@ -951,7 +951,7 @@ static void run_usb_musl_check(void) {
 }
 
 int main() {
-    printf("Welcome to OrthOS Shell!\n");
+    printf("Welcome to Orthox-64 Shell!\n");
     
     // 初期シェルとして環境変数をセットアップ
     if (environ == NULL || environ[0] == NULL) {

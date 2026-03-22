@@ -15,9 +15,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Waiting for OrthOS Shell..."
+echo "Waiting for Orthox-64 Shell..."
 for i in {1..40}; do
-    if grep -q "Welcome to OrthOS Shell!" serial_toolchain.log 2>/dev/null; then
+    if grep -q "Welcome to Orthox-64 Shell!" serial_toolchain.log 2>/dev/null; then
         echo "Shell started"
         break
     fi

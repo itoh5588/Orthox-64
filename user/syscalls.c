@@ -730,10 +730,10 @@ WEAK_SYM int uname(struct utsname* buf) {
         return -1;
     }
     memset(buf, 0, sizeof(*buf));
-    strcpy(buf->sysname, "OrthOS");
-    strcpy(buf->nodename, "orthos");
+    strcpy(buf->sysname, "Orthox-64");
+    strcpy(buf->nodename, "orthox64");
     strcpy(buf->release, "0.1");
-    strcpy(buf->version, "OrthOS");
+    strcpy(buf->version, "Orthox-64");
     strcpy(buf->machine, "x86_64");
     return 0;
 }

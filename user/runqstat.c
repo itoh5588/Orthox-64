@@ -37,11 +37,18 @@ int main(void) {
             idlest_load = load;
             idlest_cpu = stats[i].cpu_id;
         }
-        printf("cpu=%u load=%u runq=%u migratable=%u head=%d tail=%d current_pid=%d current_state=%s idle=%u\n",
+        printf("cpu=%u load=%u runq=%u migratable=%u affined=%u ready=%u blocked_ready=%u running=%u blocked_running=%u sleeping=%u blocked_sleeping=%u head=%d tail=%d current_pid=%d current_state=%s idle=%u\n",
                stats[i].cpu_id,
                stats[i].total_load,
                stats[i].runq_count,
                stats[i].migratable_count,
+               stats[i].affined_tasks,
+               stats[i].affined_ready,
+               stats[i].blocked_ready,
+               stats[i].affined_running,
+               stats[i].blocked_running,
+               stats[i].affined_sleeping,
+               stats[i].blocked_sleeping,
                stats[i].runq_head_pid,
                stats[i].runq_tail_pid,
                stats[i].current_pid,

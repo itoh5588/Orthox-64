@@ -161,6 +161,13 @@ struct orth_runq_stat {
     uint32_t cpu_id;
     uint32_t runq_count;
     uint32_t total_load;
+    uint32_t affined_tasks;
+    uint32_t affined_ready;
+    uint32_t affined_running;
+    uint32_t affined_sleeping;
+    uint32_t blocked_ready;
+    uint32_t blocked_running;
+    uint32_t blocked_sleeping;
     int32_t current_pid;
     int32_t current_state;
     int32_t runq_head_pid;

@@ -15,10 +15,11 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **64-bit Long Mode:** Runs in full 64-bit mode.
 - **Bootloader:** Uses [Limine](https://github.com/limine-bootloader/limine) for modern UEFI/BIOS booting.
 - **Memory Management:** PMM (Physical Memory Manager) and VMM (Virtual Memory Manager) with paging.
-- **Multitasking:** Preemptive multitasking and kernel threads.
+- **Multitasking:** Preemptive multitasking, kernel threads, and an SMP-ready per-CPU scheduler base.
 - **File System:** Virtual File System (VFS) and tar-based initial ramdisk.
 - **USB Support:** Basic USB stack and Mass Storage Class (MSC) support.
 - **Networking:** `virtio-net` + `lwIP` based IPv4 networking with DHCP, DNS, ICMP, UDP, TCP, socket syscalls, BusyBox `httpd`, outbound HTTP client support, and userland HTTPS client support with BearSSL.
+- **SMP:** 4 CPU bring-up, LAPIC timer, reschedule IPI, per-CPU run queue, and validated blocking wakeup paths for pipe, wait, and socket workloads.
 - **Sound:** Audio support via Intel HD Audio.
 - **Userland:** Environment based on `musl libc` for better standard compatibility.
 - **Ported Apps:** Capable of running ported software like `doomgeneric`.
@@ -31,7 +32,7 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **doomgeneric:** Vendored local port, upstream version not recorded in-tree
 
 ## Status
-The project is currently in active development. Core kernel primitives are stable, networking is working on QEMU user-net, and Orthox-64 can now resolve DNS, serve BusyBox `httpd`, and fetch real HTTPS pages from userspace with a BearSSL-based client. Current focus is on expanding userland compatibility and improving higher-level network functionality beyond the current minimal HTTP/HTTPS client.
+The project is currently in active development. The current SMP scheduler phase has reached its acceptance target: Orthox-64 now boots and runs on 4 CPUs in QEMU, uses a per-CPU run queue, restores fork spread, and has validated pipe, `wait4()`, DNS, socket, UDP echo, BusyBox `httpd`, and userspace HTTPS paths under SMP. Current focus is on expanding userland compatibility and moving from this stabilized SMP base toward broader load balancing and higher-level functionality.
 
 ## Acknowledgements
 Orthox-64 is inspired by and references the following projects:

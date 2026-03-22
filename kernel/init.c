@@ -152,7 +152,7 @@ static void enable_paging_features(void) {
 
 void _start(void) {
     init_serial();
-    puts("\r\n--- OrthOS-64 Boot ---\r\n");
+    puts("\r\n--- Orthox-64 Boot ---\r\n");
 
     if (memmap_request.response && hhdm_request.response && kernel_address_request.response) {
         pmm_init();

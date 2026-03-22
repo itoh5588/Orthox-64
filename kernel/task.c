@@ -55,6 +55,18 @@ extern void fork_child_entry(void);
 static int free_task_struct(struct task* t);
 static int task_is_idle_task(struct task* t);
 static int task_can_migrate_locked(struct task* t);
+static int normalize_cpu_affinity(uint32_t cpu_id);
+static void task_runq_push_locked(struct task* t, uint32_t cpu_id);
+
+enum task_migration_reason {
+    TASK_MIGRATE_OK = 0,
+    TASK_MIGRATE_BLOCK_NULL,
+    TASK_MIGRATE_BLOCK_IDLE,
+    TASK_MIGRATE_BLOCK_NOT_READY,
+    TASK_MIGRATE_BLOCK_NOT_ON_RUNQ,
+};
+
+static enum task_migration_reason task_migration_reason_locked(struct task* t);
 
 static void idle_task_entry(void) {
     task_idle_loop(0);
@@ -161,14 +173,44 @@ int task_get_runq_stats(struct orth_runq_stat* out, uint32_t max_count) {
         struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
         struct task* current;
         uint32_t migratable = 0;
+        uint32_t affined_tasks = 0;
+        uint32_t affined_ready = 0;
+        uint32_t affined_running = 0;
+        uint32_t affined_sleeping = 0;
+        uint32_t blocked_ready = 0;
+        uint32_t blocked_running = 0;
+        uint32_t blocked_sleeping = 0;
         if (!cpu) continue;
         current = cpu->current_task;
-        for (struct task* t = cpu->runq_head; t; t = t->runq_next) {
-            if (task_can_migrate_locked(t)) migratable++;
+        for (struct task* t = task_list; t; t = t->next) {
+            enum task_migration_reason migrate_reason;
+            if (task_is_idle_task(t)) continue;
+            if (t->state == TASK_DEAD) continue;
+            if ((uint32_t)normalize_cpu_affinity((uint32_t)t->cpu_affinity) != cpu_id) continue;
+            affined_tasks++;
+            migrate_reason = task_migration_reason_locked(t);
+            if (t->state == TASK_READY) {
+                affined_ready++;
+                if (migrate_reason == TASK_MIGRATE_OK) migratable++;
+                else blocked_ready++;
+            } else if (t->state == TASK_RUNNING) {
+                affined_running++;
+                if (migrate_reason != TASK_MIGRATE_OK) blocked_running++;
+            } else if (t->state == TASK_SLEEPING) {
+                affined_sleeping++;
+                if (migrate_reason != TASK_MIGRATE_OK) blocked_sleeping++;
+            }
         }
         out[count].cpu_id = cpu_id;
         out[count].runq_count = cpu->runq_count;
         out[count].total_load = cpu->runq_count;
+        out[count].affined_tasks = affined_tasks;
+        out[count].affined_ready = affined_ready;
+        out[count].affined_running = affined_running;
+        out[count].affined_sleeping = affined_sleeping;
+        out[count].blocked_ready = blocked_ready;
+        out[count].blocked_running = blocked_running;
+        out[count].blocked_sleeping = blocked_sleeping;
         out[count].current_pid = current ? current->pid : -1;
         out[count].current_state = current ? (int32_t)current->state : -1;
         out[count].runq_head_pid = cpu->runq_head ? cpu->runq_head->pid : -1;
@@ -211,6 +253,52 @@ static uint32_t task_cpu_load_locked(uint32_t cpu_id) {
         load++;
     }
     return load;
+}
+
+static uint32_t task_choose_rebalance_cpu_locked(uint32_t fallback_cpu) {
+    uint32_t cpu_count = task_get_cpu_count();
+    uint32_t started = smp_get_started_cpu_count();
+    uint32_t best_cpu;
+    uint32_t best_load;
+
+    if (cpu_count == 0) cpu_count = 1;
+    if (started == 0 || started > cpu_count) started = cpu_count;
+    best_cpu = (uint32_t)normalize_cpu_affinity(fallback_cpu);
+    best_load = task_cpu_load_locked(best_cpu);
+
+    for (uint32_t cpu_id = 0; cpu_id < started; cpu_id++) {
+        const struct smp_cpu_info* cpu = smp_get_cpu_info(cpu_id);
+        if (cpu && cpu->started) {
+            uint32_t load = task_cpu_load_locked(cpu_id);
+            if (load < best_load) {
+                best_load = load;
+                best_cpu = cpu_id;
+            }
+        }
+    }
+    return best_cpu;
+}
+
+static uint32_t task_rebalance_ready_task_locked(struct task* t) {
+    uint32_t current_cpu;
+    uint32_t best_cpu;
+    uint32_t current_load;
+    uint32_t best_load;
+
+    if (!task_can_migrate_locked(t)) {
+        return t ? (uint32_t)normalize_cpu_affinity((uint32_t)t->cpu_affinity) : 0;
+    }
+
+    current_cpu = (uint32_t)normalize_cpu_affinity((uint32_t)t->cpu_affinity);
+    best_cpu = task_choose_rebalance_cpu_locked(current_cpu);
+    if (best_cpu == current_cpu) return current_cpu;
+
+    current_load = task_cpu_load_locked(current_cpu);
+    best_load = task_cpu_load_locked(best_cpu);
+    if (current_load <= best_load + 1) return current_cpu;
+
+    task_runq_push_locked(t, best_cpu);
+    return (uint32_t)normalize_cpu_affinity((uint32_t)t->cpu_affinity);
 }
 
 static uint32_t choose_spawn_cpu_locked(uint32_t fallback_cpu) {
@@ -281,12 +369,16 @@ static int task_is_idle_task(struct task* t) {
     return t && t->pid == 0;
 }
 
+static enum task_migration_reason task_migration_reason_locked(struct task* t) {
+    if (!t) return TASK_MIGRATE_BLOCK_NULL;
+    if (task_is_idle_task(t)) return TASK_MIGRATE_BLOCK_IDLE;
+    if (t->state != TASK_READY) return TASK_MIGRATE_BLOCK_NOT_READY;
+    if (!t->on_runq) return TASK_MIGRATE_BLOCK_NOT_ON_RUNQ;
+    return TASK_MIGRATE_OK;
+}
+
 static int task_can_migrate_locked(struct task* t) {
-    if (!t) return 0;
-    if (task_is_idle_task(t)) return 0;
-    if (t->state != TASK_READY) return 0;
-    if (!t->on_runq) return 0;
-    return 1;
+    return task_migration_reason_locked(t) == TASK_MIGRATE_OK;
 }
 
 static void task_runq_remove_locked(struct task* t) {
@@ -847,9 +939,14 @@ int task_set_affinity(struct task* t, uint32_t cpu_id) {
 
 int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id) {
     int ret;
-    uint32_t target_cpu = (uint32_t)normalize_cpu_affinity(cpu_id);
+    uint32_t target_cpu;
     uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    target_cpu = (uint32_t)normalize_cpu_affinity(cpu_id);
     ret = task_mark_ready_on_cpu_locked(t, target_cpu);
+    if (ret >= 0 && t) {
+        task_rebalance_ready_task_locked(t);
+        target_cpu = (uint32_t)normalize_cpu_affinity((uint32_t)t->cpu_affinity);
+    }
     spin_unlock_irqrestore(&g_task_lock, flags);
     if (ret >= 0) {
         task_request_resched_cpu(target_cpu);
@@ -875,14 +972,19 @@ int task_mark_zombie(struct task* t, int exit_status) {
 
 int task_wake(struct task* t) {
     int ret;
+    uint32_t target_cpu = 0;
     if (!t) return -1;
     {
         uint64_t flags = spin_lock_irqsave(&g_task_lock);
         ret = task_wake_locked(t);
+        if (ret >= 0) {
+            task_rebalance_ready_task_locked(t);
+            target_cpu = (uint32_t)normalize_cpu_affinity((uint32_t)t->cpu_affinity);
+        }
         spin_unlock_irqrestore(&g_task_lock, flags);
     }
     if (ret < 0) return ret;
-    task_request_resched_cpu((uint32_t)t->cpu_affinity);
+    task_request_resched_cpu(target_cpu);
     return 0;
 }
 
@@ -1025,8 +1127,9 @@ int task_fork(struct syscall_frame* frame) {
     }
     child->next = task_list;
     task_list = child;
+    task_rebalance_ready_task_locked(child);
     spin_unlock_irqrestore(&g_task_lock, flags);
-    task_request_resched_cpu(spawn_cpu);
+    task_request_resched_cpu((uint32_t)child->cpu_affinity);
     return child->pid;
 }
 

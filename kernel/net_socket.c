@@ -9,6 +9,7 @@
 #include "lwip/tcp.h"
 #include "lwip/ip_addr.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/ip.h"
 
 #define AF_INET 2
 #define SOCK_STREAM 1
@@ -625,15 +626,24 @@ int sys_accept(int fd, void* addr, uint32_t* addrlen) {
 
 int sys_setsockopt(int fd, int level, int optname, const void* optval, uint32_t optlen) {
     struct task* current = get_current_task();
-    (void)optval;
-    (void)optlen;
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     net_socket_backend_t* sock = socket_backend_from_fd(&current->fds[fd]);
     if (!sock) return -1;
     if (level != SOL_SOCKET) return -1;
     if (optname == SO_REUSEADDR) {
-        sock->reuseaddr = 1;
+        int enable = 1;
+        struct ip_pcb* ip_pcb = 0;
+        if (optval && optlen >= sizeof(int)) {
+            enable = (*(const int*)optval != 0);
+        }
+        sock->reuseaddr = enable ? 1 : 0;
+        if (sock->type == SOCK_DGRAM && sock->pcb.udp) ip_pcb = (struct ip_pcb*)sock->pcb.udp;
+        else if (sock->type == SOCK_STREAM && sock->pcb.tcp) ip_pcb = (struct ip_pcb*)sock->pcb.tcp;
+        if (ip_pcb) {
+            if (enable) ip_set_option(ip_pcb, SOF_REUSEADDR);
+            else ip_reset_option(ip_pcb, SOF_REUSEADDR);
+        }
         return 0;
     }
     if (optname == SO_KEEPALIVE) {
