@@ -51,6 +51,7 @@ extern void switch_context(struct task_context* next_ctx, struct task_context* p
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
 extern void fork_child_entry(void);
+static int free_task_struct(struct task* t);
 
 static void task_log_fork_spawn(int parent_pid, int child_pid, uint32_t cpu_id) {
     char buf[96];
@@ -238,7 +239,10 @@ static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
     cpu->self = cpu;
     cpu->current_task = current;
     cpu->idle_task = idle;
+    cpu->runq_head = 0;
+    cpu->runq_tail = 0;
     cpu->resched_pending = 0;
+    cpu->runq_count = 0;
     cpu->kernel_lock_depth = 0;
     cpu->kernel_stack = kernel_stack;
     cpu->user_stack = 0;
@@ -248,6 +252,124 @@ static void task_refresh_cpu_local_msrs(struct cpu_local* cpu) {
     if (!cpu) return;
     wrmsr(MSR_GS_BASE, (uintptr_t)cpu);
     wrmsr(MSR_KERNEL_GS_BASE, (uintptr_t)cpu);
+}
+
+static struct cpu_local* task_get_ready_cpu_locked(uint32_t cpu_id) {
+    return get_cpu_local_by_id(normalize_cpu_affinity(cpu_id));
+}
+
+static void task_runq_remove_locked(struct task* t) {
+    struct cpu_local* cpu;
+    if (!t || !t->on_runq) return;
+    cpu = task_get_ready_cpu_locked((uint32_t)t->cpu_affinity);
+    if (!cpu) return;
+    if (t->runq_prev) t->runq_prev->runq_next = t->runq_next;
+    else cpu->runq_head = t->runq_next;
+    if (t->runq_next) t->runq_next->runq_prev = t->runq_prev;
+    else cpu->runq_tail = t->runq_prev;
+    t->runq_prev = 0;
+    t->runq_next = 0;
+    t->on_runq = 0;
+    if (cpu->runq_count > 0) cpu->runq_count--;
+}
+
+static void task_runq_push_locked(struct task* t, uint32_t cpu_id) {
+    struct cpu_local* cpu;
+    if (!t) return;
+    cpu_id = (uint32_t)normalize_cpu_affinity(cpu_id);
+    if (t->on_runq) task_runq_remove_locked(t);
+    cpu = task_get_ready_cpu_locked(cpu_id);
+    if (!cpu) return;
+    t->cpu_affinity = (int)cpu_id;
+    t->runq_prev = cpu->runq_tail;
+    t->runq_next = 0;
+    if (cpu->runq_tail) cpu->runq_tail->runq_next = t;
+    else cpu->runq_head = t;
+    cpu->runq_tail = t;
+    t->on_runq = 1;
+    cpu->runq_count++;
+}
+
+static struct task* task_runq_pop_locked(struct cpu_local* cpu) {
+    struct task* t;
+    if (!cpu) return 0;
+    t = cpu->runq_head;
+    if (!t) return 0;
+    task_runq_remove_locked(t);
+    return t;
+}
+
+static int task_set_affinity_locked(struct task* t, uint32_t cpu_id) {
+    if (!t) return -1;
+    cpu_id = (uint32_t)normalize_cpu_affinity(cpu_id);
+    if (t->on_runq) task_runq_push_locked(t, cpu_id);
+    else t->cpu_affinity = (int)cpu_id;
+    return 0;
+}
+
+static int task_mark_ready_on_cpu_locked(struct task* t, uint32_t cpu_id) {
+    if (!t) return -1;
+    if (t->state == TASK_ZOMBIE || t->state == TASK_DEAD) return -1;
+    t->state = TASK_READY;
+    t->sleep_until_ms = 0;
+    task_runq_push_locked(t, cpu_id);
+    return 0;
+}
+
+static int task_mark_sleeping_locked(struct task* t) {
+    if (!t) return -1;
+    task_runq_remove_locked(t);
+    t->sleep_until_ms = 0;
+    t->state = TASK_SLEEPING;
+    return 0;
+}
+
+static int task_mark_zombie_locked(struct task* t, int exit_status) {
+    if (!t) return -1;
+    task_runq_remove_locked(t);
+    t->exit_status = exit_status;
+    t->state = TASK_ZOMBIE;
+    return 0;
+}
+
+static int task_wake_locked(struct task* t) {
+    if (!t) return -1;
+    if (t->state == TASK_ZOMBIE || t->state == TASK_DEAD) return -1;
+    t->sleep_until_ms = 0;
+    return task_mark_ready_on_cpu_locked(t, (uint32_t)t->cpu_affinity);
+}
+
+static int task_reap_locked(struct task* t) {
+    struct task** link;
+    if (!t) return -1;
+    if (t->state != TASK_ZOMBIE && t->state != TASK_DEAD) return -1;
+    task_runq_remove_locked(t);
+
+    link = &task_list;
+    while (*link && *link != t) {
+        link = &(*link)->next;
+    }
+    if (*link != t) return -1;
+    *link = t->next;
+
+    t->state = TASK_DEAD;
+
+    if (t->ctx.cr3 && t->ctx.cr3 != vmm_get_kernel_pml4_phys()) {
+        vmm_free_user_pml4(t->ctx.cr3);
+        t->ctx.cr3 = 0;
+    }
+
+    if (t->kstack_top) {
+        uint64_t kstack_phys = VIRT_TO_PHYS((void*)(t->kstack_top - 4 * PAGE_SIZE));
+        pmm_free((void*)kstack_phys, 4);
+        t->kstack_top = 0;
+    }
+
+    t->next = 0;
+    t->runq_prev = 0;
+    t->runq_next = 0;
+    t->on_runq = 0;
+    return free_task_struct(t);
 }
 
 void task_bind_cpu_local(uint32_t cpu_id, struct task* current, struct task* idle,
@@ -298,7 +420,7 @@ void task_on_timer_tick(void) {
         while (t) {
             if (t->state == TASK_SLEEPING && t->sleep_until_ms != 0 && t->sleep_until_ms <= now) {
                 t->sleep_until_ms = 0;
-                task_wake(t);
+                task_wake_locked(t);
             }
             t = t->next;
         }
@@ -646,7 +768,7 @@ void task_main(void) {
     struct task* t = get_current_task();
     extern int call_app(int argc, char** argv, uint16_t ss, uint64_t rip, uint64_t rsp, uint64_t* os_stack_ptr);
     call_app((int)t->user_argc, (char**)t->user_argv, 0x1B, t->user_entry, t->user_stack, &t->os_stack_ptr);
-    t->state = TASK_ZOMBIE;
+    (void)task_mark_zombie(t, 0);
     while(1) schedule();
 }
 
@@ -681,67 +803,56 @@ void task_init(void) {
 }
 
 int task_set_affinity(struct task* t, uint32_t cpu_id) {
-    if (!t) return -1;
-    t->cpu_affinity = normalize_cpu_affinity(cpu_id);
-    return 0;
+    int ret;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    ret = task_set_affinity_locked(t, cpu_id);
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return ret;
 }
 
 int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id) {
-    if (!t) return -1;
-    t->state = TASK_READY;
-    t->cpu_affinity = normalize_cpu_affinity(cpu_id);
-    return 0;
+    int ret;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    ret = task_mark_ready_on_cpu_locked(t, cpu_id);
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return ret;
 }
 
 int task_mark_sleeping(struct task* t) {
-    if (!t) return -1;
-    t->sleep_until_ms = 0;
-    t->state = TASK_SLEEPING;
-    return 0;
+    int ret;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    ret = task_mark_sleeping_locked(t);
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return ret;
 }
 
 int task_mark_zombie(struct task* t, int exit_status) {
-    if (!t) return -1;
-    t->exit_status = exit_status;
-    t->state = TASK_ZOMBIE;
-    return 0;
+    int ret;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    ret = task_mark_zombie_locked(t, exit_status);
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return ret;
 }
 
 int task_wake(struct task* t) {
+    int ret;
     if (!t) return -1;
-    if (t->state == TASK_ZOMBIE || t->state == TASK_DEAD) return -1;
-    t->sleep_until_ms = 0;
-    task_mark_ready_on_cpu(t, (uint32_t)t->cpu_affinity);
+    {
+        uint64_t flags = spin_lock_irqsave(&g_task_lock);
+        ret = task_wake_locked(t);
+        spin_unlock_irqrestore(&g_task_lock, flags);
+    }
+    if (ret < 0) return ret;
     task_request_resched_cpu((uint32_t)t->cpu_affinity);
     return 0;
 }
 
 int task_reap(struct task* t) {
-    if (!t) return -1;
-    if (t->state != TASK_ZOMBIE && t->state != TASK_DEAD) return -1;
-
-    struct task** link = &task_list;
-    while (*link && *link != t) {
-        link = &(*link)->next;
-    }
-    if (*link != t) return -1;
-    *link = t->next;
-
-    t->state = TASK_DEAD;
-
-    if (t->ctx.cr3 && t->ctx.cr3 != vmm_get_kernel_pml4_phys()) {
-        vmm_free_user_pml4(t->ctx.cr3);
-        t->ctx.cr3 = 0;
-    }
-
-    if (t->kstack_top) {
-        uint64_t kstack_phys = VIRT_TO_PHYS((void*)(t->kstack_top - 4 * PAGE_SIZE));
-        pmm_free((void*)kstack_phys, 4);
-        t->kstack_top = 0;
-    }
-
-    t->next = 0;
-    return free_task_struct(t);
+    int ret;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    ret = task_reap_locked(t);
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return ret;
 }
 
 struct task* task_create_on_cpu(uint64_t entry, uint64_t user_rsp, uint32_t cpu_id) {
@@ -751,7 +862,7 @@ struct task* task_create_on_cpu(uint64_t entry, uint64_t user_rsp, uint32_t cpu_
     t->pid = next_pid++;
     t->pgid = t->pid;
     t->sid = t->pid;
-    task_mark_ready_on_cpu(t, cpu_id);
+    task_mark_ready_on_cpu_locked(t, cpu_id);
     t->user_entry = entry;
     t->user_stack = user_rsp;
     t->user_stack_top = USER_STACK_TOP_VADDR;
@@ -843,7 +954,7 @@ int task_fork(struct syscall_frame* frame) {
     uint32_t spawn_cpu = g_fork_spread_enabled
         ? choose_spawn_cpu((uint32_t)parent->cpu_affinity)
         : (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
-    task_mark_ready_on_cpu(child, spawn_cpu);
+    task_mark_ready_on_cpu_locked(child, spawn_cpu);
     if (g_fork_spread_enabled) {
         task_log_fork_spawn(parent->pid, child->pid, spawn_cpu);
     }
@@ -898,21 +1009,13 @@ int task_fork(struct syscall_frame* frame) {
 void schedule(void) {
     struct cpu_local* cpu = this_cpu();
     struct task* current_task = cpu ? cpu->current_task : NULL;
+    struct task* next;
+    struct task* prev;
     if (!current_task) return;
     uint64_t flags = spin_lock_irqsave(&g_task_lock);
-    struct task* next = current_task->next;
-    if (!next) next = task_list;
-    struct task* start = next;
-    while (next->state != TASK_READY || next->cpu_affinity != (int)cpu->cpu_id) {
-        next = next->next;
-        if (!next) next = task_list;
-        if (next == start) {
-            next = NULL;
-            break;
-        }
-    }
+    next = task_runq_pop_locked(cpu);
     if (!next) {
-        if (current_task == cpu->idle_task && current_task->state == TASK_RUNNING) {
+        if (current_task->state == TASK_RUNNING) {
             spin_unlock_irqrestore(&g_task_lock, flags);
             return;
         }
@@ -922,11 +1025,12 @@ void schedule(void) {
         spin_unlock_irqrestore(&g_task_lock, flags);
         return;
     }
-    struct task* prev = current_task;
+    prev = current_task;
     if (prev->state == TASK_RUNNING) {
-        task_mark_ready_on_cpu(prev, (uint32_t)prev->cpu_affinity);
+        task_mark_ready_on_cpu_locked(prev, (uint32_t)prev->cpu_affinity);
     }
     cpu->current_task = next;
+    next->on_runq = 0;
     next->state = TASK_RUNNING;
     if (next->timeslice_ticks <= 0) next->timeslice_ticks = TASK_TIMESLICE_TICKS;
     tss_set_stack_for_cpu(cpu->cpu_id, next->kstack_top);

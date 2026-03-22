@@ -26,7 +26,10 @@ struct cpu_local {
     uint32_t reserved;
     struct task* current_task;
     struct task* idle_task;
+    struct task* runq_head;
+    struct task* runq_tail;
     volatile int resched_pending;
+    uint32_t runq_count;
     uint32_t kernel_lock_depth;
 };
 
@@ -70,6 +73,9 @@ struct task {
     char cwd[256];
     file_descriptor_t fds[MAX_FDS];
     struct task* next;
+    struct task* runq_prev;
+    struct task* runq_next;
+    uint8_t on_runq;
 };
 
 void task_init(void);
