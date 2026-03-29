@@ -1,9 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-MONITOR_SOCK="qemu_doom.sock"
-SERIAL_LOG="serial_doom.log"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ISO_PATH="$SCRIPT_DIR/out/orthos.iso"
+LOG_DIR="$SCRIPT_DIR/LOGs"
+MONITOR_SOCK="/tmp/orthox-qemu-doom.sock"
+SERIAL_LOG="$LOG_DIR/serial_doom.log"
 
+cd "$SCRIPT_DIR"
+mkdir -p "$LOG_DIR"
 rm -f "$MONITOR_SOCK" "$SERIAL_LOG"
 
 cleanup() {
@@ -17,7 +22,7 @@ qemu-system-x86_64 \
     -device sb16,audiodev=audio0 \
     -cpu max \
     -m 2G \
-    -cdrom orthos.iso \
+    -cdrom "$ISO_PATH" \
     -boot d \
     -serial "file:$SERIAL_LOG" \
     -monitor "unix:$MONITOR_SOCK,server,nowait" \
@@ -30,7 +35,7 @@ import time
 from pathlib import Path
 
 sock = None
-serial_log = Path("serial_doom.log")
+serial_log = Path("LOGs/serial_doom.log")
 for _ in range(400):
     try:
         if "Welcome to Orthox-64 Shell!" in serial_log.read_text(errors="ignore"):
@@ -44,7 +49,7 @@ else:
 for _ in range(100):
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect("qemu_doom.sock")
+        sock.connect("/tmp/orthox-qemu-doom.sock")
         sock.settimeout(0.2)
         break
     except OSError:

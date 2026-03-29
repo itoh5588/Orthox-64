@@ -20,7 +20,7 @@
    ```bash
    make
    ```
-   これにより、カーネル (`kernel/kernel.elf`) とユーザーランドバイナリがビルドされ、`rootfs.tar` が作成されます。
+   これにより、カーネル (`out/kernel.elf`) とユーザーランドバイナリがビルドされ、`out/rootfs.tar` が作成されます。
 
 3. **ブートイメージ (ISO) の作成**
    ```bash

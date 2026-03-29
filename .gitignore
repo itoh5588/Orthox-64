@@ -6,6 +6,7 @@
 *.dmg
 iso_root/
 build/
+out/
 rootfs.tar
 rootfs/bin/
 rootfs/doom1.wad

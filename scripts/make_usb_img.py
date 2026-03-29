@@ -6,8 +6,9 @@ import struct
 import sys
 import tarfile
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 USB_IMG = Path(sys.argv[1])
-ROOTFS_TAR = Path('rootfs.tar')
+ROOTFS_TAR = REPO_ROOT / 'out' / 'rootfs.tar'
 SECTOR_SIZE = 512
 SECTORS_PER_CLUSTER = 8
 CLUSTER_SIZE = SECTOR_SIZE * SECTORS_PER_CLUSTER

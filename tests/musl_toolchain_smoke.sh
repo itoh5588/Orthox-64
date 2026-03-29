@@ -1,11 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+mkdir -p LOGs
 QEMU_SOCK=/tmp/orthos-qemu-toolchain.sock
-rm -f "$QEMU_SOCK" serial_toolchain.log
+SERIAL_LOG=LOGs/serial_toolchain.log
+rm -f "$QEMU_SOCK" "$SERIAL_LOG"
 
-qemu-system-x86_64 -M pc -m 2G -cdrom orthos.iso -boot d -display none \
-    -serial file:serial_toolchain.log -monitor unix:"$QEMU_SOCK",server,nowait -k en-us &
+qemu-system-x86_64 -M pc -m 2G -cdrom out/orthos.iso -boot d -display none \
+    -serial file:"$SERIAL_LOG" -monitor unix:"$QEMU_SOCK",server,nowait -k en-us &
 QEMU_PID=$!
 
 cleanup() {
@@ -17,7 +22,7 @@ trap cleanup EXIT
 
 echo "Waiting for Orthox-64 Shell..."
 for i in {1..40}; do
-    if grep -q "Welcome to Orthox-64 Shell!" serial_toolchain.log 2>/dev/null; then
+    if grep -q "Welcome to Orthox-64 Shell!" "$SERIAL_LOG" 2>/dev/null; then
         echo "Shell started"
         break
     fi
@@ -85,15 +90,15 @@ finally:
 PY
 
 echo "--- Serial Output ---"
-cat serial_toolchain.log
+cat "$SERIAL_LOG"
 echo "---------------------"
 
-grep -q -- "--- OrthOS GCC Pipeline Started ---" serial_toolchain.log
-grep -q -- "\\[gcc\\] Executing /bin/cc1" serial_toolchain.log
-grep -q -- "\\[gcc\\] Executing /bin/as" serial_toolchain.log
-grep -q -- "\\[gcc\\] Executing /bin/ld" serial_toolchain.log
-grep -q -- "--- OrthOS GCC Pipeline Finished! Output: a.out ---" serial_toolchain.log
-grep -q -- "Hello, world" serial_toolchain.log
-grep -q -- "\\[gcc\\] a.out returned: 0" serial_toolchain.log
+grep -q -- "--- OrthOS GCC Pipeline Started ---" "$SERIAL_LOG"
+grep -q -- "\\[gcc\\] Executing /bin/cc1" "$SERIAL_LOG"
+grep -q -- "\\[gcc\\] Executing /bin/as" "$SERIAL_LOG"
+grep -q -- "\\[gcc\\] Executing /bin/ld" "$SERIAL_LOG"
+grep -q -- "--- OrthOS GCC Pipeline Finished! Output: a.out ---" "$SERIAL_LOG"
+grep -q -- "Hello, world" "$SERIAL_LOG"
+grep -q -- "\\[gcc\\] a.out returned: 0" "$SERIAL_LOG"
 
 echo "musl toolchain smoke test: PASS"

@@ -1,12 +1,18 @@
 #!/bin/bash
-rm -f qemu.sock serial.log
-qemu-system-x86_64 -M pc -m 2G -cdrom orthos.iso -boot d -display none \
-    -serial file:serial.log -monitor unix:qemu.sock,server,nowait -k en-us &
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+mkdir -p LOGs
+QEMU_SOCK=/tmp/orthox-test-pipe.sock
+SERIAL_LOG=LOGs/serial.log
+rm -f "$QEMU_SOCK" "$SERIAL_LOG"
+qemu-system-x86_64 -M pc -m 2G -cdrom out/orthos.iso -boot d -display none \
+    -serial file:"$SERIAL_LOG" -monitor unix:"$QEMU_SOCK",server,nowait -k en-us &
 QEMU_PID=$!
 
 echo "Waiting for Orthox-64 Shell..."
 for i in {1..30}; do
-    if grep -q "Welcome to Orthox-64 Shell!" serial.log 2>/dev/null; then
+    if grep -q "Welcome to Orthox-64 Shell!" "$SERIAL_LOG" 2>/dev/null; then
         echo "Shell started!"
         break
     fi
@@ -20,7 +26,7 @@ import socket, time, sys
 def send_qemu(cmd):
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect("qemu.sock")
+        s.connect("/tmp/orthox-test-pipe.sock")
         s.sendall(cmd.encode('utf-8') + b'\n')
         s.close()
     except:
@@ -49,9 +55,9 @@ time.sleep(10)
 EOF
 
 echo "--- Serial Output ---"
-cat serial.log
+cat "$SERIAL_LOG"
 echo "---------------------"
 
 kill $QEMU_PID
 wait $QEMU_PID 2>/dev/null
-rm -f qemu.sock
+rm -f "$QEMU_SOCK"

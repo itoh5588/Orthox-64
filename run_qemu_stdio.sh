@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ISO_PATH="$SCRIPT_DIR/out/orthos.iso"
+
 TTY_STATE=""
 if [ -t 0 ]; then
     TTY_STATE="$(stty -g)"
@@ -14,7 +17,7 @@ exec qemu-system-x86_64 \
     -device sb16,audiodev=audio0 \
     -cpu max \
     -m 2G \
-    -cdrom orthos.iso \
+    -cdrom "$ISO_PATH" \
     -boot d \
     "$@" \
     -serial stdio

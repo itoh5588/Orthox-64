@@ -1,22 +1,28 @@
 #!/bin/bash
 set -euo pipefail
 
-rm -f qemu.sock serial.log
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+mkdir -p LOGs
+QEMU_SOCK=/tmp/orthox-tests-musl-smoke.sock
+SERIAL_LOG=LOGs/serial.log
+rm -f "$QEMU_SOCK" "$SERIAL_LOG"
 
-qemu-system-x86_64 -M pc -m 2G -cdrom orthos.iso -boot d -display none \
-    -serial file:serial.log -monitor unix:qemu.sock,server,nowait -k en-us &
+qemu-system-x86_64 -M pc -m 2G -cdrom out/orthos.iso -boot d -display none \
+    -serial file:"$SERIAL_LOG" -monitor unix:"$QEMU_SOCK",server,nowait -k en-us &
 QEMU_PID=$!
 
 cleanup() {
     kill "$QEMU_PID" 2>/dev/null || true
     wait "$QEMU_PID" 2>/dev/null || true
-    rm -f qemu.sock
+    rm -f "$QEMU_SOCK"
 }
 trap cleanup EXIT
 
 echo "Waiting for Orthox-64 Shell..."
 for i in {1..40}; do
-    if grep -q "Welcome to Orthox-64 Shell!" serial.log 2>/dev/null; then
+    if grep -q "Welcome to Orthox-64 Shell!" "$SERIAL_LOG" 2>/dev/null; then
         echo "Shell started"
         break
     fi
@@ -31,7 +37,7 @@ def connect_monitor():
     for _ in range(50):
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.connect("qemu.sock")
+            s.connect("/tmp/orthox-tests-musl-smoke.sock")
             s.settimeout(0.2)
             break
         except OSError:
@@ -107,20 +113,20 @@ finally:
 PY
 
 echo "--- Serial Output ---"
-cat serial.log
+cat "$SERIAL_LOG"
 echo "---------------------"
 
-grep -q "musl-smoke-ok" serial.log
-grep -q "PATH=/bin:/:/usr/bin:/boot" serial.log
-grep -q "PWD=/" serial.log
-grep -q "smoke-printf" serial.log
-grep -q "Hello from OrthOS TAR File System!" serial.log
-grep -q "smoke.txt" serial.log
-grep -q "/hello.txt" serial.log
-grep -q "movedcopy.txt" serial.log
-grep -q "0600/-rw-------" serial.log
-grep -q "at_test: PASS" serial.log
-grep -q "busybox" serial.log
-grep -q "Goodbye!" serial.log
+grep -q "musl-smoke-ok" "$SERIAL_LOG"
+grep -q "PATH=/bin:/:/usr/bin:/boot" "$SERIAL_LOG"
+grep -q "PWD=/" "$SERIAL_LOG"
+grep -q "smoke-printf" "$SERIAL_LOG"
+grep -q "Hello from OrthOS TAR File System!" "$SERIAL_LOG"
+grep -q "smoke.txt" "$SERIAL_LOG"
+grep -q "/hello.txt" "$SERIAL_LOG"
+grep -q "movedcopy.txt" "$SERIAL_LOG"
+grep -q "0600/-rw-------" "$SERIAL_LOG"
+grep -q "at_test: PASS" "$SERIAL_LOG"
+grep -q "busybox" "$SERIAL_LOG"
+grep -q "Goodbye!" "$SERIAL_LOG"
 
 echo "musl smoke test: PASS"

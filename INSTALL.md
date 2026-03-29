@@ -20,7 +20,7 @@ To build this project, you need the following tools:
    ```bash
    make
    ```
-   This will build the kernel (`kernel/kernel.elf`) and userland binaries, then create `rootfs.tar`.
+   This will build the kernel (`out/kernel.elf`) and userland binaries, then create `out/rootfs.tar`.
 
 3. **Create a bootable image (ISO)**
    ```bash

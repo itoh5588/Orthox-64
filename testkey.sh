@@ -1,4 +1,8 @@
 #!/bin/bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+mkdir -p LOGs
 make all
 (
 sleep 10
@@ -46,4 +50,4 @@ echo "sendkey c"
 sleep 0.2
 echo "sendkey ret"
 sleep 8
-) | qemu-system-x86_64 -M pc -cpu max -m 2G -cdrom orthos.iso -boot d -display none -serial file:serial_output.log -monitor stdio -no-reboot
+) | qemu-system-x86_64 -M pc -cpu max -m 2G -cdrom out/orthos.iso -boot d -display none -serial file:LOGs/serial_output.log -monitor stdio -no-reboot

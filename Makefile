@@ -7,6 +7,8 @@ XAR = x86_64-elf-ar
 
 BUILD_DIR = build
 USER_BUILD_DIR = $(BUILD_DIR)/$(LIBC_IMPL)/user
+OUT_DIR = out
+ISO_ROOT_DIR = $(OUT_DIR)/iso_root
 
 # フラグ
 KERNEL_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-stack-protector -fno-stack-check \
@@ -46,7 +48,7 @@ USER_LDFLAGS = -m elf_x86_64 -nostdlib -static -Ttext 0x400000
 LIBGCC = $(shell x86_64-elf-gcc -print-libgcc-file-name)
 
 # 出力ファイル名
-KERNEL_ELF = kernel.elf
+KERNEL_ELF = $(OUT_DIR)/kernel.elf
 USER_ELF = user/user_test.elf
 MUSL_USER_ELF = user/user_test-musl.elf
 EXEC_ELF = user/exec_test.elf
@@ -104,9 +106,9 @@ LD_SRC = ports/binutils-2.26/binutils-2.26/build/ld/ld-new
 AS_SRC_MUSL = ports/binutils-2.26/binutils-2.26/build-musl/gas/as-new
 LD_SRC_MUSL = ports/binutils-2.26/binutils-2.26/build-musl/ld/ld-new
 OSSTUBS_A = ports/libosstubs.a
-ISO = orthos.iso
-USB_IMG = usb.img
-ROOTFS_TAR = rootfs.tar
+ISO = $(OUT_DIR)/orthos.iso
+USB_IMG = $(OUT_DIR)/usb.img
+ROOTFS_TAR = $(OUT_DIR)/rootfs.tar
 ROOTFS_FILES = $(shell find rootfs -type f 2>/dev/null)
 
 # ソース
@@ -230,6 +232,7 @@ $(WADSTDIO_TEST_MUSL_ELF): FORCE
 endif
 
 $(KERNEL_ELF): $(OBJS)
+	@mkdir -p $(@D)
 	$(LD) $(KERNEL_LDFLAGS) $(OBJS) -o $@
 
 $(BUILD_DIR)/kernel/%.o: kernel/%.c
@@ -260,6 +263,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 FORCE:
 
 $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(DOOM_MUSL_ELF)
+	@mkdir -p $(@D)
 	mkdir -p rootfs/bin
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
@@ -285,25 +289,25 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .
 
 $(ISO): $(KERNEL_ELF) $(SH_ELF) $(DOOM_MUSL_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR)
-	rm -rf iso_root
-	mkdir -p iso_root/boot/limine
-	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
-	cp $(SH_ELF) iso_root/boot/sh.elf
-	cp $(DOOM_MUSL_ELF) iso_root/boot/doom-musl.elf
-	cp $(ROOTFS_TAR) iso_root/boot/rootfs.tar
-	cp iso/limine.conf iso_root/boot/limine/limine.conf
+	rm -rf $(ISO_ROOT_DIR)
+	mkdir -p $(ISO_ROOT_DIR)/boot/limine
+	cp $(KERNEL_ELF) $(ISO_ROOT_DIR)/boot/kernel.elf
+	cp $(SH_ELF) $(ISO_ROOT_DIR)/boot/sh.elf
+	cp $(DOOM_MUSL_ELF) $(ISO_ROOT_DIR)/boot/doom-musl.elf
+	cp $(ROOTFS_TAR) $(ISO_ROOT_DIR)/boot/rootfs.tar
+	cp iso/limine.conf $(ISO_ROOT_DIR)/boot/limine/limine.conf
 
-	mkdir -p iso_root/EFI/BOOT
-	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
-	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
-	cp limine/BOOTIA32.EFI iso_root/EFI/BOOT/
+	mkdir -p $(ISO_ROOT_DIR)/EFI/BOOT
+	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin $(ISO_ROOT_DIR)/boot/limine/
+	cp limine/BOOTX64.EFI $(ISO_ROOT_DIR)/EFI/BOOT/
+	cp limine/BOOTIA32.EFI $(ISO_ROOT_DIR)/EFI/BOOT/
 	xorriso -as mkisofs -v -R -r -J -b boot/limine/limine-bios-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table -hfsplus \
 		-apm-block-size 2048 --efi-boot boot/limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
-		iso_root -o $(ISO)
+		$(ISO_ROOT_DIR) -o $(ISO)
 	$(CURDIR)/limine/limine bios-install $(ISO)
-	rm -rf iso_root
+	rm -rf $(ISO_ROOT_DIR)
 
 run: $(ISO)
 	bash ./run_qemu_stdio.sh
@@ -344,10 +348,9 @@ usb: $(ISO) usb-img
 		-device usb-storage,bus=xhci.0,drive=usbdisk
 
 clean:
-	rm -rf $(BUILD_DIR) $(KERNEL_ELF) $(USER_ELF) $(EXEC_ELF) $(PIPE_TEST_ELF) $(SH_ELF) $(GCC_ELF) $(LOOP_ELF) $(ISO)
+	rm -rf $(BUILD_DIR) $(OUT_DIR) $(USER_ELF) $(EXEC_ELF) $(PIPE_TEST_ELF) $(SH_ELF) $(GCC_ELF) $(LOOP_ELF)
 	rm -f $(MUSL_USER_ELF) $(MUSL_SH_ELF)
 	rm -f user/*.elf
-	rm -rf iso_root
 	$(MAKE) -C limine clean
 
 -include $(DEPS)
