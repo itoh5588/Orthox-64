@@ -2,6 +2,8 @@
 #define TASK_H
 
 #include <stdint.h>
+#include "arch_task.h"
+#include "arch_vm.h"
 #include "fs.h"
 
 struct elf_info;
@@ -34,18 +36,12 @@ struct cpu_local {
     uint32_t kernel_lock_depth;
 };
 
-struct task_context {
-    uint64_t cr3, rip, rflags, reserved1; // 0, 8, 16, 24
-    uint64_t cs, ss, fs, gs;             // 32, 40, 48, 56
-    uint64_t rax, rbx, rcx, rdx, rdi, rsi, rsp, rbp; // 64, 72, 80, 88, 96, 104, 112, 120
-    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;   // 128, 136, 144, 152, 160, 168, 176, 184
-    uint8_t fxsave_area[512] __attribute__((aligned(16))); // 192
-} __attribute__((packed));
+typedef struct arch_task_context task_context_t;
 
 struct task {
     uint64_t kstack_top;
     uint64_t os_stack_ptr;
-    struct task_context ctx; // ctx offset = 16
+    task_context_t ctx; // ctx offset = 16
     int pid;
     int ppid;
     int pgid;
@@ -101,11 +97,12 @@ int task_get_fork_spread(void);
 void schedule(void);
 struct cpu_local* get_cpu_local(void);
 struct task* get_current_task(void);
+task_context_t* task_current_context(void);
 void task_request_resched(void);
 void task_request_resched_cpu(uint32_t cpu_id);
 int task_consume_resched(void);
 void task_on_timer_tick(void);
-int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t,
+int task_prepare_initial_user_stack(arch_address_space_t address_space, struct task* t,
                                     const struct elf_info* info,
                                     char* const argv[], char* const envp[]);
 void task_idle_loop(int poll_network);

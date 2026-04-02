@@ -1,11 +1,8 @@
+#include "arch_platform.h"
 #include "smp.h"
 #include "task.h"
 #include "pmm.h"
 #include "vmm.h"
-#include "gdt.h"
-#include "idt.h"
-#include "lapic.h"
-#include "syscall.h"
 
 static struct smp_cpu_info g_smp_cpus[ORTHOX_MAX_CPUS];
 static uint32_t g_smp_cpu_count = 1;
@@ -114,25 +111,6 @@ const struct smp_cpu_info* smp_get_cpu_info(uint32_t cpu_index) {
     return &g_smp_cpus[cpu_index];
 }
 
-static void smp_enable_sse(void) {
-    uint64_t cr0, cr4;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 &= ~(1ULL << 2);
-    cr0 |= (1ULL << 1);
-    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
-    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    cr4 |= (1ULL << 9);
-    cr4 |= (1ULL << 10);
-    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
-}
-
-static void smp_enable_paging_features(void) {
-    uint64_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= (1ULL << 16);
-    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
-}
-
 static void smp_ap_entry(struct limine_smp_info* info) {
     uint32_t cpu_index = info ? (uint32_t)info->extra_argument : 0;
     uint32_t lapic_id = info ? info->lapic_id : 0;
@@ -146,13 +124,7 @@ static void smp_ap_entry(struct limine_smp_info* info) {
             stack_top = idle->kstack_top;
             task_bind_cpu_local(cpu_index, idle, idle, stack_top);
             task_install_cpu_local(cpu_index);
-            smp_enable_sse();
-            smp_enable_paging_features();
-            gdt_init_cpu(cpu_index);
-            idt_init_cpu(cpu_index);
-            syscall_init_cpu();
-            tss_set_stack_for_cpu(cpu_index, stack_top);
-            lapic_init_cpu();
+            arch_platform_init_ap(cpu_index, stack_top);
         }
         g_smp_cpus[cpu_index].started = 1;
     }
@@ -230,7 +202,7 @@ int smp_wait_for_aps(uint32_t spin_limit) {
 void smp_send_resched_ipi(uint32_t cpu_id) {
     const struct smp_cpu_info* cpu = smp_get_cpu_info(cpu_id);
     if (!cpu || !cpu->started) return;
-    lapic_send_ipi(cpu->lapic_id, INT_VECTOR_RESCHED);
+    arch_platform_send_resched_ipi(cpu->lapic_id);
 }
 
 void smp_send_resched_ipi_selftest(void) {

@@ -1,10 +1,10 @@
+#include "arch_time.h"
 #include "fs.h"
 #include "task.h"
 #include "limine.h"
 #include "pmm.h"
 #include "vmm.h"
 #include "usb.h"
-#include "lapic.h"
 #include "net_socket.h"
 #include "spinlock.h"
 
@@ -527,7 +527,7 @@ static struct usb_root_cache_entry g_usb_root_cache[USB_ROOT_CACHE_SLOTS];
 static uint32_t g_usb_root_cache_next = 0;
 
 static uint64_t fs_now_sec(void) {
-    return lapic_get_ticks_ms() / 1000U;
+    return arch_time_now_ms() / 1000U;
 }
 
 enum {

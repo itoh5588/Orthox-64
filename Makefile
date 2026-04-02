@@ -1,9 +1,38 @@
 # コンパイラ設定
 CC = clang
-LD = lld -flavor gnu
+LLD = $(shell command -v lld 2>/dev/null || command -v ld.lld 2>/dev/null || \
+	if [ -x /opt/homebrew/bin/lld ]; then printf /opt/homebrew/bin/lld; \
+	elif [ -x /usr/local/bin/lld ]; then printf /usr/local/bin/lld; \
+	elif [ -x /opt/homebrew/opt/llvm/bin/lld ]; then printf /opt/homebrew/opt/llvm/bin/lld; \
+	elif [ -x /usr/local/opt/llvm/bin/lld ]; then printf /usr/local/opt/llvm/bin/lld; \
+	else printf lld; fi)
+LD = $(LLD) -flavor gnu
 TARGET = x86_64-elf
-XGCC = x86_64-elf-gcc
+XGCC = $(shell command -v x86_64-elf-gcc 2>/dev/null || \
+	if [ -x /opt/homebrew/bin/x86_64-elf-gcc ]; then printf /opt/homebrew/bin/x86_64-elf-gcc; \
+	elif [ -x /usr/local/bin/x86_64-elf-gcc ]; then printf /usr/local/bin/x86_64-elf-gcc; \
+	else printf x86_64-elf-gcc; fi)
 XAR = x86_64-elf-ar
+XORRISO = $(shell command -v xorriso 2>/dev/null || \
+	if [ -x /opt/homebrew/bin/xorriso ]; then printf /opt/homebrew/bin/xorriso; \
+	elif [ -x /usr/local/bin/xorriso ]; then printf /usr/local/bin/xorriso; \
+	else printf xorriso; fi)
+LLVM_CLANG = $(shell command -v clang 2>/dev/null || \
+	if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then printf /opt/homebrew/opt/llvm/bin/clang; \
+	elif [ -x /usr/local/opt/llvm/bin/clang ]; then printf /usr/local/opt/llvm/bin/clang; \
+	else printf clang; fi)
+RISCV64_CC = $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then printf /opt/homebrew/opt/llvm/bin/clang; \
+	elif [ -x /usr/local/opt/llvm/bin/clang ]; then printf /usr/local/opt/llvm/bin/clang; \
+	elif [ -x /opt/homebrew/bin/clang ]; then printf /opt/homebrew/bin/clang; \
+	elif [ -x /usr/local/bin/clang ]; then printf /usr/local/bin/clang; \
+	else printf clang; fi)
+QEMU_RISCV64 = $(shell command -v qemu-system-riscv64 2>/dev/null || \
+	if [ -x /opt/homebrew/bin/qemu-system-riscv64 ]; then printf /opt/homebrew/bin/qemu-system-riscv64; \
+	elif [ -x /usr/local/bin/qemu-system-riscv64 ]; then printf /usr/local/bin/qemu-system-riscv64; \
+	else printf qemu-system-riscv64; fi)
+OPENSBI_RISCV64 = $(shell if [ -f /opt/homebrew/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin ]; then printf /opt/homebrew/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin; \
+	elif [ -f /usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin ]; then printf /usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin; \
+	else printf opensbi-riscv64-generic-fw_dynamic.bin; fi)
 
 BUILD_DIR = build
 USER_BUILD_DIR = $(BUILD_DIR)/$(LIBC_IMPL)/user
@@ -16,6 +45,10 @@ KERNEL_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-stack-protector -
 	-mcmodel=kernel -O2 -Wall -Wextra -Iinclude -Iports/lwip/src/include -MMD -MP
 
 KERNEL_LDFLAGS = -nostdlib -static -T scripts/kernel.ld
+RISCV64_CFLAGS = --target=riscv64-none-elf -march=rv64gc -mabi=lp64 -ffreestanding \
+	-fno-stack-protector -fno-stack-check -fno-lto -fno-PIE -mcmodel=medany -O2 -Wall -Wextra \
+	-Iinclude -MMD -MP
+RISCV64_LDFLAGS = -flavor gnu -m elf64lriscv -nostdlib -static -T scripts/kernel-riscv64.ld
 
 # libc / sysroot 設定
 LIBC_IMPL ?= musl
@@ -45,10 +78,11 @@ MUSL_USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 \
 USER_LDFLAGS = -m elf_x86_64 -nostdlib -static -Ttext 0x400000
 
 # x86_64-elf-gcc を使って libgcc.a の正確なパスを取得
-LIBGCC = $(shell x86_64-elf-gcc -print-libgcc-file-name)
+LIBGCC = $(shell $(XGCC) -print-libgcc-file-name)
 
 # 出力ファイル名
 KERNEL_ELF = $(OUT_DIR)/kernel.elf
+RISCV64_KERNEL_ELF = $(OUT_DIR)/kernel-riscv64.elf
 USER_ELF = user/user_test.elf
 MUSL_USER_ELF = user/user_test-musl.elf
 EXEC_ELF = user/exec_test.elf
@@ -112,9 +146,14 @@ ROOTFS_TAR = $(OUT_DIR)/rootfs.tar
 ROOTFS_FILES = $(shell find rootfs -type f 2>/dev/null)
 
 # ソース
-SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
-       kernel/vmm.c kernel/idt.c kernel/interrupt.S kernel/lapic.c kernel/sound.c kernel/syscall.c kernel/syscall_entry.S \
-       kernel/task.c kernel/task_switch.S kernel/fs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio_net.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
+SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/x86_64/gdt.c kernel/x86_64/gdt_flush.S \
+       kernel/x86_64/platform.c kernel/x86_64/time.c kernel/x86_64/trap.c kernel/x86_64/vm.c \
+       kernel/x86_64/interrupt.S kernel/x86_64/syscall_entry.S kernel/x86_64/task_switch.S \
+       kernel/vmm.c kernel/x86_64/idt.c kernel/x86_64/lapic.c kernel/sound.c kernel/syscall.c \
+       kernel/task.c kernel/fs.c kernel/x86_64/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio_net.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
+RISCV64_C_SRCS = kernel/riscv64/boot.c kernel/riscv64/elf.c kernel/riscv64/entry.c kernel/riscv64/task.c kernel/riscv64/trap.c kernel/riscv64/syscall.c kernel/riscv64/stubs.c kernel/riscv64/vm.c
+RISCV64_SHARED_C_SRCS = kernel/task.c
+RISCV64_ASM_SRCS = kernel/riscv64/start.S kernel/riscv64/trap.S kernel/riscv64/entry.S
 
 LWIP_CORE_SRCS = \
 	ports/lwip/src/core/def.c \
@@ -150,6 +189,9 @@ BEARSSL_A = $(BUILD_DIR)/bearssl/libbearssl.a
 OBJS = $(patsubst kernel/%.c, $(BUILD_DIR)/kernel/%.o, $(filter %.c, $(SRCS))) \
        $(patsubst kernel/%.S, $(BUILD_DIR)/kernel/%.o, $(filter %.S, $(SRCS))) \
        $(patsubst ports/lwip/src/%.c, $(BUILD_DIR)/lwip/%.o, $(LWIP_SRCS))
+RISCV64_OBJS = $(patsubst kernel/riscv64/%.c, $(BUILD_DIR)/riscv64/kernel/%.o, $(RISCV64_C_SRCS)) \
+	       $(patsubst kernel/%.c, $(BUILD_DIR)/riscv64/kernel/shared/%.o, $(RISCV64_SHARED_C_SRCS)) \
+	       $(patsubst kernel/riscv64/%.S, $(BUILD_DIR)/riscv64/kernel/%_asm.o, $(RISCV64_ASM_SRCS))
 
 DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/crt0.d $(USER_BUILD_DIR)/syscalls.d $(USER_BUILD_DIR)/syscalls_musl.d $(USER_BUILD_DIR)/syscall_wrap.d \
@@ -166,7 +208,7 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/mkdirtest.d $(USER_BUILD_DIR)/wadheadtest.d \
        $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d
 
-.PHONY: all clean run smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
+.PHONY: all clean run smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install riscv64-run riscv64-smoke
 
 all: $(ISO)
 
@@ -235,6 +277,10 @@ $(KERNEL_ELF): $(OBJS)
 	@mkdir -p $(@D)
 	$(LD) $(KERNEL_LDFLAGS) $(OBJS) -o $@
 
+$(RISCV64_KERNEL_ELF): $(RISCV64_OBJS)
+	@mkdir -p $(@D)
+	$(LLD) $(RISCV64_LDFLAGS) $(RISCV64_OBJS) -o $@
+
 $(BUILD_DIR)/kernel/%.o: kernel/%.c
 	@mkdir -p $(@D)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
@@ -242,6 +288,18 @@ $(BUILD_DIR)/kernel/%.o: kernel/%.c
 $(BUILD_DIR)/kernel/%.o: kernel/%.S
 	@mkdir -p $(@D)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/riscv64/kernel/%.o: kernel/riscv64/%.c
+	@mkdir -p $(@D)
+	$(RISCV64_CC) $(RISCV64_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/riscv64/kernel/shared/%.o: kernel/%.c
+	@mkdir -p $(@D)
+	$(RISCV64_CC) $(RISCV64_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/riscv64/kernel/%_asm.o: kernel/riscv64/%.S
+	@mkdir -p $(@D)
+	$(RISCV64_CC) $(RISCV64_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lwip/%.o: ports/lwip/src/%.c
 	@mkdir -p $(@D)
@@ -301,7 +359,7 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) $(DOOM_MUSL_ELF) iso/limine.conf limine/limine $
 	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin $(ISO_ROOT_DIR)/boot/limine/
 	cp limine/BOOTX64.EFI $(ISO_ROOT_DIR)/EFI/BOOT/
 	cp limine/BOOTIA32.EFI $(ISO_ROOT_DIR)/EFI/BOOT/
-	xorriso -as mkisofs -v -R -r -J -b boot/limine/limine-bios-cd.bin \
+	$(XORRISO) -as mkisofs -v -R -r -J -b boot/limine/limine-bios-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table -hfsplus \
 		-apm-block-size 2048 --efi-boot boot/limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
@@ -311,6 +369,12 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) $(DOOM_MUSL_ELF) iso/limine.conf limine/limine $
 
 run: $(ISO)
 	bash ./run_qemu_stdio.sh
+
+riscv64-run: $(RISCV64_KERNEL_ELF)
+	bash ./run_qemu_riscv64.sh
+
+riscv64-smoke: $(RISCV64_KERNEL_ELF)
+	bash ./tests/riscv64_smoke.sh
 
 smprun: $(ISO)
 	bash ./run_qemu_stdio.sh \

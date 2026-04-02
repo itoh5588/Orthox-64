@@ -1,16 +1,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "arch_platform.h"
 #include "limine.h"
 #include "pmm.h"
-#include "gdt.h"
 #include "vmm.h"
-#include "idt.h"
-#include "syscall.h"
 #include "elf64.h"
 #include "task.h"
 #include "smp.h"
-#include "lapic.h"
 #include "spinlock.h"
 #include "pci.h"
 #include "net.h"
@@ -131,44 +128,17 @@ static void putdec(uint64_t v) {
     serial_irq_restore(flags);
 }
 
-static void enable_sse(void) {
-    uint64_t cr0, cr4;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 &= ~(1ULL << 2);
-    cr0 |= (1ULL << 1);
-    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
-    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    cr4 |= (1ULL << 9);
-    cr4 |= (1ULL << 10);
-    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
-}
-
-static void enable_paging_features(void) {
-    uint64_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= (1ULL << 16); // WP (Write Protect)
-    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
-}
-
 void _start(void) {
     init_serial();
     puts("\r\n--- Orthox-64 Boot ---\r\n");
 
     if (memmap_request.response && hhdm_request.response && kernel_address_request.response) {
         pmm_init();
-        gdt_init();
-        idt_init();
-        enable_sse();
-        enable_paging_features();
+        arch_platform_init_bsp();
         uint64_t cr0_val;
         __asm__ volatile("mov %%cr0, %0" : "=r"(cr0_val));
         puts("CR0 value: 0x"); puthex(cr0_val); puts("\r\n");
-        syscall_init();
-
         vmm_init();
-        extern void pic_init(void);
-        pic_init();
-        lapic_init();
         pci_init();
         net_init();
         usb_init();
@@ -221,13 +191,12 @@ void _start(void) {
             if (module) {
                 // 最初は1つのタスクだけ作成
                 struct task* user_task = task_create(0, 0);
-                uint64_t* user_pml4 = (uint64_t*)PHYS_TO_VIRT(user_task->ctx.cr3);
-
-                struct elf_info info = elf_load(user_pml4, module->address);
+                arch_address_space_t address_space = arch_task_context_get_address_space(&user_task->ctx);
+                struct elf_info info = elf_load(address_space, module->address);
                 if (info.entry) {
                     char* argv[] = { "sh", NULL };
                     char* envp[] = { "PATH=/bin:/bin-musl", "HOME=/", NULL };
-                    if (task_prepare_initial_user_stack(user_pml4, user_task, &info, argv, envp) < 0) {
+                    if (task_prepare_initial_user_stack(address_space, user_task, &info, argv, envp) < 0) {
                         puts("Failed to prepare initial user stack\r\n");
                         while(1);
                     }

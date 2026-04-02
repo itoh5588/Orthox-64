@@ -1,6 +1,6 @@
 #include <stdint.h>
+#include "arch_time.h"
 #include "lwip_port.h"
-#include "lapic.h"
 #include "net.h"
 #include "lwip/init.h"
 #include "lwip/pbuf.h"
@@ -350,7 +350,7 @@ void sys_arch_unprotect(sys_prot_t pval) {
 }
 
 uint32_t sys_now(void) {
-    return (uint32_t)lapic_get_ticks_ms();
+    return (uint32_t)arch_time_now_ms();
 }
 
 void lwip_port_init(void) {
@@ -407,7 +407,7 @@ void lwip_port_poll(void) {
     if (!g_lwip_ready || g_lwip_poll_busy) return;
     g_lwip_poll_busy = 1;
     sys_check_timeouts();
-    uint64_t now = lapic_get_ticks_ms();
+    uint64_t now = arch_time_now_ms();
     if (g_dhcp_ready && !g_gateway_seen && now - g_last_arp_probe_ms >= 1000) {
         g_last_arp_probe_ms = now;
         puts("[lwip] arp probe gw\r\n");

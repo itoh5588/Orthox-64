@@ -1,0 +1,528 @@
+#include <stdint.h>
+#include "riscv64/boot.h"
+#include "riscv64/csr.h"
+#include "riscv64/dtb.h"
+#include "riscv64/elf.h"
+#include "riscv64/syscall.h"
+#include "riscv64/task.h"
+#include "riscv64/trap.h"
+#include "riscv64/vm.h"
+#include "syscall.h"
+#include "task.h"
+
+extern int task_execve(arch_task_exec_frame_t* frame, const char* path,
+                       char* const argv[], char* const envp[]);
+extern void task_main(void);
+
+static volatile riscv64_boot_info_t g_riscv64_boot_info;
+static volatile int g_riscv64_user_handoff_started;
+
+static uint64_t riscv64_boot_stack_top(void) {
+    uint64_t sp;
+    __asm__ volatile("mv %0, sp" : "=r"(sp));
+    return (sp & ~(4096ULL - 1ULL)) + 4096ULL;
+}
+
+#define RISCV64_UART_RHR 0
+#define RISCV64_UART_THR 0
+#define RISCV64_UART_IER 1
+#define RISCV64_UART_FCR 2
+#define RISCV64_UART_LCR 3
+#define RISCV64_UART_LSR 5
+
+#define RISCV64_UART_LCR_DLAB 0x80U
+#define RISCV64_UART_LCR_8N1  0x03U
+#define RISCV64_UART_FCR_FIFO_ENABLE 0x01U
+#define RISCV64_UART_FCR_FIFO_CLEAR  0x06U
+#define RISCV64_UART_LSR_TX_IDLE     0x20U
+
+static inline volatile uint8_t* riscv64_uart0_regs(void) {
+    return (volatile uint8_t*)(uintptr_t)RISCV64_QEMU_VIRT_UART0_BASE;
+}
+
+static uint32_t riscv64_align_up4(uint32_t value) {
+    return (value + 3U) & ~3U;
+}
+
+static int riscv64_str_eq(const char* a, const char* b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static int riscv64_dtb_compatible_has(const char* data, uint32_t len, const char* needle) {
+    uint32_t i = 0;
+    if (!data || !needle) return 0;
+    while (i < len) {
+        const char* entry = data + i;
+        uint32_t entry_len = 0;
+        while (i + entry_len < len && entry[entry_len] != '\0') entry_len++;
+        if (i + entry_len >= len) break;
+        if (riscv64_str_eq(entry, needle)) return 1;
+        i += entry_len + 1U;
+    }
+    return 0;
+}
+
+static uint64_t riscv64_dtb_reg_base(const uint8_t* data, uint32_t len) {
+    if (!data) return 0;
+    if (len >= 16U) return riscv64_dtb_read_be64(data);
+    if (len >= 8U) return (uint64_t)riscv64_dtb_read_be32(data);
+    return 0;
+}
+
+static void riscv64_dtb_scan(uint64_t dtb_pa) {
+    const riscv64_fdt_header_t* header = (const riscv64_fdt_header_t*)(uintptr_t)dtb_pa;
+    uint32_t struct_off;
+    uint32_t struct_size;
+    uint32_t strings_off;
+    const uint8_t* struct_base;
+    const char* strings_base;
+    uint32_t off = 0;
+    int depth = 0;
+    int candidate_uart = 0;
+    int candidate_virtio = 0;
+    uint64_t candidate_reg = 0;
+
+    if (!riscv64_dtb_valid(dtb_pa)) return;
+
+    struct_off = riscv64_dtb_read_be32(&header->off_dt_struct);
+    struct_size = riscv64_dtb_read_be32(&header->size_dt_struct);
+    strings_off = riscv64_dtb_read_be32(&header->off_dt_strings);
+    struct_base = (const uint8_t*)(uintptr_t)(dtb_pa + struct_off);
+    strings_base = (const char*)(uintptr_t)(dtb_pa + strings_off);
+
+    while (off + 4U <= struct_size) {
+        uint32_t token = riscv64_dtb_read_be32(struct_base + off);
+        off += 4U;
+
+        if (token == RISCV64_FDT_BEGIN_NODE) {
+            const char* node_name = (const char*)(struct_base + off);
+            while (off < struct_size && struct_base[off] != 0) off++;
+            off++;
+            off = riscv64_align_up4(off);
+            depth++;
+            candidate_uart = 0;
+            candidate_virtio = 0;
+            candidate_reg = 0;
+            (void)node_name;
+            continue;
+        }
+
+        if (token == RISCV64_FDT_END_NODE) {
+            if (candidate_uart && candidate_reg != 0) {
+                g_riscv64_boot_info.uart_base = candidate_reg;
+                g_riscv64_boot_info.flags |= RISCV64_BOOT_FLAG_UART_FROM_DTB;
+            }
+            if (candidate_virtio && candidate_reg != 0) {
+                if (g_riscv64_boot_info.first_virtio_mmio_base == 0) {
+                    g_riscv64_boot_info.first_virtio_mmio_base = candidate_reg;
+                }
+                g_riscv64_boot_info.virtio_mmio_count++;
+                g_riscv64_boot_info.flags |= RISCV64_BOOT_FLAG_VIRTIO_MMIO_FOUND;
+            }
+            if (depth > 0) depth--;
+            candidate_uart = 0;
+            candidate_virtio = 0;
+            candidate_reg = 0;
+            continue;
+        }
+
+        if (token == RISCV64_FDT_PROP) {
+            uint32_t len;
+            uint32_t nameoff;
+            const uint8_t* data;
+            const char* prop_name;
+            if (off + 8U > struct_size) break;
+            len = riscv64_dtb_read_be32(struct_base + off);
+            nameoff = riscv64_dtb_read_be32(struct_base + off + 4U);
+            off += 8U;
+            if (off + riscv64_align_up4(len) > struct_size) break;
+            data = struct_base + off;
+            prop_name = strings_base + nameoff;
+
+            if (depth >= 1 && riscv64_str_eq(prop_name, "compatible")) {
+                if (riscv64_dtb_compatible_has((const char*)data, len, "ns16550a") ||
+                    riscv64_dtb_compatible_has((const char*)data, len, "ns16550")) {
+                    candidate_uart = 1;
+                }
+                if (riscv64_dtb_compatible_has((const char*)data, len, "virtio,mmio")) {
+                    candidate_virtio = 1;
+                }
+            } else if (depth >= 1 && riscv64_str_eq(prop_name, "reg")) {
+                candidate_reg = riscv64_dtb_reg_base(data, len);
+            }
+
+            off += riscv64_align_up4(len);
+            continue;
+        }
+
+        if (token == RISCV64_FDT_NOP) continue;
+        if (token == RISCV64_FDT_END) break;
+        break;
+    }
+}
+
+uint32_t riscv64_dtb_read_be32(const void* addr) {
+    const uint8_t* p = (const uint8_t*)addr;
+    return ((uint32_t)p[0] << 24) |
+           ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) |
+           (uint32_t)p[3];
+}
+
+uint64_t riscv64_dtb_read_be64(const void* addr) {
+    const uint8_t* p = (const uint8_t*)addr;
+    return ((uint64_t)p[0] << 56) |
+           ((uint64_t)p[1] << 48) |
+           ((uint64_t)p[2] << 40) |
+           ((uint64_t)p[3] << 32) |
+           ((uint64_t)p[4] << 24) |
+           ((uint64_t)p[5] << 16) |
+           ((uint64_t)p[6] << 8) |
+           (uint64_t)p[7];
+}
+
+int riscv64_dtb_valid(uint64_t dtb_pa) {
+    const riscv64_fdt_header_t* header = (const riscv64_fdt_header_t*)(uintptr_t)dtb_pa;
+    if (!dtb_pa) return 0;
+    return riscv64_dtb_read_be32(&header->magic) == RISCV64_FDT_MAGIC;
+}
+
+uint32_t riscv64_dtb_total_size(uint64_t dtb_pa) {
+    const riscv64_fdt_header_t* header = (const riscv64_fdt_header_t*)(uintptr_t)dtb_pa;
+    if (!riscv64_dtb_valid(dtb_pa)) return 0;
+    return riscv64_dtb_read_be32(&header->totalsize);
+}
+
+void riscv64_boot_capture(uint64_t hart_id, uint64_t dtb_pa) {
+    g_riscv64_boot_info.hart_id = hart_id;
+    g_riscv64_boot_info.dtb_pa = dtb_pa;
+    g_riscv64_boot_info.uart_base = RISCV64_QEMU_VIRT_UART0_BASE;
+    g_riscv64_boot_info.first_virtio_mmio_base = 0;
+    g_riscv64_boot_info.dtb_size = riscv64_dtb_total_size(dtb_pa);
+    g_riscv64_boot_info.virtio_mmio_count = 0;
+    g_riscv64_boot_info.flags = 0;
+    if (g_riscv64_boot_info.dtb_size != 0) {
+        g_riscv64_boot_info.flags |= RISCV64_BOOT_FLAG_DTB_VALID;
+        riscv64_dtb_scan(dtb_pa);
+    }
+}
+
+const riscv64_boot_info_t* riscv64_boot_info(void) {
+    return (const riscv64_boot_info_t*)&g_riscv64_boot_info;
+}
+
+void riscv64_mark_user_handoff_started(void) {
+    g_riscv64_user_handoff_started = 1;
+}
+
+int riscv64_user_handoff_started(void) {
+    return g_riscv64_user_handoff_started;
+}
+
+void riscv64_uart_init(void) {
+    volatile uint8_t* uart = riscv64_uart0_regs();
+
+    uart[RISCV64_UART_IER] = 0x00U;
+    uart[RISCV64_UART_LCR] = RISCV64_UART_LCR_DLAB;
+    uart[RISCV64_UART_RHR] = 0x03U;
+    uart[RISCV64_UART_IER] = 0x00U;
+    uart[RISCV64_UART_LCR] = RISCV64_UART_LCR_8N1;
+    uart[RISCV64_UART_FCR] = RISCV64_UART_FCR_FIFO_ENABLE | RISCV64_UART_FCR_FIFO_CLEAR;
+
+    g_riscv64_boot_info.flags |= RISCV64_BOOT_FLAG_UART_READY;
+}
+
+void riscv64_uart_putchar(char ch) {
+    volatile uint8_t* uart = riscv64_uart0_regs();
+    while ((uart[RISCV64_UART_LSR] & RISCV64_UART_LSR_TX_IDLE) == 0) {
+    }
+    uart[RISCV64_UART_THR] = (uint8_t)ch;
+}
+
+void riscv64_uart_puts(const char* s) {
+    if (!s) return;
+    while (*s) {
+        if (*s == '\n') riscv64_uart_putchar('\r');
+        riscv64_uart_putchar(*s++);
+    }
+}
+
+void riscv64_uart_puthex64(uint64_t value) {
+    static const char hex[] = "0123456789abcdef";
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        riscv64_uart_putchar(hex[(value >> shift) & 0xfU]);
+    }
+}
+
+void riscv64_wait_forever(void) {
+    for (;;) {
+        __asm__ volatile("wfi");
+    }
+}
+
+static void riscv64_vm_selftest(void) {
+    uint64_t aspace = riscv64_vm_create_address_space();
+    uint64_t virt = 0x40000000ULL;
+    uint64_t phys;
+    uint64_t mapped;
+    static const uint8_t payload[] = { 'R', 'V', 'E', 'L', 'F', '!', 0 };
+
+    if (!aspace) {
+        riscv64_uart_puts("  vm selftest: create failed\n");
+        return;
+    }
+
+    if (riscv64_elf_load_segment_bootstrap(aspace, virt, payload, sizeof(payload), 128,
+                                           RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W) < 0) {
+        riscv64_uart_puts("  vm selftest: bootstrap load failed\n");
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+
+    mapped = riscv64_vm_get_phys(aspace, virt);
+    if (!mapped) {
+        riscv64_uart_puts("  vm selftest: map/get_phys failed\n");
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+
+    phys = mapped & ~(4096ULL - 1ULL);
+    if (*(volatile uint8_t*)(uintptr_t)mapped != 'R' ||
+        *(volatile uint8_t*)(uintptr_t)(mapped + 5) != '!') {
+        riscv64_uart_puts("  vm selftest: payload copy failed\n");
+        riscv64_vm_bootstrap_free_page(phys);
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+
+    riscv64_vm_update_page_flags(aspace, virt, RISCV64_VM_PAGE_R);
+    mapped = riscv64_vm_get_phys(aspace, virt);
+    if ((mapped & ~(4096ULL - 1ULL)) != phys) {
+        riscv64_uart_puts("  vm selftest: update flags failed\n");
+        riscv64_vm_bootstrap_free_page(phys);
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+
+    riscv64_vm_unmap_page(aspace, virt);
+    if (riscv64_vm_get_phys(aspace, virt) != 0) {
+        riscv64_uart_puts("  vm selftest: unmap failed\n");
+        riscv64_vm_bootstrap_free_page(phys);
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+
+    riscv64_vm_bootstrap_free_page(phys);
+    riscv64_vm_destroy_address_space(aspace);
+    riscv64_uart_puts("  vm selftest passed\n");
+}
+
+static void riscv64_user_frame_selftest(void) {
+    struct arch_task_context ctx;
+    struct arch_task_user_state state;
+    riscv64_trap_frame_t trap_frame;
+    const uint64_t entry = 0x0000000040001000ULL;
+    const uint64_t sp = 0x000000007ffff000ULL;
+    const uint64_t arg0 = 3;
+    const uint64_t arg1 = 0x000000007fffef00ULL;
+    const uint64_t arg2 = 0x000000007fffef80ULL;
+
+    for (uint64_t i = 0; i < sizeof(ctx); i++) {
+        ((uint8_t*)&ctx)[i] = 0;
+    }
+
+    state.entry_pc = entry;
+    state.user_sp = sp;
+    state.arg0 = arg0;
+    state.arg1 = arg1;
+    state.arg2 = arg2;
+
+    riscv64_uart_puts("  user frame selftest start\n");
+    riscv64_task_prepare_initial_user_frame(&ctx.user_frame, &state);
+
+    if (ctx.user_frame.sepc != entry ||
+        ctx.user_frame.sp != sp ||
+        ctx.user_frame.a0 != arg0 ||
+        ctx.user_frame.a1 != arg1 ||
+        ctx.user_frame.a2 != arg2) {
+        riscv64_uart_puts("  user frame selftest failed\n");
+        return;
+    }
+
+    if ((ctx.user_frame.sstatus & RISCV64_SSTATUS_SPP) != 0 ||
+        (ctx.user_frame.sstatus & RISCV64_SSTATUS_SPIE) == 0) {
+        riscv64_uart_puts("  user frame selftest flags failed\n");
+        return;
+    }
+
+    riscv64_uart_puts("  user frame selftest passed\n");
+
+    for (uint64_t i = 0; i < sizeof(trap_frame); i++) {
+        ((uint8_t*)&trap_frame)[i] = 0;
+    }
+    trap_frame.sepc = entry + 4;
+    trap_frame.sp = sp - 16;
+    trap_frame.a0 = 42;
+    trap_frame.a1 = arg1 + 8;
+    trap_frame.a2 = arg2 + 8;
+    trap_frame.sstatus = ctx.user_frame.sstatus;
+
+    riscv64_syscall_set_current_context(&ctx);
+    riscv64_syscall_sync_current_user_frame(&trap_frame);
+    riscv64_syscall_set_current_context(0);
+
+    if (ctx.user_frame.sepc != trap_frame.sepc ||
+        ctx.user_frame.sp != trap_frame.sp ||
+        ctx.user_frame.a0 != trap_frame.a0 ||
+        ctx.user_frame.a1 != trap_frame.a1 ||
+        ctx.user_frame.a2 != trap_frame.a2) {
+        riscv64_uart_puts("  user frame sync selftest failed\n");
+        return;
+    }
+
+    riscv64_uart_puts("  user frame sync selftest passed\n");
+}
+
+static void riscv64_syscall_dispatch_selftest(void) {
+    task_context_t* ctx = task_current_context();
+    riscv64_trap_frame_t frame;
+    char cwd_buf[8];
+    static const char write_buf[] = "SOK\n";
+
+    riscv64_uart_puts("  syscall selftest start\n");
+
+    if (!ctx) {
+        riscv64_uart_puts("  syscall selftest: no current context\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) {
+        ((uint8_t*)&frame)[i] = 0;
+    }
+    for (uint64_t i = 0; i < sizeof(cwd_buf); i++) {
+        cwd_buf[i] = 0;
+    }
+
+    frame.sepc = 0x0000000040002000ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)(uintptr_t)cwd_buf;
+    frame.a1 = sizeof(cwd_buf);
+    frame.a7 = SYS_GETCWD;
+
+    riscv64_syscall_dispatch(&frame);
+
+    if (frame.sepc != 0x0000000040002004ULL ||
+        frame.a0 != (uint64_t)(uintptr_t)cwd_buf ||
+        cwd_buf[0] != '/' ||
+        cwd_buf[1] != '\0' ||
+        ctx->user_frame.sepc != frame.sepc) {
+        riscv64_uart_puts("  syscall selftest: getcwd failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) {
+        ((uint8_t*)&frame)[i] = 0;
+    }
+    frame.sepc = 0x0000000040003000ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a7 = SYS_GETPID;
+
+    riscv64_syscall_dispatch(&frame);
+
+    if (frame.sepc != 0x0000000040003004ULL || frame.a0 == 0) {
+        riscv64_uart_puts("  syscall selftest: getpid failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) {
+        ((uint8_t*)&frame)[i] = 0;
+    }
+    frame.sepc = 0x0000000040004000ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = 1;
+    frame.a1 = (uint64_t)(uintptr_t)write_buf;
+    frame.a2 = 4;
+    frame.a7 = SYS_WRITE;
+
+    riscv64_syscall_dispatch(&frame);
+
+    if (frame.sepc != 0x0000000040004004ULL || frame.a0 != 4) {
+        riscv64_uart_puts("  syscall selftest: write failed\n");
+        return;
+    }
+
+    riscv64_uart_puts("  syscall dispatch selftest passed\n");
+}
+
+static void riscv64_first_user_task_bootstrap(void) {
+    static char bootstrap_path[] = "/bootstrap-user";
+    static char* bootstrap_argv[] = { bootstrap_path, 0 };
+    static char bootstrap_env0[] = "PWD=/";
+    static char bootstrap_env1[] = "PATH=/bin";
+    static char* bootstrap_envp[] = { bootstrap_env0, bootstrap_env1, 0 };
+    arch_task_exec_frame_t frame;
+
+    riscv64_uart_puts("  first user task bootstrap start\n");
+    task_init();
+    if (!get_current_task()) {
+        riscv64_uart_puts("  first user task bootstrap failed: no current task\n");
+        return;
+    }
+    riscv64_syscall_dispatch_selftest();
+    if (task_execve(&frame, bootstrap_path, bootstrap_argv, bootstrap_envp) < 0) {
+        riscv64_uart_puts("  first user task bootstrap failed: execve\n");
+        return;
+    }
+    riscv64_uart_puts("  first user task entering user mode\n");
+    riscv64_mark_user_handoff_started();
+    task_main();
+}
+
+void riscv64_early_main(uint64_t hart_id, uint64_t dtb_pa) {
+    riscv64_boot_capture(hart_id, dtb_pa);
+    riscv64_uart_init();
+
+    riscv64_uart_puts("\nOrthox riscv64 early boot\n");
+    riscv64_uart_puts("  hart: 0x");
+    riscv64_uart_puthex64(hart_id);
+    riscv64_uart_puts("\n");
+    riscv64_uart_puts("  dtb : 0x");
+    riscv64_uart_puthex64(dtb_pa);
+    riscv64_uart_puts("\n");
+
+    if (g_riscv64_boot_info.flags & RISCV64_BOOT_FLAG_DTB_VALID) {
+        riscv64_uart_puts("  dtb size: 0x");
+        riscv64_uart_puthex64(g_riscv64_boot_info.dtb_size);
+        riscv64_uart_puts("\n");
+        riscv64_uart_puts("  uart   : 0x");
+        riscv64_uart_puthex64(g_riscv64_boot_info.uart_base);
+        riscv64_uart_puts("\n");
+        if (g_riscv64_boot_info.flags & RISCV64_BOOT_FLAG_VIRTIO_MMIO_FOUND) {
+            riscv64_uart_puts("  virtio0: 0x");
+            riscv64_uart_puthex64(g_riscv64_boot_info.first_virtio_mmio_base);
+            riscv64_uart_puts("\n");
+        }
+    } else {
+        riscv64_uart_puts("  dtb invalid\n");
+    }
+
+    riscv64_vm_init();
+    riscv64_vm_selftest();
+    riscv64_user_frame_selftest();
+    riscv64_trap_init();
+    riscv64_trap_set_kernel_stack(riscv64_boot_stack_top());
+    riscv64_timer_init();
+    riscv64_vm_dump_plan();
+    riscv64_first_user_task_bootstrap();
+    riscv64_uart_puts("TODO: parse DTB, build fuller Sv39 mappings\n");
+    riscv64_wait_forever();
+}

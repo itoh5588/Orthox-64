@@ -41,7 +41,8 @@ uint64_t vmm_copy_pml4(uint64_t* old_pml4);
 void vmm_free_user_pml4(uint64_t pml4_phys);
 void vmm_dump_path(uint64_t* pml4, uint64_t vaddr);
 
-struct interrupt_frame;
-void vmm_page_fault_handler(struct interrupt_frame* frame);
+#include "arch_trap.h"
+
+void vmm_page_fault_handler(arch_interrupt_frame_t* frame);
 
 #endif

@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "arch_vm.h"
 #include "elf64.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -33,29 +34,11 @@ static void* kernel_memset(void* s, int c, size_t n) {
 
 // ELF フラグから VMM フラグへの変換
 static uint64_t elf_flags_to_vmm(uint32_t p_flags) {
-    uint64_t vmm_flags = PTE_PRESENT | PTE_USER;
-    if (p_flags & PF_W) vmm_flags |= PTE_WRITABLE;
-    // NX ビットの使用を一時停止
-    // if (!(p_flags & PF_X)) vmm_flags |= PTE_NX;
-    return vmm_flags;
+    return arch_vm_user_page_flags((p_flags & PF_W) != 0,
+                                   (p_flags & PF_X) != 0);
 }
 
-// ページエントリのフラグを更新（既存の権限とマージ）
-static void update_page_flags(uint64_t* pml4, uint64_t vaddr, uint64_t new_flags) {
-    uint64_t* pdp = (uint64_t*)PHYS_TO_VIRT(pml4[PML4_IDX(vaddr)] & PTE_ADDR_MASK);
-    uint64_t* pd  = (uint64_t*)PHYS_TO_VIRT(pdp[PDP_IDX(vaddr)] & PTE_ADDR_MASK);
-    uint64_t* pt  = (uint64_t*)PHYS_TO_VIRT(pd[PD_IDX(vaddr)] & PTE_ADDR_MASK);
-    uint64_t* pte = &pt[PT_IDX(vaddr)];
-
-    // 既存のフラグとマージ (WRITABLE は OR, NX は AND)
-    uint64_t merged = *pte | (new_flags & PTE_WRITABLE);
-    if (!(new_flags & PTE_NX)) {
-        merged &= ~PTE_NX; // 一箇所でも実行許可があれば実行可能にする
-    }
-    *pte = merged;
-}
-
-struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
+struct elf_info elf_load(arch_address_space_t address_space, void* elf_data) {
     struct elf_info info = { NULL, 0, 0, 0, 0 };
     Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_data;
 
@@ -93,7 +76,7 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
             uint64_t curr_vaddr = vaddr_start;
             while (curr_vaddr < vaddr_end) {
                 uint64_t page_base = curr_vaddr & ~(PAGE_SIZE - 1);
-                uint64_t phys_addr = vmm_get_phys(pml4, page_base);
+                uint64_t phys_addr = arch_vm_get_phys(address_space, page_base);
 
                 if (phys_addr == 0) {
                     // まだマップされていないページ
@@ -104,11 +87,10 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
                     }
                     kernel_memset(PHYS_TO_VIRT(new_page), 0, PAGE_SIZE);
                     // 最初は現在のセグメントの権限でマップ
-                    vmm_map_page(pml4, page_base, (uint64_t)new_page, vmm_flags);
+                    arch_vm_map_page(address_space, page_base, (uint64_t)new_page, vmm_flags);
                     phys_addr = (uint64_t)new_page;
                 } else {
-                    // 既にマップされている場合は権限をマージ
-                    update_page_flags(pml4, page_base, vmm_flags);
+                    arch_vm_update_page_flags(address_space, page_base, vmm_flags);
                 }
 
                 // コピー範囲の計算
@@ -139,4 +121,28 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
     }
 
     return info;
+}
+
+struct elf_load_result elf_load_new_user_address_space(void* elf_data) {
+    struct elf_load_result result;
+    result.address_space = 0;
+    result.info.entry = NULL;
+    result.info.max_vaddr = 0;
+    result.info.phdr_vaddr = 0;
+    result.info.phent = 0;
+    result.info.phnum = 0;
+
+    result.address_space = arch_vm_create_user_address_space();
+    if (!result.address_space) {
+        puts("ELF: user address space alloc failed\r\n");
+        return result;
+    }
+
+    result.info = elf_load(result.address_space, elf_data);
+    if (!result.info.entry) {
+        arch_vm_destroy_user_address_space(result.address_space);
+        result.address_space = 0;
+    }
+
+    return result;
 }

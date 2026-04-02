@@ -2,6 +2,7 @@
 #define ELF64_H
 
 #include <stdint.h>
+#include "arch_vm.h"
 
 typedef uint64_t Elf64_Addr;
 typedef uint64_t Elf64_Off;
@@ -61,7 +62,12 @@ struct elf_info {
     uint64_t phnum;
 };
 
-// elf_load の返り値を構造体に
-struct elf_info elf_load(uint64_t* pml4, void* elf_data);
+struct elf_load_result {
+    arch_address_space_t address_space;
+    struct elf_info info;
+};
+
+struct elf_info elf_load(arch_address_space_t address_space, void* elf_data);
+struct elf_load_result elf_load_new_user_address_space(void* elf_data);
 
 #endif

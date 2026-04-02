@@ -1,9 +1,9 @@
 #include <stdint.h>
+#include "arch_time.h"
 #include "usb.h"
 #include "pci.h"
 #include "vmm.h"
 #include "pmm.h"
-#include "lapic.h"
 
 void puts(const char* s);
 void puthex(uint64_t v);
@@ -952,8 +952,8 @@ static int usb_msc_bot_command(const uint8_t* cdb, uint8_t cdb_len, void* data, 
         }
 
         // Delay to prevent polling starvation / overwhelming the controller
-        uint64_t start_tick = lapic_get_ticks_ms();
-        while (lapic_get_ticks_ms() - start_tick < 1) {
+        uint64_t start_tick = arch_time_now_ms();
+        while (arch_time_now_ms() - start_tick < 1) {
             __asm__ volatile("pause");
         }
 

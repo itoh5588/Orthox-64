@@ -1,13 +1,14 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "arch_entry.h"
+#include "arch_time.h"
+#include "arch_vm.h"
 #include "syscall.h"
-#include "gdt.h"
 #include "vmm.h"
 #include "pmm.h"
 #include "task.h"
 #include "fs.h"
 #include "limine.h"
-#include "lapic.h"
 #include "sound.h"
 #include "usb.h"
 #include "net_socket.h"
@@ -17,19 +18,12 @@
 void puts(const char *s);
 void puthex(uint64_t v);
 
-#define MSR_EFER   0xC0000080
-#define MSR_STAR   0xC0000081
-#define MSR_LSTAR  0xC0000082
-#define MSR_SFMASK 0xC0000084
-#define MSR_FS_BASE 0xC0000100
-
 #define ORTH_TCGETS    0x5401
 #define ORTH_TCSETS    0x5402
 #define ORTH_TIOCGPGRP 0x540F
 #define ORTH_TIOCSPGRP 0x5410
 #define ORTH_TIOCGWINSZ 0x5413
 
-extern void syscall_entry(void);
 extern struct task* task_list;
 extern int64_t sys_write(int fd, const void* buf, size_t count);
 extern int64_t sys_read(int fd, void* buf, size_t count);
@@ -39,27 +33,10 @@ void sys_brk_init(uint64_t initial_break) {
     (void)initial_break;
 }
 
-struct syscall_frame {
-    uint64_t r15, r14, r13, r12, rbp, rbx, r9, r8, r10, rdx, rsi, rdi, rax;
-    uint64_t rip, cs, rflags, rsp, ss;
-};
-
 static void* kernel_memset(void* s, int c, size_t n) {
     unsigned char* p = s;
     while (n--) *p++ = (unsigned char)c;
     return s;
-}
-
-static inline void wrmsr(uint32_t msr, uint64_t val) {
-    uint32_t low = val & 0xFFFFFFFF;
-    uint32_t high = val >> 32;
-    __asm__ volatile("wrmsr" : : "c"(msr), "a"(low), "d"(high));
-}
-
-static inline uint64_t rdmsr(uint32_t msr) {
-    uint32_t low, high;
-    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
-    return ((uint64_t)high << 32) | low;
 }
 
 static inline void outb_u8(uint16_t port, uint8_t value) {
@@ -220,7 +197,7 @@ static int sys_clock_gettime(int clock_id, struct orth_timespec_k* ts) {
         return 0;
     }
     if (clock_id != 1) return -1;
-    ms = lapic_get_ticks_ms();
+    ms = arch_time_now_ms();
     ts->tv_sec = (int64_t)(ms / 1000ULL);
     ts->tv_nsec = (int64_t)((ms % 1000ULL) * 1000000ULL);
     return 0;
@@ -234,7 +211,7 @@ static int64_t sys_getrandom(void* buf, size_t len, unsigned flags) {
     (void)flags;
     if (!out) return -1;
     if (fallback_state == 0) {
-        fallback_state = rdtsc_u64() ^ (lapic_get_ticks_ms() << 17) ^ 0x9E3779B97F4A7C15ULL;
+        fallback_state = rdtsc_u64() ^ (arch_time_now_ms() << 17) ^ 0x9E3779B97F4A7C15ULL;
     }
     while (off < len) {
         uint64_t word = 0;
@@ -248,7 +225,7 @@ static int64_t sys_getrandom(void* buf, size_t len, unsigned flags) {
             mix ^= fallback_state * 0x2545F4914F6CDD1DULL;
         }
         mix ^= rdtsc_u64();
-        mix ^= lapic_get_ticks_ms() << 9;
+        mix ^= arch_time_now_ms() << 9;
         mix ^= (uint64_t)(uintptr_t)get_current_task();
         word = mix;
         take = len - off;
@@ -326,7 +303,7 @@ static uint64_t sys_brk(uint64_t addr) {
     }
     uint64_t current_page = (current->heap_break + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
     uint64_t target_page = (addr + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
-    uint64_t* pml4 = (uint64_t*)PHYS_TO_VIRT(current->ctx.cr3);
+    arch_address_space_t address_space = arch_task_context_get_address_space(&current->ctx);
     while (current_page < target_page) {
         void* phys_mem = pmm_alloc(1);
         if (!phys_mem) {
@@ -334,7 +311,8 @@ static uint64_t sys_brk(uint64_t addr) {
             return current->heap_break;
         }
         kernel_memset(PHYS_TO_VIRT(phys_mem), 0, PAGE_SIZE);
-        vmm_map_page(pml4, current_page, (uint64_t)phys_mem, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        arch_vm_map_page(address_space, current_page, (uint64_t)phys_mem,
+                         arch_vm_user_page_flags(1, 0));
         current_page += PAGE_SIZE;
     }
     current->heap_break = addr;
@@ -391,35 +369,22 @@ static int is_user_mmap_range_valid(uint64_t vaddr, uint64_t size) {
     return 1;
 }
 
-static int is_range_unmapped(uint64_t* pml4, uint64_t vaddr, uint64_t size) {
+static int is_range_unmapped(arch_address_space_t address_space, uint64_t vaddr, uint64_t size) {
     for (uint64_t off = 0; off < size; off += PAGE_SIZE) {
-        if (vmm_get_phys(pml4, vaddr + off) != 0) {
+        if (arch_vm_get_phys(address_space, vaddr + off) != 0) {
             return 0;
         }
     }
     return 1;
 }
 
-static void unmap_one_page(uint64_t* pml4, uint64_t vaddr) {
-    if (!(pml4[PML4_IDX(vaddr)] & PTE_PRESENT)) return;
-    uint64_t* pdp = (uint64_t*)PHYS_TO_VIRT(pml4[PML4_IDX(vaddr)] & PTE_ADDR_MASK);
-    if (!(pdp[PDP_IDX(vaddr)] & PTE_PRESENT)) return;
-    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdp[PDP_IDX(vaddr)] & PTE_ADDR_MASK);
-    if (!(pd[PD_IDX(vaddr)] & PTE_PRESENT)) return;
-    if (pd[PD_IDX(vaddr)] & PTE_HUGE) return; // mmap() does not create huge pages here.
-    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[PD_IDX(vaddr)] & PTE_ADDR_MASK);
-    uint64_t* pte = &pt[PT_IDX(vaddr)];
-    if (!(*pte & PTE_PRESENT)) return;
-
-    void* page_phys = (void*)(*pte & PTE_ADDR_MASK);
-    *pte = 0;
-    __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
-    pmm_free(page_phys, 1);
+static void unmap_one_page(arch_address_space_t address_space, uint64_t vaddr) {
+    arch_vm_unmap_page(address_space, vaddr);
 }
 
-static void rollback_mmap(uint64_t* pml4, uint64_t base, uint64_t mapped_size) {
+static void rollback_mmap(arch_address_space_t address_space, uint64_t base, uint64_t mapped_size) {
     for (uint64_t off = 0; off < mapped_size; off += PAGE_SIZE) {
-        unmap_one_page(pml4, base + off);
+        unmap_one_page(address_space, base + off);
     }
 }
 
@@ -441,7 +406,7 @@ static void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, in
     if (offset < 0) return (void*)-1;
     if ((offset & (PAGE_SIZE - 1)) != 0) return (void*)-1;
 
-    uint64_t* pml4 = (uint64_t*)PHYS_TO_VIRT(current->ctx.cr3);
+    arch_address_space_t address_space = arch_task_context_get_address_space(&current->ctx);
     uint64_t size = align_up_page((uint64_t)length);
     if (size == 0) return (void*)-1;
 
@@ -462,7 +427,7 @@ static void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, in
             current->mmap_end = MMAP_BASE_ADDR;
         }
         base = align_up_page(current->mmap_end);
-        while (base < MMAP_TOP_ADDR && !is_range_unmapped(pml4, base, size)) {
+        while (base < MMAP_TOP_ADDR && !is_range_unmapped(address_space, base, size)) {
             base = align_up_page(base + PAGE_SIZE);
         }
         if (base >= MMAP_TOP_ADDR) return (void*)-1;
@@ -470,33 +435,31 @@ static void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, in
     } else {
         if ((uint64_t)addr != base) return (void*)-1;
         if (!is_user_mmap_range_valid(base, size)) return (void*)-1;
-        if (!is_range_unmapped(pml4, base, size)) {
+        if (!is_range_unmapped(address_space, base, size)) {
             // Linux MAP_FIXED replaces overlapping mapping; keep same behavior.
             for (uint64_t off = 0; off < size; off += PAGE_SIZE) {
-                unmap_one_page(pml4, base + off);
+                unmap_one_page(address_space, base + off);
             }
         }
     }
 
     if (!is_user_mmap_range_valid(base, size)) return (void*)-1;
 
-    uint64_t map_flags = PTE_PRESENT | PTE_USER;
-    if (prot & PROT_WRITE) {
-        map_flags |= PTE_WRITABLE;
-    }
+    uint64_t map_flags = arch_vm_user_page_flags((prot & PROT_WRITE) != 0,
+                                                 (prot & PROT_EXEC) != 0);
 
     uint64_t mapped = 0;
     for (uint64_t off = 0; off < size; off += PAGE_SIZE) {
         void* phys = pmm_alloc(1);
         if (!phys) {
-            rollback_mmap(pml4, base, mapped);
+            rollback_mmap(address_space, base, mapped);
             return (void*)-1;
         }
         kernel_memset(PHYS_TO_VIRT(phys), 0, PAGE_SIZE);
         if (!is_anonymous) {
             copy_mmap_file_page((uint8_t*)PHYS_TO_VIRT(phys), backing_fd, (uint64_t)offset + off);
         }
-        vmm_map_page(pml4, base + off, (uint64_t)phys, map_flags);
+        arch_vm_map_page(address_space, base + off, (uint64_t)phys, map_flags);
         mapped += PAGE_SIZE;
     }
 
@@ -512,9 +475,9 @@ static int sys_munmap(void* addr, size_t length) {
     uint64_t size = align_up_page((uint64_t)length);
     if (!is_user_mmap_range_valid(base, size)) return -1;
 
-    uint64_t* pml4 = (uint64_t*)PHYS_TO_VIRT(current->ctx.cr3);
+    arch_address_space_t address_space = arch_task_context_get_address_space(&current->ctx);
     for (uint64_t off = 0; off < size; off += PAGE_SIZE) {
-        unmap_one_page(pml4, base + off);
+        unmap_one_page(address_space, base + off);
     }
     return 0;
 }
@@ -553,18 +516,18 @@ static uint64_t sys_map_framebuffer(void) {
     }
     struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
     struct task* current = get_current_task();
-    uint64_t* pml4 = (uint64_t*)PHYS_TO_VIRT(current->ctx.cr3);
+    arch_address_space_t address_space = arch_task_context_get_address_space(&current->ctx);
     uint64_t vaddr = 0x1000000000ULL;
     uint64_t paddr = (uint64_t)fb->address;
     if (paddr >= g_hhdm_offset) paddr -= g_hhdm_offset;
     uint64_t size = fb->pitch * fb->height;
     size = (size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    vmm_map_range(pml4, vaddr, paddr, size, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    arch_vm_map_range(address_space, vaddr, paddr, size, arch_vm_user_page_flags(1, 0));
     return vaddr;
 }
 
 static uint64_t sys_get_ticks_ms(void) {
-    return lapic_get_ticks_ms();
+    return arch_time_now_ms();
 }
 
 static int sys_set_fork_spread(int enabled) {
@@ -579,7 +542,7 @@ static int sys_sleep_ms(uint64_t ms) {
     struct task* current = get_current_task();
     if (!current) return -1;
     task_mark_sleeping(current);
-    current->sleep_until_ms = lapic_get_ticks_ms() + ms;
+    current->sleep_until_ms = arch_time_now_ms() + ms;
     while (current->state == TASK_SLEEPING) {
         kernel_yield();
     }
@@ -608,12 +571,7 @@ static int sys_sound_pcm_u8(const uint8_t* samples, uint32_t count, uint32_t sam
 }
 
 void syscall_init_cpu(void) {
-    uint64_t efer = rdmsr(MSR_EFER);
-    wrmsr(MSR_EFER, efer | 1);
-    uint64_t star = (0x10ULL << 48) | (0x08ULL << 32);
-    wrmsr(MSR_STAR, star);
-    wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
-    wrmsr(MSR_SFMASK, 0x200);
+    arch_syscall_init_cpu();
 }
 
 void syscall_init(void) {
@@ -672,7 +630,7 @@ static int sys_arch_prctl(int code, uint64_t addr) {
     switch (code) {
         case ARCH_SET_FS:
             current->user_fs_base = addr;
-            wrmsr(MSR_FS_BASE, addr);
+            arch_task_apply_user_tls(addr);
             return 0;
         case ARCH_GET_FS:
             *(uint64_t*)addr = current->user_fs_base;
@@ -874,8 +832,8 @@ static int sys_sigaction(int sig, const struct orth_sigaction* act, struct orth_
     return 0;
 }
 
-extern int task_fork(struct syscall_frame* frame);
-extern int task_execve(struct syscall_frame* frame, const char* path, char* const argv[], char* const envp[]);
+extern int task_fork(arch_task_exec_frame_t* frame);
+extern int task_execve(arch_task_exec_frame_t* frame, const char* path, char* const argv[], char* const envp[]);
 extern int64_t sys_write(int fd, const void* buf, size_t count);
 extern int64_t sys_read(int fd, void* buf, size_t count);
 extern int sys_open(const char* path, int flags, int mode);
@@ -914,289 +872,296 @@ extern int fs_mount_usb_root_tar(const char* path);
 extern int fs_mount_module_root(void);
 extern int fs_get_mount_status(char* buf, size_t size);
 
-void syscall_dispatch(struct syscall_frame* frame) {
-    uint64_t syscall_no = frame->rax;
+void syscall_dispatch(arch_syscall_frame_t* frame) {
+    uint64_t syscall_no = arch_syscall_number(frame);
+    uint64_t arg0 = arch_syscall_arg0(frame);
+    uint64_t arg1 = arch_syscall_arg1(frame);
+    uint64_t arg2 = arch_syscall_arg2(frame);
+    uint64_t arg3 = arch_syscall_arg3(frame);
+    uint64_t arg4 = arch_syscall_arg4(frame);
+    uint64_t arg5 = arch_syscall_arg5(frame);
+#define SYSCALL_RETURN(value) arch_syscall_set_return(frame, (uint64_t)(value))
     kernel_lock_enter();
     switch (syscall_no) {
         case SYS_READ:
-            frame->rax = (uint64_t)sys_read((int)frame->rdi, (void*)frame->rsi, (size_t)frame->rdx);
+            SYSCALL_RETURN(sys_read((int)arg0, (void*)arg1, (size_t)arg2));
             break;
         case SYS_WRITE:
-            frame->rax = (uint64_t)sys_write((int)frame->rdi, (const void*)frame->rsi, (size_t)frame->rdx);
+            SYSCALL_RETURN(sys_write((int)arg0, (const void*)arg1, (size_t)arg2));
             break;
         case SYS_OPEN:
-            frame->rax = (uint64_t)sys_open((const char*)frame->rdi, (int)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_open((const char*)arg0, (int)arg1, (int)arg2));
             break;
         case SYS_OPENAT:
-            frame->rax = (uint64_t)sys_openat((int)frame->rdi, (const char*)frame->rsi, (int)frame->rdx, (int)frame->r10);
+            SYSCALL_RETURN(sys_openat((int)arg0, (const char*)arg1, (int)arg2, (int)arg3));
             break;
         case SYS_CLOSE:
-            frame->rax = (uint64_t)sys_close((int)frame->rdi);
+            SYSCALL_RETURN(sys_close((int)arg0));
             break;
         case SYS_STAT:
-            frame->rax = (uint64_t)sys_stat((const char*)frame->rdi, (struct kstat*)frame->rsi);
+            SYSCALL_RETURN(sys_stat((const char*)arg0, (struct kstat*)arg1));
             break;
         case SYS_FSTAT:
-            frame->rax = (uint64_t)sys_fstat((int)frame->rdi, (struct kstat*)frame->rsi);
+            SYSCALL_RETURN(sys_fstat((int)arg0, (struct kstat*)arg1));
             break;
         case SYS_FSTATAT:
-            frame->rax = (uint64_t)sys_fstatat((int)frame->rdi, (const char*)frame->rsi, (struct kstat*)frame->rdx, (int)frame->r10);
+            SYSCALL_RETURN(sys_fstatat((int)arg0, (const char*)arg1, (struct kstat*)arg2, (int)arg3));
             break;
         case SYS_LSEEK:
-            frame->rax = (uint64_t)sys_lseek((int)frame->rdi, (int64_t)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_lseek((int)arg0, (int64_t)arg1, (int)arg2));
             break;
         case SYS_MMAP:
-            frame->rax = (uint64_t)sys_mmap((void*)frame->rdi, (size_t)frame->rsi, (int)frame->rdx, (int)frame->r10, (int)frame->r8, (int64_t)frame->r9);
+            SYSCALL_RETURN(sys_mmap((void*)arg0, (size_t)arg1, (int)arg2, (int)arg3, (int)arg4, (int64_t)arg5));
             break;
         case SYS_MUNMAP:
-            frame->rax = (uint64_t)sys_munmap((void*)frame->rdi, (size_t)frame->rsi);
+            SYSCALL_RETURN(sys_munmap((void*)arg0, (size_t)arg1));
             break;
         case SYS_IOCTL:
-            frame->rax = (uint64_t)sys_ioctl((int)frame->rdi, (unsigned long)frame->rsi, frame->rdx);
+            SYSCALL_RETURN(sys_ioctl((int)arg0, (unsigned long)arg1, arg2));
             break;
         case SYS_WRITEV:
-            frame->rax = (uint64_t)sys_writev((int)frame->rdi, (const struct orth_iovec*)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_writev((int)arg0, (const struct orth_iovec*)arg1, (int)arg2));
             break;
         case SYS_READV:
-            frame->rax = (uint64_t)sys_readv((int)frame->rdi, (const struct orth_iovec*)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_readv((int)arg0, (const struct orth_iovec*)arg1, (int)arg2));
             break;
         case SYS_PIPE:
             {
                 int pipefd[2];
                 int ret = sys_pipe(pipefd);
                 if (ret == 0) {
-                    int* user_pipefd = (int*)frame->rdi;
+                    int* user_pipefd = (int*)arg0;
                     user_pipefd[0] = pipefd[0];
                     user_pipefd[1] = pipefd[1];
                 }
-                frame->rax = (uint64_t)ret;
+                SYSCALL_RETURN(ret);
             }
             break;
         case SYS_PIPE2:
             {
                 int pipefd[2];
-                int ret = sys_pipe2(pipefd, (int)frame->rsi);
+                int ret = sys_pipe2(pipefd, (int)arg1);
                 if (ret == 0) {
-                    int* user_pipefd = (int*)frame->rdi;
+                    int* user_pipefd = (int*)arg0;
                     user_pipefd[0] = pipefd[0];
                     user_pipefd[1] = pipefd[1];
                 }
-                frame->rax = (uint64_t)ret;
+                SYSCALL_RETURN(ret);
             }
             break;
         case SYS_DUP2:
-            frame->rax = (uint64_t)sys_dup2((int)frame->rdi, (int)frame->rsi);
+            SYSCALL_RETURN(sys_dup2((int)arg0, (int)arg1));
             break;
         case SYS_UNLINK:
-            frame->rax = (uint64_t)sys_unlink((const char*)frame->rdi);
+            SYSCALL_RETURN(sys_unlink((const char*)arg0));
             break;
         case SYS_UNLINKAT:
-            frame->rax = (uint64_t)sys_unlinkat((int)frame->rdi, (const char*)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_unlinkat((int)arg0, (const char*)arg1, (int)arg2));
             break;
         case SYS_RENAME:
-            frame->rax = (uint64_t)sys_rename((const char*)frame->rdi, (const char*)frame->rsi);
+            SYSCALL_RETURN(sys_rename((const char*)arg0, (const char*)arg1));
             break;
         case SYS_CHMOD:
-            frame->rax = (uint64_t)sys_chmod((const char*)frame->rdi, (uint32_t)frame->rsi);
+            SYSCALL_RETURN(sys_chmod((const char*)arg0, (uint32_t)arg1));
             break;
         case SYS_EXIT:
-            sys_exit((int)frame->rdi);
+            sys_exit((int)arg0);
             break;
         case SYS_BRK:
-            frame->rax = sys_brk(frame->rdi);
+            SYSCALL_RETURN(sys_brk(arg0));
             break;
         case SYS_GETPID:
-            frame->rax = sys_getpid();
+            SYSCALL_RETURN(sys_getpid());
             break;
         case SYS_SOCKET:
-            frame->rax = (uint64_t)sys_socket((int)frame->rdi, (int)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_socket((int)arg0, (int)arg1, (int)arg2));
             break;
         case SYS_CONNECT:
-            frame->rax = (uint64_t)sys_connect((int)frame->rdi, (const void*)frame->rsi, (uint32_t)frame->rdx);
+            SYSCALL_RETURN(sys_connect((int)arg0, (const void*)arg1, (uint32_t)arg2));
             break;
         case SYS_ACCEPT:
-            frame->rax = (uint64_t)sys_accept((int)frame->rdi, (void*)frame->rsi, (uint32_t*)frame->rdx);
+            SYSCALL_RETURN(sys_accept((int)arg0, (void*)arg1, (uint32_t*)arg2));
             break;
         case SYS_SENDTO:
-            frame->rax = (uint64_t)sys_sendto((int)frame->rdi, (const void*)frame->rsi, (size_t)frame->rdx,
-                                              (int)frame->r10, (const void*)frame->r8, (uint32_t)frame->r9);
+            SYSCALL_RETURN(sys_sendto((int)arg0, (const void*)arg1, (size_t)arg2,
+                                      (int)arg3, (const void*)arg4, (uint32_t)arg5));
             break;
         case SYS_RECVFROM:
-            frame->rax = (uint64_t)sys_recvfrom((int)frame->rdi, (void*)frame->rsi, (size_t)frame->rdx,
-                                                (int)frame->r10, (void*)frame->r8, (uint32_t*)frame->r9);
+            SYSCALL_RETURN(sys_recvfrom((int)arg0, (void*)arg1, (size_t)arg2,
+                                        (int)arg3, (void*)arg4, (uint32_t*)arg5));
             break;
         case SYS_SHUTDOWN:
-            frame->rax = (uint64_t)sys_shutdown((int)frame->rdi, (int)frame->rsi);
+            SYSCALL_RETURN(sys_shutdown((int)arg0, (int)arg1));
             break;
         case SYS_BIND:
-            frame->rax = (uint64_t)sys_bind((int)frame->rdi, (const void*)frame->rsi, (uint32_t)frame->rdx);
+            SYSCALL_RETURN(sys_bind((int)arg0, (const void*)arg1, (uint32_t)arg2));
             break;
         case SYS_LISTEN:
-            frame->rax = (uint64_t)sys_listen((int)frame->rdi, (int)frame->rsi);
+            SYSCALL_RETURN(sys_listen((int)arg0, (int)arg1));
             break;
         case SYS_GETSOCKNAME:
-            frame->rax = (uint64_t)sys_getsockname((int)frame->rdi, (void*)frame->rsi, (uint32_t*)frame->rdx);
+            SYSCALL_RETURN(sys_getsockname((int)arg0, (void*)arg1, (uint32_t*)arg2));
             break;
         case SYS_GETPEERNAME:
-            frame->rax = (uint64_t)sys_getpeername((int)frame->rdi, (void*)frame->rsi, (uint32_t*)frame->rdx);
+            SYSCALL_RETURN(sys_getpeername((int)arg0, (void*)arg1, (uint32_t*)arg2));
             break;
         case SYS_SETSOCKOPT:
-            frame->rax = (uint64_t)sys_setsockopt((int)frame->rdi, (int)frame->rsi, (int)frame->rdx,
-                                                  (const void*)frame->r10, (uint32_t)frame->r8);
+            SYSCALL_RETURN(sys_setsockopt((int)arg0, (int)arg1, (int)arg2,
+                                          (const void*)arg3, (uint32_t)arg4));
             break;
         case SYS_FORK:
-            frame->rax = (uint64_t)task_fork(frame);
+            SYSCALL_RETURN(task_fork(frame));
             break;
         case SYS_EXECVE:
-            frame->rax = (uint64_t)task_execve(frame, (const char*)frame->rdi, (char* const*)frame->rsi, (char* const*)frame->rdx);
+            SYSCALL_RETURN(task_execve(frame, (const char*)arg0, (char* const*)arg1, (char* const*)arg2));
             break;
         case SYS_WAIT4:
-            frame->rax = (uint64_t)sys_wait4((int)frame->rdi, (int*)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_wait4((int)arg0, (int*)arg1, (int)arg2));
             break;
         case SYS_GETCWD:
-            frame->rax = (uint64_t)sys_getcwd((char*)frame->rdi, (size_t)frame->rsi);
+            SYSCALL_RETURN(sys_getcwd((char*)arg0, (size_t)arg1));
             break;
         case SYS_CHDIR:
-            frame->rax = (uint64_t)sys_chdir((const char*)frame->rdi);
+            SYSCALL_RETURN(sys_chdir((const char*)arg0));
             break;
         case SYS_FCHDIR:
-            frame->rax = (uint64_t)sys_fchdir((int)frame->rdi);
+            SYSCALL_RETURN(sys_fchdir((int)arg0));
             break;
         case SYS_MKDIR:
-            frame->rax = (uint64_t)sys_mkdir((const char*)frame->rdi, (int)frame->rsi);
+            SYSCALL_RETURN(sys_mkdir((const char*)arg0, (int)arg1));
             break;
         case SYS_MKDIRAT:
-            frame->rax = (uint64_t)sys_mkdirat((int)frame->rdi, (const char*)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_mkdirat((int)arg0, (const char*)arg1, (int)arg2));
             break;
         case SYS_RMDIR:
-            frame->rax = (uint64_t)sys_rmdir((const char*)frame->rdi);
+            SYSCALL_RETURN(sys_rmdir((const char*)arg0));
             break;
         case SYS_ARCH_PRCTL:
-            frame->rax = (uint64_t)sys_arch_prctl((int)frame->rdi, frame->rsi);
+            SYSCALL_RETURN(sys_arch_prctl((int)arg0, arg1));
             break;
         case SYS_FUTEX:
-            frame->rax = (uint64_t)sys_futex((volatile int*)frame->rdi, (int)frame->rsi, (int)frame->rdx);
+            SYSCALL_RETURN(sys_futex((volatile int*)arg0, (int)arg1, (int)arg2));
             break;
         case SYS_KILL:
-            frame->rax = (uint64_t)sys_kill((int)frame->rdi, (int)frame->rsi);
+            SYSCALL_RETURN(sys_kill((int)arg0, (int)arg1));
             break;
         case SYS_GETTIMEOFDAY:
-            frame->rax = (uint64_t)sys_gettimeofday((struct orth_timeval_k*)frame->rdi);
+            SYSCALL_RETURN(sys_gettimeofday((struct orth_timeval_k*)arg0));
             break;
         case SYS_GETPGRP:
-            frame->rax = (uint64_t)sys_getpgrp();
+            SYSCALL_RETURN(sys_getpgrp());
             break;
         case SYS_CLOCK_GETTIME:
-            frame->rax = (uint64_t)sys_clock_gettime((int)frame->rdi, (struct orth_timespec_k*)frame->rsi);
+            SYSCALL_RETURN(sys_clock_gettime((int)arg0, (struct orth_timespec_k*)arg1));
             break;
         case SYS_SETPGID:
-            frame->rax = (uint64_t)sys_setpgid((int)frame->rdi, (int)frame->rsi);
+            SYSCALL_RETURN(sys_setpgid((int)arg0, (int)arg1));
             break;
         case SYS_SETSID:
-            frame->rax = (uint64_t)sys_setsid();
+            SYSCALL_RETURN(sys_setsid());
             break;
         case ORTH_SYS_TCGETPGRP:
-            frame->rax = (uint64_t)sys_tcgetpgrp((int)frame->rdi);
+            SYSCALL_RETURN(sys_tcgetpgrp((int)arg0));
             break;
         case ORTH_SYS_TCSETPGRP:
-            frame->rax = (uint64_t)sys_tcsetpgrp((int)frame->rdi, (int)frame->rsi);
+            SYSCALL_RETURN(sys_tcsetpgrp((int)arg0, (int)arg1));
             break;
         case ORTH_SYS_TCGETATTR:
-            frame->rax = (uint64_t)sys_tcgetattr((int)frame->rdi, (struct orth_termios*)frame->rsi);
+            SYSCALL_RETURN(sys_tcgetattr((int)arg0, (struct orth_termios*)arg1));
             break;
         case ORTH_SYS_TCSETATTR:
-            frame->rax = (uint64_t)sys_tcsetattr((int)frame->rdi, (int)frame->rsi, (const struct orth_termios*)frame->rdx);
+            SYSCALL_RETURN(sys_tcsetattr((int)arg0, (int)arg1, (const struct orth_termios*)arg2));
             break;
         case ORTH_SYS_SIGPROCMASK:
-            frame->rax = (uint64_t)sys_sigprocmask((int)frame->rdi, (const uint64_t*)frame->rsi, (uint64_t*)frame->rdx);
+            SYSCALL_RETURN(sys_sigprocmask((int)arg0, (const uint64_t*)arg1, (uint64_t*)arg2));
             break;
         case ORTH_SYS_SIGPENDING:
-            frame->rax = (uint64_t)sys_sigpending((uint64_t*)frame->rdi);
+            SYSCALL_RETURN(sys_sigpending((uint64_t*)arg0));
             break;
         case ORTH_SYS_SIGACTION:
-            frame->rax = (uint64_t)sys_sigaction((int)frame->rdi, (const struct orth_sigaction*)frame->rsi, (struct orth_sigaction*)frame->rdx);
+            SYSCALL_RETURN(sys_sigaction((int)arg0, (const struct orth_sigaction*)arg1, (struct orth_sigaction*)arg2));
             break;
         case SYS_FCNTL:
-            frame->rax = (uint64_t)sys_fcntl((int)frame->rdi, (int)frame->rsi, frame->rdx);
+            SYSCALL_RETURN(sys_fcntl((int)arg0, (int)arg1, arg2));
             break;
         case ORTH_SYS_LS:
             sys_ls();
             break;
         case ORTH_SYS_GET_VIDEO_INFO:
-            frame->rax = (uint64_t)sys_get_video_info((struct video_info*)frame->rdi);
+            SYSCALL_RETURN(sys_get_video_info((struct video_info*)arg0));
             break;
         case ORTH_SYS_MAP_FRAMEBUFFER:
-            frame->rax = sys_map_framebuffer();
+            SYSCALL_RETURN(sys_map_framebuffer());
             break;
         case ORTH_SYS_GET_TICKS_MS:
-            frame->rax = sys_get_ticks_ms();
+            SYSCALL_RETURN(sys_get_ticks_ms());
             break;
         case ORTH_SYS_SLEEP_MS:
-            frame->rax = (uint64_t)sys_sleep_ms(frame->rdi);
+            SYSCALL_RETURN(sys_sleep_ms(arg0));
             break;
         case ORTH_SYS_GET_KEY_EVENT:
-            frame->rax = (uint64_t)sys_get_key_event((struct key_event*)frame->rdi);
+            SYSCALL_RETURN(sys_get_key_event((struct key_event*)arg0));
             break;
         case ORTH_SYS_SOUND_ON:
-            frame->rax = (uint64_t)sys_sound_on((uint32_t)frame->rdi);
+            SYSCALL_RETURN(sys_sound_on((uint32_t)arg0));
             break;
         case ORTH_SYS_SOUND_OFF:
-            frame->rax = (uint64_t)sys_sound_off();
+            SYSCALL_RETURN(sys_sound_off());
             break;
         case ORTH_SYS_SOUND_PCM_U8:
-            frame->rax = (uint64_t)sys_sound_pcm_u8((const uint8_t*)frame->rdi, (uint32_t)frame->rsi, (uint32_t)frame->rdx);
+            SYSCALL_RETURN(sys_sound_pcm_u8((const uint8_t*)arg0, (uint32_t)arg1, (uint32_t)arg2));
             break;
         case ORTH_SYS_USB_INFO:
             usb_dump_status();
-            frame->rax = (uint64_t)usb_is_ready();
+            SYSCALL_RETURN(usb_is_ready());
             break;
         case ORTH_SYS_USB_READ_BLOCK:
-            frame->rax = (uint64_t)sys_usb_read_block((uint32_t)frame->rdi, (void*)frame->rsi, (uint32_t)frame->rdx);
+            SYSCALL_RETURN(sys_usb_read_block((uint32_t)arg0, (void*)arg1, (uint32_t)arg2));
             break;
         case ORTH_SYS_MOUNT_USB_ROOT:
-            frame->rax = (uint64_t)fs_mount_usb_root_tar((const char*)frame->rdi);
+            SYSCALL_RETURN(fs_mount_usb_root_tar((const char*)arg0));
             break;
         case ORTH_SYS_MOUNT_MODULE_ROOT:
-            frame->rax = (uint64_t)fs_mount_module_root();
+            SYSCALL_RETURN(fs_mount_module_root());
             break;
         case ORTH_SYS_GET_MOUNT_STATUS:
-            frame->rax = (uint64_t)fs_get_mount_status((char*)frame->rdi, (size_t)frame->rsi);
+            SYSCALL_RETURN(fs_get_mount_status((char*)arg0, (size_t)arg1));
             break;
         case ORTH_SYS_DNS_LOOKUP:
-            frame->rax = (uint64_t)lwip_port_lookup_ipv4((const char*)frame->rdi, (uint32_t*)frame->rsi);
+            SYSCALL_RETURN(lwip_port_lookup_ipv4((const char*)arg0, (uint32_t*)arg1));
             break;
         case ORTH_SYS_GET_CPU_ID:
             {
                 struct cpu_local* cpu = get_cpu_local();
-                frame->rax = (uint64_t)(cpu ? (int)cpu->cpu_id : -1);
+                SYSCALL_RETURN(cpu ? (int)cpu->cpu_id : -1);
             }
             break;
         case ORTH_SYS_SET_FORK_SPREAD:
-            frame->rax = (uint64_t)sys_set_fork_spread((int)frame->rdi);
+            SYSCALL_RETURN(sys_set_fork_spread((int)arg0));
             break;
         case ORTH_SYS_GET_FORK_SPREAD:
-            frame->rax = (uint64_t)sys_get_fork_spread();
+            SYSCALL_RETURN(sys_get_fork_spread());
             break;
         case ORTH_SYS_GET_RUNQ_STATS:
-            frame->rax = (uint64_t)task_get_runq_stats((struct orth_runq_stat*)frame->rdi, (uint32_t)frame->rsi);
+            SYSCALL_RETURN(task_get_runq_stats((struct orth_runq_stat*)arg0, (uint32_t)arg1));
             break;
         case SYS_GETDENTS:
-            frame->rax = (uint64_t)sys_getdents((int)frame->rdi, (struct orth_dirent*)frame->rsi, (size_t)frame->rdx);
+            SYSCALL_RETURN(sys_getdents((int)arg0, (struct orth_dirent*)arg1, (size_t)arg2));
             break;
         case SYS_GETDENTS64:
-            frame->rax = (uint64_t)sys_getdents64((int)frame->rdi, (void*)frame->rsi, (size_t)frame->rdx);
+            SYSCALL_RETURN(sys_getdents64((int)arg0, (void*)arg1, (size_t)arg2));
             break;
         case SYS_SET_TID_ADDRESS:
-            frame->rax = (uint64_t)sys_set_tid_address((int*)frame->rdi);
+            SYSCALL_RETURN(sys_set_tid_address((int*)arg0));
             break;
         case SYS_GETRANDOM:
-            frame->rax = (uint64_t)sys_getrandom((void*)frame->rdi, (size_t)frame->rsi, (unsigned)frame->rdx);
+            SYSCALL_RETURN(sys_getrandom((void*)arg0, (size_t)arg1, (unsigned)arg2));
             break;
         case SYS_EXIT_GROUP:
-            sys_exit((int)frame->rdi);
+            sys_exit((int)arg0);
             break;
         default:
-            frame->rax = (uint64_t)-1;
+            SYSCALL_RETURN(-1);
             break;
     }
 
@@ -1206,4 +1171,5 @@ void syscall_dispatch(struct syscall_frame* frame) {
         kernel_yield();
     }
     kernel_lock_exit();
+#undef SYSCALL_RETURN
 }
