@@ -22,6 +22,7 @@ uint64_t riscv64_vm_clone_kernel_address_space(void);
 void riscv64_vm_destroy_address_space(uint64_t root_pa);
 uint64_t riscv64_vm_bootstrap_alloc_page(void);
 void riscv64_vm_bootstrap_free_page(uint64_t phys_addr);
+void riscv64_vm_memcpy_page(uint64_t dst_phys, uint64_t src_phys);
 void riscv64_vm_map_page(uint64_t root_pa, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
 void riscv64_vm_map_range(uint64_t root_pa, uint64_t virt_addr, uint64_t phys_addr, uint64_t size, uint64_t flags);
 uint64_t riscv64_vm_get_phys(uint64_t root_pa, uint64_t virt_addr);

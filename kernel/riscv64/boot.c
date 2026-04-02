@@ -8,11 +8,14 @@
 #include "riscv64/task.h"
 #include "riscv64/trap.h"
 #include "riscv64/vm.h"
+#include "elf64.h"
+#include "pmm.h"
 #include "syscall.h"
 #include "task.h"
 
 extern int task_execve(arch_task_exec_frame_t* frame, const char* path,
                        char* const argv[], char* const envp[]);
+extern int task_fork(arch_task_exec_frame_t* frame);
 extern void task_main(void);
 
 static volatile riscv64_boot_info_t g_riscv64_boot_info;
@@ -23,6 +26,8 @@ static char* g_riscv64_bootstrap_argv[] = { g_riscv64_bootstrap_path, 0 };
 static char g_riscv64_bootstrap_env0[] = "PWD=/";
 static char g_riscv64_bootstrap_env1[] = "PATH=/bin";
 static char* g_riscv64_bootstrap_envp[] = { g_riscv64_bootstrap_env0, g_riscv64_bootstrap_env1, 0 };
+
+extern struct task* task_list;
 
 static uint64_t riscv64_boot_stack_top(void) {
     uint64_t sp;
@@ -82,6 +87,13 @@ static uint64_t riscv64_dtb_reg_base(const uint8_t* data, uint32_t len) {
     return 0;
 }
 
+static uint64_t riscv64_dtb_reg_size(const uint8_t* data, uint32_t len) {
+    if (!data) return 0;
+    if (len >= 16U) return riscv64_dtb_read_be64(data + 8U);
+    if (len >= 8U) return (uint64_t)riscv64_dtb_read_be32(data + 4U);
+    return 0;
+}
+
 static void riscv64_dtb_scan(uint64_t dtb_pa) {
     const riscv64_fdt_header_t* header = (const riscv64_fdt_header_t*)(uintptr_t)dtb_pa;
     uint32_t struct_off;
@@ -93,7 +105,9 @@ static void riscv64_dtb_scan(uint64_t dtb_pa) {
     int depth = 0;
     int candidate_uart = 0;
     int candidate_virtio = 0;
+    int candidate_memory = 0;
     uint64_t candidate_reg = 0;
+    uint64_t candidate_size = 0;
 
     if (!riscv64_dtb_valid(dtb_pa)) return;
 
@@ -115,7 +129,9 @@ static void riscv64_dtb_scan(uint64_t dtb_pa) {
             depth++;
             candidate_uart = 0;
             candidate_virtio = 0;
+            candidate_memory = 0;
             candidate_reg = 0;
+            candidate_size = 0;
             (void)node_name;
             continue;
         }
@@ -132,10 +148,17 @@ static void riscv64_dtb_scan(uint64_t dtb_pa) {
                 g_riscv64_boot_info.virtio_mmio_count++;
                 g_riscv64_boot_info.flags |= RISCV64_BOOT_FLAG_VIRTIO_MMIO_FOUND;
             }
+            if (candidate_memory && candidate_reg != 0 && candidate_size != 0 &&
+                g_riscv64_boot_info.memory_size == 0) {
+                g_riscv64_boot_info.memory_base = candidate_reg;
+                g_riscv64_boot_info.memory_size = candidate_size;
+            }
             if (depth > 0) depth--;
             candidate_uart = 0;
             candidate_virtio = 0;
+            candidate_memory = 0;
             candidate_reg = 0;
+            candidate_size = 0;
             continue;
         }
 
@@ -160,8 +183,13 @@ static void riscv64_dtb_scan(uint64_t dtb_pa) {
                 if (riscv64_dtb_compatible_has((const char*)data, len, "virtio,mmio")) {
                     candidate_virtio = 1;
                 }
+            } else if (depth >= 1 && riscv64_str_eq(prop_name, "device_type")) {
+                if (len >= 7U && riscv64_str_eq((const char*)data, "memory")) {
+                    candidate_memory = 1;
+                }
             } else if (depth >= 1 && riscv64_str_eq(prop_name, "reg")) {
                 candidate_reg = riscv64_dtb_reg_base(data, len);
+                candidate_size = riscv64_dtb_reg_size(data, len);
             }
 
             off += riscv64_align_up4(len);
@@ -209,6 +237,8 @@ uint32_t riscv64_dtb_total_size(uint64_t dtb_pa) {
 void riscv64_boot_capture(uint64_t hart_id, uint64_t dtb_pa) {
     g_riscv64_boot_info.hart_id = hart_id;
     g_riscv64_boot_info.dtb_pa = dtb_pa;
+    g_riscv64_boot_info.memory_base = 0;
+    g_riscv64_boot_info.memory_size = 0;
     g_riscv64_boot_info.uart_base = RISCV64_QEMU_VIRT_UART0_BASE;
     g_riscv64_boot_info.first_virtio_mmio_base = 0;
     g_riscv64_boot_info.dtb_size = riscv64_dtb_total_size(dtb_pa);
@@ -280,10 +310,12 @@ static void riscv64_vm_selftest(void) {
     uint64_t mapped;
     static const uint8_t payload[] = { 'R', 'V', 'E', 'L', 'F', '!', 0 };
 
+    riscv64_uart_puts("  vm selftest start\n");
     if (!aspace) {
         riscv64_uart_puts("  vm selftest: create failed\n");
         return;
     }
+    riscv64_uart_puts("  vm selftest: create ok\n");
 
     if (riscv64_elf_load_segment_bootstrap(aspace, virt, payload, sizeof(payload), 128,
                                            RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W) < 0) {
@@ -291,6 +323,7 @@ static void riscv64_vm_selftest(void) {
         riscv64_vm_destroy_address_space(aspace);
         return;
     }
+    riscv64_uart_puts("  vm selftest: load ok\n");
 
     mapped = riscv64_vm_get_phys(aspace, virt);
     if (!mapped) {
@@ -298,6 +331,7 @@ static void riscv64_vm_selftest(void) {
         riscv64_vm_destroy_address_space(aspace);
         return;
     }
+    riscv64_uart_puts("  vm selftest: lookup ok\n");
 
     phys = mapped & ~(4096ULL - 1ULL);
     if (*(volatile uint8_t*)(uintptr_t)mapped != 'R' ||
@@ -328,6 +362,108 @@ static void riscv64_vm_selftest(void) {
     riscv64_vm_bootstrap_free_page(phys);
     riscv64_vm_destroy_address_space(aspace);
     riscv64_uart_puts("  vm selftest passed\n");
+}
+
+static void riscv64_vm_clone_selftest(void) {
+    uint64_t parent = riscv64_vm_create_address_space();
+    uint64_t child = 0;
+    uint64_t virt = 0x0000000041000000ULL;
+    uint64_t parent_phys;
+    uint64_t child_phys;
+
+    if (!parent) {
+        riscv64_uart_puts("  vm clone selftest: create failed\n");
+        return;
+    }
+    parent_phys = (uint64_t)(uintptr_t)pmm_alloc(1);
+    if (!parent_phys) {
+        riscv64_uart_puts("  vm clone selftest: page alloc failed\n");
+        riscv64_vm_destroy_address_space(parent);
+        return;
+    }
+    ((volatile uint8_t*)(uintptr_t)parent_phys)[0] = 'P';
+    ((volatile uint8_t*)(uintptr_t)parent_phys)[1] = '0';
+    riscv64_vm_map_page(parent, virt, parent_phys, RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_U);
+
+    child = (uint64_t)arch_vm_clone_address_space((arch_address_space_t)parent);
+    if (!child) {
+        riscv64_uart_puts("  vm clone selftest: clone failed\n");
+        riscv64_vm_destroy_address_space(parent);
+        return;
+    }
+
+    child_phys = riscv64_vm_get_phys(child, virt) & ~(PAGE_SIZE - 1ULL);
+    parent_phys = riscv64_vm_get_phys(parent, virt) & ~(PAGE_SIZE - 1ULL);
+    if (!child_phys || !parent_phys || child_phys == parent_phys) {
+        riscv64_uart_puts("  vm clone selftest: isolated page missing\n");
+        riscv64_vm_destroy_address_space(child);
+        riscv64_vm_destroy_address_space(parent);
+        return;
+    }
+    if (((volatile uint8_t*)(uintptr_t)child_phys)[0] != 'P' ||
+        ((volatile uint8_t*)(uintptr_t)child_phys)[1] != '0') {
+        riscv64_uart_puts("  vm clone selftest: clone copy failed\n");
+        riscv64_vm_destroy_address_space(child);
+        riscv64_vm_destroy_address_space(parent);
+        return;
+    }
+
+    ((volatile uint8_t*)(uintptr_t)child_phys)[1] = '1';
+    if (((volatile uint8_t*)(uintptr_t)parent_phys)[1] != '0') {
+        riscv64_uart_puts("  vm clone selftest: parent mutated\n");
+        riscv64_vm_destroy_address_space(child);
+        riscv64_vm_destroy_address_space(parent);
+        return;
+    }
+
+    riscv64_vm_destroy_address_space(child);
+    riscv64_vm_destroy_address_space(parent);
+    riscv64_uart_puts("  vm clone selftest passed\n");
+}
+
+static void riscv64_user_stack_selftest(void) {
+    struct task temp_task;
+    struct elf_info info;
+    char arg0[] = "bootstrap";
+    char* argv[] = { arg0, 0 };
+    char env0[] = "PWD=/";
+    char* envp[] = { env0, 0 };
+    uint64_t aspace = riscv64_vm_create_address_space();
+    uint64_t sp_phys;
+    uint64_t argc_at_sp;
+
+    if (!aspace) {
+        riscv64_uart_puts("  user stack selftest: create failed\n");
+        return;
+    }
+    for (uint64_t i = 0; i < sizeof(temp_task); i++) ((uint8_t*)&temp_task)[i] = 0;
+    info.entry = (void*)(uintptr_t)0x0000000000400000ULL;
+    info.max_vaddr = 0x0000000000401000ULL;
+    info.phdr_vaddr = 0x0000000000400040ULL;
+    info.phent = sizeof(Elf64_Phdr);
+    info.phnum = 1;
+
+    if (task_prepare_initial_user_stack((arch_address_space_t)aspace, &temp_task, &info, argv, envp) < 0) {
+        riscv64_uart_puts("  user stack selftest: prepare failed\n");
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+
+    sp_phys = arch_vm_get_phys((arch_address_space_t)aspace, temp_task.user_stack);
+    if (!sp_phys) {
+        riscv64_uart_puts("  user stack selftest: sp unmapped\n");
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+    argc_at_sp = *(volatile uint64_t*)(uintptr_t)sp_phys;
+    if (argc_at_sp != 1 || temp_task.user_stack_guard == 0 || temp_task.user_stack_bottom == 0) {
+        riscv64_uart_puts("  user stack selftest: bad layout\n");
+        riscv64_vm_destroy_address_space(aspace);
+        return;
+    }
+
+    riscv64_vm_destroy_address_space(aspace);
+    riscv64_uart_puts("  user stack selftest passed\n");
 }
 
 static void riscv64_user_frame_selftest(void) {
@@ -470,6 +606,194 @@ static void riscv64_syscall_dispatch_selftest(void) {
     riscv64_uart_puts("  syscall dispatch selftest passed\n");
 }
 
+static struct task* riscv64_find_task_by_pid(int pid) {
+    struct task* task = task_list;
+    while (task) {
+        if (task->pid == pid) return task;
+        task = task->next;
+    }
+    return 0;
+}
+
+static uint64_t riscv64_align_up_page(uint64_t value) {
+    return (value + PAGE_SIZE - 1ULL) & ~(PAGE_SIZE - 1ULL);
+}
+
+static uint64_t riscv64_test_user_map_page(const char* fail_prefix) {
+    struct task* current = get_current_task();
+    uint64_t base;
+    uint64_t phys;
+    uint64_t limit = 0x00007F0000000000ULL;
+
+    if (!current) {
+        riscv64_uart_puts(fail_prefix);
+        riscv64_uart_puts(": no current task\n");
+        return 0;
+    }
+
+    base = current->mmap_end;
+    if (base < 0x0000200000000000ULL) {
+        base = 0x0000200000000000ULL;
+    }
+    base = riscv64_align_up_page(base);
+    while (base < limit && arch_vm_get_phys(arch_task_context_get_address_space(&current->ctx), base) != 0) {
+        base += PAGE_SIZE;
+    }
+    if (base >= limit) {
+        riscv64_uart_puts(fail_prefix);
+        riscv64_uart_puts(": no free user va\n");
+        return 0;
+    }
+
+    phys = (uint64_t)(uintptr_t)pmm_alloc(1);
+    if (!phys) {
+        riscv64_uart_puts(fail_prefix);
+        riscv64_uart_puts(": page alloc failed\n");
+        return 0;
+    }
+    for (uint64_t i = 0; i < PAGE_SIZE; i++) {
+        ((uint8_t*)(uintptr_t)phys)[i] = 0;
+    }
+    arch_vm_map_page(arch_task_context_get_address_space(&current->ctx),
+                     base,
+                     phys,
+                     arch_vm_user_page_flags(1, 0));
+    current->mmap_end = base + PAGE_SIZE;
+
+    phys = arch_vm_get_phys(arch_task_context_get_address_space(&current->ctx), base) & ~(PAGE_SIZE - 1ULL);
+    if (!phys) {
+        riscv64_uart_puts(fail_prefix);
+        riscv64_uart_puts(": map lookup failed\n");
+        return 0;
+    }
+    return base;
+}
+
+static int riscv64_test_user_unmap_page(uint64_t base, const char* fail_prefix) {
+    struct task* current = get_current_task();
+    uint64_t phys;
+
+    if (!current || !base) return -1;
+
+    phys = arch_vm_get_phys(arch_task_context_get_address_space(&current->ctx), base) & ~(PAGE_SIZE - 1ULL);
+    if (!phys) {
+        riscv64_uart_puts(fail_prefix);
+        riscv64_uart_puts(": unmap source missing\n");
+        return -1;
+    }
+    arch_vm_unmap_page(arch_task_context_get_address_space(&current->ctx), base);
+    if (arch_vm_get_phys(arch_task_context_get_address_space(&current->ctx), base) != 0) {
+        riscv64_uart_puts(fail_prefix);
+        riscv64_uart_puts(": unmap kept mapping\n");
+        return -1;
+    }
+    pmm_free((void*)phys, 1);
+    return 0;
+}
+
+static void riscv64_user_map_selftest(void) {
+    struct task* current = get_current_task();
+    uint64_t base;
+    uint64_t phys;
+    volatile uint8_t* page;
+
+    base = riscv64_test_user_map_page("  user map selftest");
+    if (!base || !current) return;
+
+    phys = arch_vm_get_phys(arch_task_context_get_address_space(&current->ctx), base);
+    page = (volatile uint8_t*)(uintptr_t)(phys & ~(PAGE_SIZE - 1ULL));
+    if (page[0] != 0 || page[1] != 0 || page[2] != 0 || page[3] != 0) {
+        riscv64_uart_puts("  user map selftest: page not zeroed\n");
+        (void)riscv64_test_user_unmap_page(base, "  user map selftest");
+        return;
+    }
+
+    page[0] = 'M';
+    page[1] = '0';
+    if (page[0] != 'M' || page[1] != '0') {
+        riscv64_uart_puts("  user map selftest: page write failed\n");
+        (void)riscv64_test_user_unmap_page(base, "  user map selftest");
+        return;
+    }
+
+    if (riscv64_test_user_unmap_page(base, "  user map selftest") < 0) return;
+    riscv64_uart_puts("  user map selftest passed\n");
+}
+
+static void riscv64_fork_selftest(void) {
+    struct task* current = get_current_task();
+    struct task* child = 0;
+    uint64_t parent_phys;
+    uint64_t child_phys;
+    uint64_t base = 0;
+    int child_pid;
+
+    if (!current) {
+        riscv64_uart_puts("  fork selftest: no current task\n");
+        return;
+    }
+
+    base = riscv64_test_user_map_page("  fork selftest");
+    if (!base) return;
+
+    parent_phys = arch_vm_get_phys(arch_task_context_get_address_space(&current->ctx), base) &
+                  ~(PAGE_SIZE - 1ULL);
+    ((volatile uint8_t*)(uintptr_t)parent_phys)[0] = 'F';
+    ((volatile uint8_t*)(uintptr_t)parent_phys)[1] = '0';
+
+    child_pid = task_fork(&current->ctx.user_frame);
+    if (child_pid <= 0) {
+        riscv64_uart_puts("  fork selftest: fork failed\n");
+        (void)riscv64_test_user_unmap_page(base, "  fork selftest");
+        return;
+    }
+
+    child = riscv64_find_task_by_pid(child_pid);
+    if (!child) {
+        riscv64_uart_puts("  fork selftest: child missing\n");
+        (void)riscv64_test_user_unmap_page(base, "  fork selftest");
+        return;
+    }
+
+    child_phys = arch_vm_get_phys(arch_task_context_get_address_space(&child->ctx), base) &
+                 ~(PAGE_SIZE - 1ULL);
+    if (!child_phys || child_phys == parent_phys) {
+        riscv64_uart_puts("  fork selftest: address space not cloned\n");
+        goto cleanup_child;
+    }
+    if (((volatile uint8_t*)(uintptr_t)child_phys)[0] != 'F' ||
+        ((volatile uint8_t*)(uintptr_t)child_phys)[1] != '0') {
+        riscv64_uart_puts("  fork selftest: child page contents bad\n");
+        goto cleanup_child;
+    }
+
+    ((volatile uint8_t*)(uintptr_t)child_phys)[1] = '1';
+    if (((volatile uint8_t*)(uintptr_t)parent_phys)[1] != '0') {
+        riscv64_uart_puts("  fork selftest: parent page mutated\n");
+        goto cleanup_child;
+    }
+    if (child->ppid != current->pid || child->pid != child_pid || child->kstack_top == 0) {
+        riscv64_uart_puts("  fork selftest: child task state bad\n");
+        goto cleanup_child;
+    }
+
+    if (task_mark_zombie(child, 0) < 0 || task_reap(child) < 0 || riscv64_find_task_by_pid(child_pid)) {
+        riscv64_uart_puts("  fork selftest: child cleanup failed\n");
+        (void)riscv64_test_user_unmap_page(base, "  fork selftest");
+        return;
+    }
+    if (riscv64_test_user_unmap_page(base, "  fork selftest") < 0) return;
+    riscv64_uart_puts("  fork selftest passed\n");
+    return;
+
+cleanup_child:
+    if (child) {
+        (void)task_mark_zombie(child, 0);
+        (void)task_reap(child);
+    }
+    (void)riscv64_test_user_unmap_page(base, "  fork selftest");
+}
+
 static void riscv64_first_user_task_bootstrap_continue(void) {
     arch_task_exec_frame_t frame;
 
@@ -482,6 +806,8 @@ static void riscv64_first_user_task_bootstrap_continue(void) {
         riscv64_uart_puts("  first user task bootstrap failed: execve\n");
         riscv64_wait_forever();
     }
+    riscv64_user_map_selftest();
+    riscv64_fork_selftest();
     riscv64_uart_puts("  first user task entering user mode\n");
     riscv64_mark_user_handoff_started();
     task_main();
@@ -524,12 +850,22 @@ void riscv64_early_main(uint64_t hart_id, uint64_t dtb_pa) {
             riscv64_uart_puthex64(g_riscv64_boot_info.first_virtio_mmio_base);
             riscv64_uart_puts("\n");
         }
+        if (g_riscv64_boot_info.memory_size != 0) {
+            riscv64_uart_puts("  memory : 0x");
+            riscv64_uart_puthex64(g_riscv64_boot_info.memory_base);
+            riscv64_uart_puts("..0x");
+            riscv64_uart_puthex64(g_riscv64_boot_info.memory_base + g_riscv64_boot_info.memory_size);
+            riscv64_uart_puts("\n");
+        }
     } else {
         riscv64_uart_puts("  dtb invalid\n");
     }
 
+    pmm_init();
     riscv64_vm_init();
     riscv64_vm_selftest();
+    riscv64_vm_clone_selftest();
+    riscv64_user_stack_selftest();
     riscv64_user_frame_selftest();
     riscv64_trap_init();
     riscv64_trap_set_kernel_stack(riscv64_boot_stack_top());

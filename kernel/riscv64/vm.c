@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "pmm.h"
 #include "riscv64/boot.h"
 #include "riscv64/csr.h"
 #include "riscv64/vm.h"
@@ -16,15 +17,10 @@
 #define RISCV64_SV39_PTE_G          (1ULL << 5)
 #define RISCV64_SV39_PTE_A          (1ULL << 6)
 #define RISCV64_SV39_PTE_D          (1ULL << 7)
+#define RISCV64_SV39_PTE_FLAG_MASK  0x3ffULL
 
-static uint64_t g_riscv64_sv39_root[512] __attribute__((aligned(4096)));
-static uint64_t g_riscv64_sv39_roots[4][512] __attribute__((aligned(4096)));
-static uint64_t g_riscv64_sv39_tables[16][512] __attribute__((aligned(4096)));
-static uint8_t g_riscv64_bootstrap_pages[128][RISCV64_PAGE_SIZE] __attribute__((aligned(4096)));
+static uint64_t g_riscv64_kernel_root_pa;
 static uint64_t g_riscv64_last_satp;
-static uint32_t g_riscv64_sv39_next_table;
-static uint32_t g_riscv64_sv39_root_used_mask;
-static uint8_t g_riscv64_bootstrap_page_used[128];
 
 extern char __kernel_start[];
 extern char __kernel_end[];
@@ -45,12 +41,19 @@ static uint64_t riscv64_align_up(uint64_t value) {
     return (value + RISCV64_PAGE_SIZE - 1ULL) & RISCV64_PAGE_MASK;
 }
 
-static uint32_t riscv64_bootstrap_page_used_count(void) {
-    uint32_t used = 0;
-    for (uint32_t i = 0; i < 128U; i++) {
-        if (g_riscv64_bootstrap_page_used[i] != 0) used++;
-    }
-    return used;
+static void riscv64_memzero(void* ptr, uint64_t size) {
+    uint8_t* p = (uint8_t*)ptr;
+    while (size--) *p++ = 0;
+}
+
+static void riscv64_memcpy(void* dst, const void* src, uint64_t size) {
+    uint8_t* out = (uint8_t*)dst;
+    const uint8_t* in = (const uint8_t*)src;
+    while (size--) *out++ = *in++;
+}
+
+static uint64_t riscv64_vm_satp_value(uint64_t root_pa) {
+    return RISCV64_SATP_MODE_SV39 | ((root_pa >> 12) & RISCV64_SATP_PPN_MASK);
 }
 
 static uint64_t riscv64_vm_flags_to_pte(uint64_t flags) {
@@ -63,120 +66,193 @@ static uint64_t riscv64_vm_flags_to_pte(uint64_t flags) {
     return pte;
 }
 
-static void riscv64_memzero(void* ptr, uint64_t size) {
-    uint8_t* p = (uint8_t*)ptr;
-    while (size--) *p++ = 0;
-}
-
-static uint64_t riscv64_vm_satp_value(uint64_t root_pa) {
-    return RISCV64_SATP_MODE_SV39 | ((root_pa >> 12) & RISCV64_SATP_PPN_MASK);
-}
-
 static uint64_t riscv64_sv39_make_nonleaf(uint64_t table_pa) {
     return ((table_pa >> 12) << 10) | RISCV64_SV39_PTE_V;
 }
 
-static uint64_t riscv64_sv39_make_leaf_4k(uint64_t phys_base, uint64_t flags) {
-    return ((phys_base >> 12) << 10) | flags;
+static uint64_t riscv64_sv39_make_leaf_4k(uint64_t phys_base, uint64_t pte_flags) {
+    return ((phys_base >> 12) << 10) | pte_flags;
 }
 
-static uint64_t* riscv64_sv39_alloc_table(void) {
-    uint64_t* table;
-    if (g_riscv64_sv39_next_table >= 16U) {
-        riscv64_uart_puts("riscv64 vm: page-table pool exhausted\n");
-        riscv64_wait_forever();
-    }
-    table = g_riscv64_sv39_tables[g_riscv64_sv39_next_table++];
-    for (int i = 0; i < 512; i++) table[i] = 0;
-    return table;
+static uint64_t riscv64_sv39_pte_phys(uint64_t entry) {
+    return ((entry >> 10) << 12);
 }
 
-static uint64_t* riscv64_sv39_next_level(uint64_t* table, uint64_t index) {
-    uint64_t entry = table[index];
-    if ((entry & RISCV64_SV39_PTE_V) != 0) {
-        uint64_t child_pa = ((entry >> 10) << 12);
-        return (uint64_t*)(uintptr_t)child_pa;
-    }
-
-    uint64_t* next = riscv64_sv39_alloc_table();
-    table[index] = riscv64_sv39_make_nonleaf((uint64_t)(uintptr_t)next);
-    return next;
+static int riscv64_sv39_pte_is_leaf(uint64_t entry) {
+    return (entry & (RISCV64_SV39_PTE_R | RISCV64_SV39_PTE_W | RISCV64_SV39_PTE_X)) != 0;
 }
 
 static uint64_t* riscv64_vm_root_ptr(uint64_t root_pa) {
     return (uint64_t*)(uintptr_t)root_pa;
 }
 
-static uint64_t* riscv64_sv39_walk_create(uint64_t* root, uint64_t virt_addr) {
-    uint64_t vpn2 = (virt_addr >> 30) & 0x1ffULL;
-    uint64_t vpn1 = (virt_addr >> 21) & 0x1ffULL;
-    uint64_t* l1 = riscv64_sv39_next_level(root, vpn2);
-    return riscv64_sv39_next_level(l1, vpn1);
+static uint64_t* riscv64_vm_alloc_table(void) {
+    void* table_phys = pmm_alloc(1);
+    uint64_t* table;
+    if (!table_phys) return 0;
+    table = (uint64_t*)(uintptr_t)table_phys;
+    riscv64_memzero(table, RISCV64_PAGE_SIZE);
+    return table;
+}
+
+static uint64_t riscv64_sv39_vpn_index(uint64_t virt_addr, int level) {
+    return (virt_addr >> (12 + level * 9)) & 0x1ffULL;
 }
 
 static uint64_t* riscv64_sv39_walk_leaf(uint64_t* root, uint64_t virt_addr) {
-    uint64_t vpn2 = (virt_addr >> 30) & 0x1ffULL;
-    uint64_t vpn1 = (virt_addr >> 21) & 0x1ffULL;
-    uint64_t vpn0 = (virt_addr >> 12) & 0x1ffULL;
-    uint64_t entry = root[vpn2];
-    if ((entry & RISCV64_SV39_PTE_V) == 0) return 0;
-    uint64_t* l1 = (uint64_t*)(uintptr_t)(((entry >> 10) << 12));
-    entry = l1[vpn1];
-    if ((entry & RISCV64_SV39_PTE_V) == 0) return 0;
-    uint64_t* l0 = (uint64_t*)(uintptr_t)(((entry >> 10) << 12));
-    return &l0[vpn0];
+    uint64_t* table = root;
+    for (int level = 2; level > 0; level--) {
+        uint64_t entry = table[riscv64_sv39_vpn_index(virt_addr, level)];
+        if ((entry & RISCV64_SV39_PTE_V) == 0 || riscv64_sv39_pte_is_leaf(entry)) return 0;
+        table = (uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(entry);
+    }
+    return &table[riscv64_sv39_vpn_index(virt_addr, 0)];
 }
 
-static void riscv64_sv39_map_page_into(uint64_t* root, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags) {
-    uint64_t vpn0 = (virt_addr >> 12) & 0x1ffULL;
-    uint64_t* l0 = riscv64_sv39_walk_create(root, virt_addr);
-    l0[vpn0] = riscv64_sv39_make_leaf_4k(phys_addr, flags);
+static uint64_t* riscv64_sv39_walk_create(uint64_t* root, uint64_t virt_addr) {
+    uint64_t* table = root;
+    uint64_t* kernel_table = riscv64_vm_root_ptr(g_riscv64_kernel_root_pa);
+    if (table == kernel_table) kernel_table = 0;
+
+    for (int level = 2; level > 0; level--) {
+        uint64_t index = riscv64_sv39_vpn_index(virt_addr, level);
+        uint64_t entry = table[index];
+        uint64_t kernel_entry = kernel_table ? kernel_table[index] : 0;
+
+        if ((entry & RISCV64_SV39_PTE_V) != 0) {
+            uint64_t* child = (uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(entry);
+            if (kernel_table && entry == kernel_entry) {
+                uint64_t* copy = riscv64_vm_alloc_table();
+                if (!copy) return 0;
+                riscv64_memcpy(copy, child, RISCV64_PAGE_SIZE);
+                table[index] = riscv64_sv39_make_nonleaf((uint64_t)(uintptr_t)copy);
+                child = copy;
+            } else if (riscv64_sv39_pte_is_leaf(entry)) {
+                return 0;
+            }
+            table = child;
+            if (kernel_table && (kernel_entry & RISCV64_SV39_PTE_V) != 0 &&
+                !riscv64_sv39_pte_is_leaf(kernel_entry)) {
+                kernel_table = (uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(kernel_entry);
+            } else {
+                kernel_table = 0;
+            }
+            continue;
+        }
+
+        {
+            uint64_t* next = riscv64_vm_alloc_table();
+            if (!next) return 0;
+            table[index] = riscv64_sv39_make_nonleaf((uint64_t)(uintptr_t)next);
+            table = next;
+        }
+        if (kernel_table && (kernel_entry & RISCV64_SV39_PTE_V) != 0 &&
+            !riscv64_sv39_pte_is_leaf(kernel_entry)) {
+            kernel_table = (uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(kernel_entry);
+        } else {
+            kernel_table = 0;
+        }
+    }
+
+    return &table[riscv64_sv39_vpn_index(virt_addr, 0)];
+}
+
+static int riscv64_vm_clone_table(uint64_t* dst, const uint64_t* src, const uint64_t* kernel, int level) {
+    for (int i = 0; i < 512; i++) {
+        uint64_t entry = src[i];
+        uint64_t kernel_entry = kernel ? kernel[i] : 0;
+
+        dst[i] = 0;
+        if ((entry & RISCV64_SV39_PTE_V) == 0) continue;
+        if (kernel && entry == kernel_entry) {
+            dst[i] = entry;
+            continue;
+        }
+        if (!riscv64_sv39_pte_is_leaf(entry)) {
+            uint64_t* dst_child = riscv64_vm_alloc_table();
+            const uint64_t* src_child = (const uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(entry);
+            const uint64_t* kernel_child = 0;
+            if (!dst_child) return -1;
+            dst[i] = riscv64_sv39_make_nonleaf((uint64_t)(uintptr_t)dst_child);
+            if (kernel && (kernel_entry & RISCV64_SV39_PTE_V) != 0 &&
+                !riscv64_sv39_pte_is_leaf(kernel_entry)) {
+                kernel_child = (const uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(kernel_entry);
+            }
+            if (riscv64_vm_clone_table(dst_child, src_child, kernel_child, level - 1) < 0) return -1;
+            continue;
+        }
+
+        if (entry & RISCV64_SV39_PTE_U) {
+            void* new_page = pmm_alloc(1);
+            if (!new_page) return -1;
+            riscv64_vm_memcpy_page((uint64_t)(uintptr_t)new_page, riscv64_sv39_pte_phys(entry));
+            dst[i] = riscv64_sv39_make_leaf_4k((uint64_t)(uintptr_t)new_page, entry & RISCV64_SV39_PTE_FLAG_MASK);
+        } else {
+            dst[i] = entry;
+        }
+    }
+    (void)level;
+    return 0;
+}
+
+static void riscv64_vm_destroy_table(uint64_t* table, const uint64_t* kernel, int free_self) {
+    for (int i = 0; i < 512; i++) {
+        uint64_t entry = table[i];
+        uint64_t kernel_entry = kernel ? kernel[i] : 0;
+        if ((entry & RISCV64_SV39_PTE_V) == 0) continue;
+        if (kernel && entry == kernel_entry) continue;
+
+        if (!riscv64_sv39_pte_is_leaf(entry)) {
+            uint64_t* child = (uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(entry);
+            const uint64_t* kernel_child = 0;
+            if (kernel && (kernel_entry & RISCV64_SV39_PTE_V) != 0 &&
+                !riscv64_sv39_pte_is_leaf(kernel_entry)) {
+                kernel_child = (const uint64_t*)(uintptr_t)riscv64_sv39_pte_phys(kernel_entry);
+            }
+            riscv64_vm_destroy_table(child, kernel_child, 1);
+        } else if (entry & RISCV64_SV39_PTE_U) {
+            pmm_free((void*)(uintptr_t)riscv64_sv39_pte_phys(entry), 1);
+        }
+        table[i] = 0;
+    }
+    if (free_self) {
+        pmm_free(table, 1);
+    }
+}
+
+void riscv64_vm_memcpy_page(uint64_t dst_phys, uint64_t src_phys) {
+    riscv64_memcpy((void*)(uintptr_t)dst_phys, (const void*)(uintptr_t)src_phys, RISCV64_PAGE_SIZE);
 }
 
 uint64_t riscv64_vm_create_address_space(void) {
-    for (uint32_t i = 0; i < 4U; i++) {
-        if ((g_riscv64_sv39_root_used_mask & (1U << i)) != 0) continue;
-        g_riscv64_sv39_root_used_mask |= (1U << i);
-        for (int j = 0; j < 512; j++) {
-            g_riscv64_sv39_roots[i][j] = g_riscv64_sv39_root[j];
-        }
-        return (uint64_t)(uintptr_t)g_riscv64_sv39_roots[i];
-    }
-    return 0;
+    uint64_t* root = riscv64_vm_alloc_table();
+    if (!root) return 0;
+    riscv64_memcpy(root, riscv64_vm_root_ptr(g_riscv64_kernel_root_pa), RISCV64_PAGE_SIZE);
+    return (uint64_t)(uintptr_t)root;
 }
 
 void riscv64_vm_destroy_address_space(uint64_t root_pa) {
-    for (uint32_t i = 0; i < 4U; i++) {
-        if ((uint64_t)(uintptr_t)g_riscv64_sv39_roots[i] != root_pa) continue;
-        g_riscv64_sv39_root_used_mask &= ~(1U << i);
-        for (int j = 0; j < 512; j++) g_riscv64_sv39_roots[i][j] = 0;
-        return;
-    }
+    uint64_t* root;
+    if (!root_pa || root_pa == g_riscv64_kernel_root_pa) return;
+    root = riscv64_vm_root_ptr(root_pa);
+    riscv64_vm_destroy_table(root, riscv64_vm_root_ptr(g_riscv64_kernel_root_pa), 1);
 }
 
 uint64_t riscv64_vm_bootstrap_alloc_page(void) {
-    for (uint32_t i = 0; i < 128U; i++) {
-        if (g_riscv64_bootstrap_page_used[i] != 0) continue;
-        g_riscv64_bootstrap_page_used[i] = 1;
-        riscv64_memzero(g_riscv64_bootstrap_pages[i], RISCV64_PAGE_SIZE);
-        return (uint64_t)(uintptr_t)g_riscv64_bootstrap_pages[i];
-    }
-    return 0;
+    return (uint64_t)(uintptr_t)pmm_alloc(1);
 }
 
 void riscv64_vm_bootstrap_free_page(uint64_t phys_addr) {
-    for (uint32_t i = 0; i < 128U; i++) {
-        if ((uint64_t)(uintptr_t)g_riscv64_bootstrap_pages[i] != phys_addr) continue;
-        g_riscv64_bootstrap_page_used[i] = 0;
-        return;
-    }
+    pmm_free((void*)(uintptr_t)phys_addr, 1);
 }
 
 void riscv64_vm_map_page(uint64_t root_pa, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags) {
-    riscv64_sv39_map_page_into(riscv64_vm_root_ptr(root_pa),
-                               riscv64_align_down(virt_addr),
-                               riscv64_align_down(phys_addr),
-                               riscv64_vm_flags_to_pte(flags));
+    uint64_t* pte = riscv64_sv39_walk_create(riscv64_vm_root_ptr(root_pa), riscv64_align_down(virt_addr));
+    if (!pte) {
+        riscv64_uart_puts("riscv64 vm: walk create failed\n");
+        riscv64_wait_forever();
+    }
+    *pte = riscv64_sv39_make_leaf_4k(riscv64_align_down(phys_addr), riscv64_vm_flags_to_pte(flags));
 }
 
 void riscv64_vm_map_range(uint64_t root_pa, uint64_t virt_addr, uint64_t phys_addr, uint64_t size, uint64_t flags) {
@@ -196,12 +272,15 @@ uint64_t riscv64_vm_get_phys(uint64_t root_pa, uint64_t virt_addr) {
     if (!pte) return 0;
     entry = *pte;
     if ((entry & RISCV64_SV39_PTE_V) == 0) return 0;
-    return (((entry >> 10) << 12) | (virt_addr & (RISCV64_PAGE_SIZE - 1ULL)));
+    return riscv64_sv39_pte_phys(entry) | (virt_addr & (RISCV64_PAGE_SIZE - 1ULL));
 }
 
 void riscv64_vm_unmap_page(uint64_t root_pa, uint64_t virt_addr) {
     uint64_t* pte = riscv64_sv39_walk_leaf(riscv64_vm_root_ptr(root_pa), virt_addr);
-    if (!pte) return;
+    if (!pte || (*pte & RISCV64_SV39_PTE_V) == 0) return;
+    if (*pte & RISCV64_SV39_PTE_U) {
+        pmm_free((void*)(uintptr_t)riscv64_sv39_pte_phys(*pte), 1);
+    }
     *pte = 0;
     riscv64_sfence_vma();
 }
@@ -210,17 +289,17 @@ void riscv64_vm_update_page_flags(uint64_t root_pa, uint64_t virt_addr, uint64_t
     uint64_t* pte = riscv64_sv39_walk_leaf(riscv64_vm_root_ptr(root_pa), virt_addr);
     uint64_t phys;
     if (!pte || (*pte & RISCV64_SV39_PTE_V) == 0) return;
-    phys = ((*pte >> 10) << 12);
+    phys = riscv64_sv39_pte_phys(*pte);
     *pte = riscv64_sv39_make_leaf_4k(phys, riscv64_vm_flags_to_pte(flags));
     riscv64_sfence_vma();
 }
 
 uint64_t riscv64_vm_root_pa(void) {
-    return (uint64_t)(uintptr_t)g_riscv64_sv39_root;
+    return g_riscv64_kernel_root_pa;
 }
 
 uint64_t riscv64_vm_kernel_address_space(void) {
-    return riscv64_vm_root_pa();
+    return g_riscv64_kernel_root_pa;
 }
 
 uint64_t riscv64_vm_current_address_space(void) {
@@ -257,53 +336,60 @@ uint64_t riscv64_vm_clone_kernel_address_space(void) {
 
 void riscv64_vm_init(void) {
     const riscv64_boot_info_t* boot = riscv64_boot_info();
-    for (int i = 0; i < 512; i++) g_riscv64_sv39_root[i] = 0;
-    g_riscv64_sv39_next_table = 0;
-    g_riscv64_sv39_root_used_mask = 0;
-    for (int i = 0; i < 128; i++) g_riscv64_bootstrap_page_used[i] = 0;
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 512; j++) g_riscv64_sv39_roots[i][j] = 0;
+    uint64_t* root = riscv64_vm_alloc_table();
+    if (!root) {
+        riscv64_uart_puts("riscv64 vm: kernel root alloc failed\n");
+        riscv64_wait_forever();
+    }
+    g_riscv64_kernel_root_pa = (uint64_t)(uintptr_t)root;
+
+    if (boot && boot->memory_size != 0) {
+        riscv64_vm_map_range(g_riscv64_kernel_root_pa,
+                             boot->memory_base,
+                             boot->memory_base,
+                             boot->memory_size,
+                             RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_G);
     }
 
-    riscv64_vm_map_range(riscv64_vm_root_pa(),
+    riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                          (uint64_t)(uintptr_t)__text_start,
                          (uint64_t)(uintptr_t)__text_start,
                          (uint64_t)((uintptr_t)__text_end - (uintptr_t)__text_start),
                          RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_X | RISCV64_VM_PAGE_G);
-    riscv64_vm_map_range(riscv64_vm_root_pa(),
+    riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                          (uint64_t)(uintptr_t)__rodata_start,
                          (uint64_t)(uintptr_t)__rodata_start,
                          (uint64_t)((uintptr_t)__rodata_end - (uintptr_t)__rodata_start),
                          RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_G);
-    riscv64_vm_map_range(riscv64_vm_root_pa(),
+    riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                          (uint64_t)(uintptr_t)__data_start,
                          (uint64_t)(uintptr_t)__data_start,
                          (uint64_t)((uintptr_t)__data_end - (uintptr_t)__data_start),
                          RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_G);
-    riscv64_vm_map_range(riscv64_vm_root_pa(),
+    riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                          (uint64_t)(uintptr_t)__bss_start,
                          (uint64_t)(uintptr_t)__bss_start,
                          (uint64_t)((uintptr_t)__bss_end - (uintptr_t)__bss_start),
                          RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_G);
 
-    riscv64_vm_map_range(riscv64_vm_root_pa(),
+    riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                          RISCV64_QEMU_VIRT_UART0_BASE,
                          RISCV64_QEMU_VIRT_UART0_BASE,
                          RISCV64_PAGE_SIZE,
                          RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_G);
-    riscv64_vm_map_range(riscv64_vm_root_pa(),
+    riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                          RISCV64_QEMU_VIRT_CLINT_BASE,
                          RISCV64_QEMU_VIRT_CLINT_BASE,
                          0x10000ULL,
                          RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_G);
-    riscv64_vm_map_range(riscv64_vm_root_pa(),
+    riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                          RISCV64_QEMU_VIRT_PLIC_BASE,
                          RISCV64_QEMU_VIRT_PLIC_BASE,
                          0x400000ULL,
                          RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_G);
 
     if (boot && boot->dtb_pa && boot->dtb_size) {
-        riscv64_vm_map_range(riscv64_vm_root_pa(),
+        riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                              boot->dtb_pa,
                              boot->dtb_pa,
                              boot->dtb_size,
@@ -311,18 +397,18 @@ void riscv64_vm_init(void) {
     }
 
     if (boot && boot->first_virtio_mmio_base) {
-        riscv64_vm_map_range(riscv64_vm_root_pa(),
+        riscv64_vm_map_range(g_riscv64_kernel_root_pa,
                              boot->first_virtio_mmio_base,
                              boot->first_virtio_mmio_base,
                              RISCV64_PAGE_SIZE,
                              RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W | RISCV64_VM_PAGE_G);
     }
 
-    riscv64_vm_activate_address_space(riscv64_vm_root_pa());
+    riscv64_vm_activate_address_space(g_riscv64_kernel_root_pa);
 
     riscv64_uart_puts("  sv39 satp enabled\n");
     riscv64_uart_puts("  sv39 root: 0x");
-    riscv64_uart_puthex64(riscv64_vm_root_pa());
+    riscv64_uart_puthex64(g_riscv64_kernel_root_pa);
     riscv64_uart_puts("\n");
     riscv64_uart_puts("  kernel: 0x");
     riscv64_uart_puthex64((uint64_t)(uintptr_t)__kernel_start);
@@ -337,16 +423,10 @@ void riscv64_vm_dump_plan(void) {
     riscv64_uart_puthex64(riscv64_read_satp());
     riscv64_uart_puts("\n");
     riscv64_uart_puts("  root : 0x");
-    riscv64_uart_puthex64(riscv64_vm_root_pa());
-    riscv64_uart_puts("\n");
-    riscv64_uart_puts("  aspace slots: 0x");
-    riscv64_uart_puthex64((uint64_t)g_riscv64_sv39_root_used_mask);
-    riscv64_uart_puts("\n");
-    riscv64_uart_puts("  page pool : 0x");
-    riscv64_uart_puthex64((uint64_t)riscv64_bootstrap_page_used_count());
+    riscv64_uart_puthex64(g_riscv64_kernel_root_pa);
     riscv64_uart_puts("\n");
     riscv64_uart_puts("  text@ : 0x");
-    riscv64_uart_puthex64(riscv64_vm_get_phys(riscv64_vm_root_pa(), (uint64_t)(uintptr_t)__text_start));
+    riscv64_uart_puthex64(riscv64_vm_get_phys(g_riscv64_kernel_root_pa, (uint64_t)(uintptr_t)__text_start));
     riscv64_uart_puts("\n");
     riscv64_uart_puts("  stvec: 0x");
     riscv64_uart_puthex64(riscv64_read_stvec());
@@ -371,8 +451,14 @@ arch_address_space_t arch_vm_create_user_address_space(void) {
 }
 
 arch_address_space_t arch_vm_clone_address_space(arch_address_space_t address_space) {
-    (void)address_space;
-    return (arch_address_space_t)riscv64_vm_clone_kernel_address_space();
+    uint64_t* src = riscv64_vm_root_ptr((uint64_t)address_space);
+    uint64_t* dst = riscv64_vm_root_ptr(riscv64_vm_create_address_space());
+    if (!dst) return 0;
+    if (riscv64_vm_clone_table(dst, src, riscv64_vm_root_ptr(g_riscv64_kernel_root_pa), 2) < 0) {
+        riscv64_vm_destroy_address_space((uint64_t)(uintptr_t)dst);
+        return 0;
+    }
+    return (arch_address_space_t)(uint64_t)(uintptr_t)dst;
 }
 
 void arch_vm_destroy_user_address_space(arch_address_space_t address_space) {

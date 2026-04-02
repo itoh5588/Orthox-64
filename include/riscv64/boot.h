@@ -12,6 +12,8 @@
 typedef struct riscv64_boot_info {
     uint64_t hart_id;
     uint64_t dtb_pa;
+    uint64_t memory_base;
+    uint64_t memory_size;
     uint64_t uart_base;
     uint64_t first_virtio_mmio_base;
     uint32_t dtb_size;
