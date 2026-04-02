@@ -23,7 +23,11 @@ static int g_fork_spread_enabled = 1;
 
 #define TASK_TIMESLICE_TICKS 5
 
+#ifdef __riscv
+#define USER_STACK_TOP_VADDR   0x0000003FFFFFF000ULL
+#else
 #define USER_STACK_TOP_VADDR   0x7FFFFFFFF000ULL
+#endif
 #define USER_STACK_PAGES       64
 #define USER_STACK_GUARD_PAGES 1
 #define EXEC_COPY_PAGES        4
@@ -931,6 +935,7 @@ void task_init(void) {
     // タスク構造体のサイズに合わせて必要なページを確保
     struct task* t = alloc_task_struct();
     struct task* idle = task_create_idle(0);
+    void* kstack_phys = 0;
     if (!t) return;
     if (!idle) return;
     spinlock_init(&g_task_lock);
@@ -941,9 +946,13 @@ void task_init(void) {
     t->state = TASK_RUNNING;
     t->cpu_affinity = default_task_cpu_affinity();
     arch_task_context_set_address_space(&t->ctx, arch_vm_kernel_address_space());
-    uint64_t sp = arch_task_read_current_stack_pointer();
-    t->kstack_top = (sp & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
+    kstack_phys = pmm_alloc(4);
+    if (!kstack_phys) return;
+    t->kstack_top = (uint64_t)PHYS_TO_VIRT(kstack_phys) + 4 * PAGE_SIZE;
     t->os_stack_ptr = t->kstack_top;
+#ifdef __riscv
+    t->ctx.kernel_sp = t->kstack_top;
+#endif
     t->mmap_end = 0x4000000000ULL;
     t->user_fs_base = 0;
     t->timeslice_ticks = TASK_TIMESLICE_TICKS;

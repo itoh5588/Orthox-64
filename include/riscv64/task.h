@@ -15,6 +15,20 @@ void riscv64_task_set_cpu_local_impl(struct cpu_local* cpu);
 struct arch_task_context {
     uint64_t root_pa;
     uint64_t kernel_sp;
+    uint64_t sched_ra;
+    uint64_t sched_sp;
+    uint64_t sched_s0;
+    uint64_t sched_s1;
+    uint64_t sched_s2;
+    uint64_t sched_s3;
+    uint64_t sched_s4;
+    uint64_t sched_s5;
+    uint64_t sched_s6;
+    uint64_t sched_s7;
+    uint64_t sched_s8;
+    uint64_t sched_s9;
+    uint64_t sched_s10;
+    uint64_t sched_s11;
     riscv64_trap_frame_t user_frame;
 };
 
@@ -51,8 +65,8 @@ static inline void arch_task_prepare_schedule_switch(uint32_t cpu_id,
                                                      struct cpu_local* cpu,
                                                      uint64_t tls_base) {
     (void)cpu_id;
-    (void)kernel_stack;
-    (void)cpu;
+    arch_task_set_cpu_local(cpu);
+    riscv64_trap_set_kernel_stack(kernel_stack);
     (void)tls_base;
 }
 
@@ -88,8 +102,20 @@ static inline uint64_t arch_task_prepare_kernel_entry(struct arch_task_context* 
                                                       uint64_t address_space) {
     if (!ctx) return kstack_top;
     ctx->kernel_sp = kstack_top;
-    ctx->user_frame.ra = entry;
-    ctx->user_frame.sp = kstack_top;
+    ctx->sched_ra = entry;
+    ctx->sched_sp = kstack_top;
+    ctx->sched_s0 = 0;
+    ctx->sched_s1 = 0;
+    ctx->sched_s2 = 0;
+    ctx->sched_s3 = 0;
+    ctx->sched_s4 = 0;
+    ctx->sched_s5 = 0;
+    ctx->sched_s6 = 0;
+    ctx->sched_s7 = 0;
+    ctx->sched_s8 = 0;
+    ctx->sched_s9 = 0;
+    ctx->sched_s10 = 0;
+    ctx->sched_s11 = 0;
     arch_task_context_set_address_space(ctx, address_space);
     return kstack_top;
 }
@@ -102,8 +128,12 @@ void riscv64_task_prepare_initial_user_frame(arch_task_exec_frame_t* frame,
                                              const struct arch_task_user_state* state);
 void riscv64_task_store_user_frame(struct arch_task_context* ctx,
                                    const arch_task_exec_frame_t* frame);
+void riscv64_task_prepare_kernel_resume(struct arch_task_context* ctx,
+                                        uint64_t kernel_sp,
+                                        uint64_t entry_pc);
 void riscv64_task_enter_initial_user_context(const struct arch_task_context* ctx) __attribute__((noreturn));
 void riscv64_task_enter_initial_user(const struct arch_task_user_state* state) __attribute__((noreturn));
+void riscv64_task_fork_child_return(void) __attribute__((noreturn));
 
 static inline arch_task_exec_frame_t* arch_task_exec_frame_on_kstack(uint64_t kstack_top) {
     return (arch_task_exec_frame_t*)(kstack_top - sizeof(arch_task_exec_frame_t));
@@ -128,6 +158,7 @@ static inline void arch_task_prepare_fork_child_context(struct arch_task_context
                                                         const arch_task_exec_frame_t* parent_frame) {
     riscv64_task_prepare_fork_return_frame(child_frame, parent_frame);
     riscv64_task_store_user_frame(ctx, child_frame);
+    riscv64_task_prepare_kernel_resume(ctx, ctx->kernel_sp, (uint64_t)riscv64_task_fork_child_return);
 }
 
 static inline void arch_task_commit_fork_child(struct arch_task_context* child_ctx,

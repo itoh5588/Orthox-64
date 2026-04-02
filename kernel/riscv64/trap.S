@@ -74,7 +74,6 @@ riscv64_trap_entry:
     csrr t0, stval
     sd t0, 272(sp)
     sd zero, 280(sp)
-
     mv a0, sp
     call riscv64_trap_dispatch
 

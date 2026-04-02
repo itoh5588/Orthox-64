@@ -3,6 +3,7 @@
 #include "riscv64/entry.h"
 #include "riscv64/task.h"
 #include "syscall.h"
+#include "task.h"
 
 static struct cpu_local* g_riscv64_cpu_local;
 
@@ -62,9 +63,39 @@ void riscv64_task_store_user_frame(struct arch_task_context* ctx,
     riscv64_task_copy_frame(&ctx->user_frame, frame);
 }
 
+void riscv64_task_prepare_kernel_resume(struct arch_task_context* ctx,
+                                        uint64_t kernel_sp,
+                                        uint64_t entry_pc) {
+    if (!ctx) return;
+    ctx->kernel_sp = kernel_sp;
+    ctx->sched_ra = entry_pc;
+    ctx->sched_sp = kernel_sp;
+    ctx->sched_s0 = 0;
+    ctx->sched_s1 = 0;
+    ctx->sched_s2 = 0;
+    ctx->sched_s3 = 0;
+    ctx->sched_s4 = 0;
+    ctx->sched_s5 = 0;
+    ctx->sched_s6 = 0;
+    ctx->sched_s7 = 0;
+    ctx->sched_s8 = 0;
+    ctx->sched_s9 = 0;
+    ctx->sched_s10 = 0;
+    ctx->sched_s11 = 0;
+}
+
+void riscv64_task_fork_child_return(void) {
+    struct task* current = get_current_task();
+    if (!current) {
+        riscv64_wait_forever();
+    }
+    riscv64_task_enter_initial_user_context(&current->ctx);
+}
+
 __attribute__((noinline, disable_tail_calls))
 void riscv64_task_enter_initial_user_context(const struct arch_task_context* ctx) {
     volatile riscv64_trap_frame_t initial_frame;
+    uint64_t current_root = riscv64_vm_current_address_space();
     uint64_t kernel_root = riscv64_vm_kernel_address_space();
     uint64_t root_pa;
     uint64_t kernel_sp;
@@ -82,10 +113,10 @@ void riscv64_task_enter_initial_user_context(const struct arch_task_context* ctx
     riscv64_uart_puts("  enter user kernel : 0x");
     riscv64_uart_puthex64(kernel_root);
     riscv64_uart_puts("\n");
-    if (root_pa != kernel_root) {
-        arch_task_context_activate_address_space(ctx);
-    }
     riscv64_trap_set_kernel_stack(kernel_sp);
+    if (root_pa != current_root) {
+        riscv64_activate_address_space_and_enter_user(root_pa, (riscv64_trap_frame_t*)&initial_frame);
+    }
     riscv64_enter_user_from_frame((riscv64_trap_frame_t*)&initial_frame);
 }
 

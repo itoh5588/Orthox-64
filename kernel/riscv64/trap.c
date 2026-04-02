@@ -21,7 +21,6 @@ struct riscv64_trap_scratch g_riscv64_trap_scratch;
 
 static uint64_t g_riscv64_timer_interval = 1000000ULL;
 static uint64_t g_riscv64_timer_ticks;
-static int g_riscv64_logged_ecall_dispatch;
 static long g_riscv64_last_timer_error;
 static uint64_t g_riscv64_last_timer_deadline;
 static int g_riscv64_logged_timer_after_user_handoff;
@@ -51,13 +50,12 @@ static void riscv64_handle_timer_interrupt(void) {
 }
 
 static void riscv64_handle_ecall(riscv64_trap_frame_t* frame) {
+    uint64_t sstatus;
     if (!frame) return;
+    sstatus = riscv64_read_sstatus();
+    riscv64_write_sstatus(sstatus | RISCV64_SSTATUS_SUM);
     riscv64_syscall_dispatch(frame);
-
-    if (!g_riscv64_logged_ecall_dispatch) {
-        g_riscv64_logged_ecall_dispatch = 1;
-        riscv64_uart_puts("riscv64 ecall dispatch\n");
-    }
+    riscv64_write_sstatus(sstatus);
 }
 
 static void riscv64_trap_print_frame(const riscv64_trap_frame_t* frame) {

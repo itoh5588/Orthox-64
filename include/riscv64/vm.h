@@ -15,6 +15,7 @@ void riscv64_vm_init(void);
 void riscv64_vm_dump_plan(void);
 uint64_t riscv64_vm_kernel_address_space(void);
 uint64_t riscv64_vm_root_pa(void);
+uint64_t riscv64_vm_current_address_space(void);
 void riscv64_vm_activate_address_space(uint64_t root_pa);
 uint64_t riscv64_vm_create_address_space(void);
 uint64_t riscv64_vm_clone_kernel_address_space(void);

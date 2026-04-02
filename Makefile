@@ -151,8 +151,8 @@ SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/x86_64/gdt.c kernel/x86_64
        kernel/x86_64/interrupt.S kernel/x86_64/syscall_entry.S kernel/x86_64/task_switch.S \
        kernel/vmm.c kernel/x86_64/idt.c kernel/x86_64/lapic.c kernel/sound.c kernel/syscall.c \
        kernel/task.c kernel/fs.c kernel/x86_64/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio_net.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
-RISCV64_C_SRCS = kernel/riscv64/boot.c kernel/riscv64/elf.c kernel/riscv64/entry.c kernel/riscv64/task.c kernel/riscv64/trap.c kernel/riscv64/syscall.c kernel/riscv64/stubs.c kernel/riscv64/vm.c
-RISCV64_SHARED_C_SRCS = kernel/task.c
+RISCV64_C_SRCS = kernel/riscv64/boot.c kernel/riscv64/bootstrap_user.c kernel/riscv64/elf.c kernel/riscv64/entry.c kernel/riscv64/fs.c kernel/riscv64/net_socket.c kernel/riscv64/pmm.c kernel/riscv64/runtime.c kernel/riscv64/task.c kernel/riscv64/trap.c kernel/riscv64/syscall.c kernel/riscv64/vm.c
+RISCV64_SHARED_C_SRCS = kernel/task.c kernel/elf.c kernel/cstring.c
 RISCV64_ASM_SRCS = kernel/riscv64/start.S kernel/riscv64/trap.S kernel/riscv64/entry.S
 
 LWIP_CORE_SRCS = \

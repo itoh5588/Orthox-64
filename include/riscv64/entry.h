@@ -6,6 +6,9 @@
 #include "riscv64/task.h"
 
 void riscv64_enter_user_from_frame(riscv64_trap_frame_t* frame) __attribute__((noreturn));
+void riscv64_run_on_stack(uint64_t stack_top, void (*entry)(void)) __attribute__((noreturn));
+void riscv64_activate_address_space_and_enter_user(uint64_t root_pa,
+                                                   riscv64_trap_frame_t* frame) __attribute__((noreturn));
 void riscv64_prepare_initial_user_frame(riscv64_trap_frame_t* frame,
                                         uint64_t entry_pc,
                                         uint64_t user_sp,

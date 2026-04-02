@@ -223,6 +223,12 @@ uint64_t riscv64_vm_kernel_address_space(void) {
     return riscv64_vm_root_pa();
 }
 
+uint64_t riscv64_vm_current_address_space(void) {
+    uint64_t satp = riscv64_read_satp();
+    if ((satp >> 60) == 0) return 0;
+    return (satp & RISCV64_SATP_PPN_MASK) << 12;
+}
+
 void riscv64_vm_activate_address_space(uint64_t root_pa) {
     uint64_t sp;
     __asm__ volatile("mv %0, sp" : "=r"(sp));

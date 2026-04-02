@@ -3,6 +3,7 @@
 #include "riscv64/csr.h"
 #include "riscv64/dtb.h"
 #include "riscv64/elf.h"
+#include "riscv64/entry.h"
 #include "riscv64/syscall.h"
 #include "riscv64/task.h"
 #include "riscv64/trap.h"
@@ -16,6 +17,12 @@ extern void task_main(void);
 
 static volatile riscv64_boot_info_t g_riscv64_boot_info;
 static volatile int g_riscv64_user_handoff_started;
+
+static char g_riscv64_bootstrap_path[] = "/bootstrap-user";
+static char* g_riscv64_bootstrap_argv[] = { g_riscv64_bootstrap_path, 0 };
+static char g_riscv64_bootstrap_env0[] = "PWD=/";
+static char g_riscv64_bootstrap_env1[] = "PATH=/bin";
+static char* g_riscv64_bootstrap_envp[] = { g_riscv64_bootstrap_env0, g_riscv64_bootstrap_env1, 0 };
 
 static uint64_t riscv64_boot_stack_top(void) {
     uint64_t sp;
@@ -463,28 +470,34 @@ static void riscv64_syscall_dispatch_selftest(void) {
     riscv64_uart_puts("  syscall dispatch selftest passed\n");
 }
 
-static void riscv64_first_user_task_bootstrap(void) {
-    static char bootstrap_path[] = "/bootstrap-user";
-    static char* bootstrap_argv[] = { bootstrap_path, 0 };
-    static char bootstrap_env0[] = "PWD=/";
-    static char bootstrap_env1[] = "PATH=/bin";
-    static char* bootstrap_envp[] = { bootstrap_env0, bootstrap_env1, 0 };
+static void riscv64_first_user_task_bootstrap_continue(void) {
     arch_task_exec_frame_t frame;
 
-    riscv64_uart_puts("  first user task bootstrap start\n");
-    task_init();
     if (!get_current_task()) {
         riscv64_uart_puts("  first user task bootstrap failed: no current task\n");
-        return;
+        riscv64_wait_forever();
     }
     riscv64_syscall_dispatch_selftest();
-    if (task_execve(&frame, bootstrap_path, bootstrap_argv, bootstrap_envp) < 0) {
+    if (task_execve(&frame, g_riscv64_bootstrap_path, g_riscv64_bootstrap_argv, g_riscv64_bootstrap_envp) < 0) {
         riscv64_uart_puts("  first user task bootstrap failed: execve\n");
-        return;
+        riscv64_wait_forever();
     }
     riscv64_uart_puts("  first user task entering user mode\n");
     riscv64_mark_user_handoff_started();
     task_main();
+}
+
+static void riscv64_first_user_task_bootstrap(void) {
+    struct task* current;
+
+    riscv64_uart_puts("  first user task bootstrap start\n");
+    task_init();
+    current = get_current_task();
+    if (!current) {
+        riscv64_uart_puts("  first user task bootstrap failed: no current task\n");
+        return;
+    }
+    riscv64_run_on_stack(current->kstack_top, riscv64_first_user_task_bootstrap_continue);
 }
 
 void riscv64_early_main(uint64_t hart_id, uint64_t dtb_pa) {
