@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+struct task;
+
 #define RISCV64_QEMU_VIRT_UART0_BASE   0x10000000ULL
 #define RISCV64_QEMU_VIRT_CLINT_BASE   0x02000000ULL
 #define RISCV64_QEMU_VIRT_PLIC_BASE    0x0C000000ULL
@@ -30,6 +32,11 @@ void riscv64_boot_capture(uint64_t hart_id, uint64_t dtb_pa);
 const riscv64_boot_info_t* riscv64_boot_info(void);
 void riscv64_uart_init(void);
 void riscv64_uart_putchar(char ch);
+int riscv64_uart_getchar_nonblock(void);
+void riscv64_console_poll_input(void);
+int riscv64_console_read(char* buf, int count);
+void riscv64_console_set_waiter(struct task* t);
+void riscv64_console_clear_waiter(struct task* t);
 void riscv64_uart_puts(const char* s);
 void riscv64_uart_puthex64(uint64_t value);
 void riscv64_mark_user_handoff_started(void);

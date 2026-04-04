@@ -106,6 +106,7 @@ struct orth_dirent {
 void fs_init(void);
 int sys_open(const char* path, int flags, int mode);
 int sys_openat(int dirfd, const char* path, int flags, int mode);
+int64_t sys_write(int fd, const void* buf, size_t count);
 int64_t sys_read(int fd, void* buf, size_t count);
 int sys_close(int fd);
 int sys_fstat(int fd, struct kstat* st);

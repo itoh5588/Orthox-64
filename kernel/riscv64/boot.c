@@ -21,8 +21,34 @@ extern void task_main(void);
 static volatile riscv64_boot_info_t g_riscv64_boot_info;
 static volatile int g_riscv64_user_handoff_started;
 
+#ifndef RISCV64_BOOTSTRAP_ARG0
+#define RISCV64_BOOTSTRAP_ARG0 "pwd"
+#endif
+#ifdef RISCV64_BOOTSTRAP_ARG1
+static char g_riscv64_bootstrap_argv1[] = RISCV64_BOOTSTRAP_ARG1;
+#endif
+#ifdef RISCV64_BOOTSTRAP_ARG2
+static char g_riscv64_bootstrap_argv2[] = RISCV64_BOOTSTRAP_ARG2;
+#endif
+#ifdef RISCV64_BOOTSTRAP_ARG3
+static char g_riscv64_bootstrap_argv3[] = RISCV64_BOOTSTRAP_ARG3;
+#endif
+
 static char g_riscv64_bootstrap_path[] = "/bootstrap-user";
-static char* g_riscv64_bootstrap_argv[] = { g_riscv64_bootstrap_path, 0 };
+static char g_riscv64_bootstrap_argv0[] = RISCV64_BOOTSTRAP_ARG0;
+static char* g_riscv64_bootstrap_argv[] = {
+    g_riscv64_bootstrap_argv0,
+#ifdef RISCV64_BOOTSTRAP_ARG1
+    g_riscv64_bootstrap_argv1,
+#endif
+#ifdef RISCV64_BOOTSTRAP_ARG2
+    g_riscv64_bootstrap_argv2,
+#endif
+#ifdef RISCV64_BOOTSTRAP_ARG3
+    g_riscv64_bootstrap_argv3,
+#endif
+    0
+};
 static char g_riscv64_bootstrap_env0[] = "PWD=/";
 static char g_riscv64_bootstrap_env1[] = "PATH=/bin";
 static char* g_riscv64_bootstrap_envp[] = { g_riscv64_bootstrap_env0, g_riscv64_bootstrap_env1, 0 };
@@ -46,6 +72,7 @@ static uint64_t riscv64_boot_stack_top(void) {
 #define RISCV64_UART_LCR_8N1  0x03U
 #define RISCV64_UART_FCR_FIFO_ENABLE 0x01U
 #define RISCV64_UART_FCR_FIFO_CLEAR  0x06U
+#define RISCV64_UART_LSR_RX_READY    0x01U
 #define RISCV64_UART_LSR_TX_IDLE     0x20U
 
 static inline volatile uint8_t* riscv64_uart0_regs(void) {
@@ -282,6 +309,12 @@ void riscv64_uart_putchar(char ch) {
     uart[RISCV64_UART_THR] = (uint8_t)ch;
 }
 
+int riscv64_uart_getchar_nonblock(void) {
+    volatile uint8_t* uart = riscv64_uart0_regs();
+    if ((uart[RISCV64_UART_LSR] & RISCV64_UART_LSR_RX_READY) == 0) return -1;
+    return (int)uart[RISCV64_UART_RHR];
+}
+
 void riscv64_uart_puts(const char* s) {
     if (!s) return;
     while (*s) {
@@ -310,12 +343,10 @@ static void riscv64_vm_selftest(void) {
     uint64_t mapped;
     static const uint8_t payload[] = { 'R', 'V', 'E', 'L', 'F', '!', 0 };
 
-    riscv64_uart_puts("  vm selftest start\n");
     if (!aspace) {
         riscv64_uart_puts("  vm selftest: create failed\n");
         return;
     }
-    riscv64_uart_puts("  vm selftest: create ok\n");
 
     if (riscv64_elf_load_segment_bootstrap(aspace, virt, payload, sizeof(payload), 128,
                                            RISCV64_VM_PAGE_R | RISCV64_VM_PAGE_W) < 0) {
@@ -323,15 +354,12 @@ static void riscv64_vm_selftest(void) {
         riscv64_vm_destroy_address_space(aspace);
         return;
     }
-    riscv64_uart_puts("  vm selftest: load ok\n");
-
     mapped = riscv64_vm_get_phys(aspace, virt);
     if (!mapped) {
         riscv64_uart_puts("  vm selftest: map/get_phys failed\n");
         riscv64_vm_destroy_address_space(aspace);
         return;
     }
-    riscv64_uart_puts("  vm selftest: lookup ok\n");
 
     phys = mapped & ~(4096ULL - 1ULL);
     if (*(volatile uint8_t*)(uintptr_t)mapped != 'R' ||
@@ -486,7 +514,6 @@ static void riscv64_user_frame_selftest(void) {
     state.arg1 = arg1;
     state.arg2 = arg2;
 
-    riscv64_uart_puts("  user frame selftest start\n");
     riscv64_task_prepare_initial_user_frame(&ctx.user_frame, &state);
 
     if (ctx.user_frame.sepc != entry ||
@@ -537,8 +564,6 @@ static void riscv64_syscall_dispatch_selftest(void) {
     riscv64_trap_frame_t frame;
     char cwd_buf[8];
     static const char write_buf[] = "SOK\n";
-
-    riscv64_uart_puts("  syscall selftest start\n");
 
     if (!ctx) {
         riscv64_uart_puts("  syscall selftest: no current context\n");
@@ -606,6 +631,180 @@ static void riscv64_syscall_dispatch_selftest(void) {
     riscv64_uart_puts("  syscall dispatch selftest passed\n");
 }
 
+static void riscv64_fs_syscall_selftest(void) {
+    task_context_t* ctx = task_current_context();
+    riscv64_trap_frame_t frame;
+    struct kstat st;
+    struct kstat st2;
+    char read_buf[8];
+    static const char root_path[] = "/";
+    static const char bootstrap_path[] = "/bootstrap-user";
+    static const char relative_bootstrap[] = "bootstrap-user";
+    int fd;
+    int dirfd;
+
+    if (!ctx) {
+        riscv64_uart_puts("  fs syscall selftest: no current context\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(st); i++) ((uint8_t*)&st)[i] = 0;
+    for (uint64_t i = 0; i < sizeof(st2); i++) ((uint8_t*)&st2)[i] = 0;
+    for (uint64_t i = 0; i < sizeof(read_buf); i++) read_buf[i] = 0;
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+
+    frame.sepc = 0x0000000040005000ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)(uintptr_t)root_path;
+    frame.a7 = SYS_CHDIR;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 0) {
+        riscv64_uart_puts("  fs syscall selftest: chdir failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x0000000040005010ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)(uintptr_t)bootstrap_path;
+    frame.a1 = (uint64_t)(uintptr_t)&st;
+    frame.a7 = SYS_STAT;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 0 || (st.mode & 0170000U) != KSTAT_MODE_FILE || st.size < 4) {
+        riscv64_uart_puts("  fs syscall selftest: stat failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x0000000040005018ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)(uintptr_t)root_path;
+    frame.a1 = O_DIRECTORY;
+    frame.a2 = 0;
+    frame.a7 = SYS_OPEN;
+    riscv64_syscall_dispatch(&frame);
+    dirfd = (int)frame.a0;
+    if (dirfd < 3) {
+        riscv64_uart_puts("  fs syscall selftest: open dir failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x000000004000501cULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)dirfd;
+    frame.a1 = (uint64_t)(uintptr_t)relative_bootstrap;
+    frame.a2 = 0;
+    frame.a3 = 0;
+    frame.a7 = SYS_OPENAT;
+    riscv64_syscall_dispatch(&frame);
+    fd = (int)frame.a0;
+    if (fd < 3) {
+        riscv64_uart_puts("  fs syscall selftest: openat failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x000000004000501eULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)fd;
+    frame.a1 = (uint64_t)(uintptr_t)&st2;
+    frame.a7 = SYS_FSTAT;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 0 || st2.size != st.size || st2.mode != st.mode) {
+        riscv64_uart_puts("  fs syscall selftest: fstat failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x000000004000501fULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)dirfd;
+    frame.a1 = (uint64_t)(uintptr_t)relative_bootstrap;
+    frame.a2 = (uint64_t)(uintptr_t)&st2;
+    frame.a3 = 0;
+    frame.a7 = SYS_FSTATAT;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 0 || st2.size != st.size || st2.mode != st.mode) {
+        riscv64_uart_puts("  fs syscall selftest: fstatat failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x000000004000501fULL + 4;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)dirfd;
+    frame.a7 = SYS_FCHDIR;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 0) {
+        riscv64_uart_puts("  fs syscall selftest: fchdir failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x0000000040005020ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)(uintptr_t)bootstrap_path;
+    frame.a1 = 0;
+    frame.a2 = 0;
+    frame.a7 = SYS_OPEN;
+    riscv64_syscall_dispatch(&frame);
+    fd = (int)frame.a0;
+    if (fd < 3) {
+        riscv64_uart_puts("  fs syscall selftest: open failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x0000000040005030ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)fd;
+    frame.a1 = (uint64_t)(uintptr_t)read_buf;
+    frame.a2 = 4;
+    frame.a7 = SYS_READ;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 4 || read_buf[0] != 0x7f || read_buf[1] != 'E' ||
+        read_buf[2] != 'L' || read_buf[3] != 'F') {
+        riscv64_uart_puts("  fs syscall selftest: read failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x0000000040005040ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)fd;
+    frame.a7 = SYS_CLOSE;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 0) {
+        riscv64_uart_puts("  fs syscall selftest: close failed\n");
+        return;
+    }
+
+    for (uint64_t i = 0; i < sizeof(frame); i++) ((uint8_t*)&frame)[i] = 0;
+    frame.sepc = 0x0000000040005044ULL;
+    frame.sp = 0x000000007ffff000ULL;
+    frame.sstatus = ctx->user_frame.sstatus;
+    frame.a0 = (uint64_t)dirfd;
+    frame.a7 = SYS_CLOSE;
+    riscv64_syscall_dispatch(&frame);
+    if ((int64_t)frame.a0 != 0) {
+        riscv64_uart_puts("  fs syscall selftest: close dir failed\n");
+        return;
+    }
+
+    riscv64_uart_puts("  fs syscall selftest passed\n");
+}
+
 static struct task* riscv64_find_task_by_pid(int pid) {
     struct task* task = task_list;
     while (task) {
@@ -614,6 +813,8 @@ static struct task* riscv64_find_task_by_pid(int pid) {
     }
     return 0;
 }
+
+#define RISCV64_USER_MMAP_BASE_VADDR 0x0000002000000000ULL
 
 static uint64_t riscv64_align_up_page(uint64_t value) {
     return (value + PAGE_SIZE - 1ULL) & ~(PAGE_SIZE - 1ULL);
@@ -632,8 +833,8 @@ static uint64_t riscv64_test_user_map_page(const char* fail_prefix) {
     }
 
     base = current->mmap_end;
-    if (base < 0x0000200000000000ULL) {
-        base = 0x0000200000000000ULL;
+    if (base < RISCV64_USER_MMAP_BASE_VADDR) {
+        base = RISCV64_USER_MMAP_BASE_VADDR;
     }
     base = riscv64_align_up_page(base);
     while (base < limit && arch_vm_get_phys(arch_task_context_get_address_space(&current->ctx), base) != 0) {
@@ -802,13 +1003,13 @@ static void riscv64_first_user_task_bootstrap_continue(void) {
         riscv64_wait_forever();
     }
     riscv64_syscall_dispatch_selftest();
+    riscv64_fs_syscall_selftest();
     if (task_execve(&frame, g_riscv64_bootstrap_path, g_riscv64_bootstrap_argv, g_riscv64_bootstrap_envp) < 0) {
         riscv64_uart_puts("  first user task bootstrap failed: execve\n");
         riscv64_wait_forever();
     }
     riscv64_user_map_selftest();
     riscv64_fork_selftest();
-    riscv64_uart_puts("  first user task entering user mode\n");
     riscv64_mark_user_handoff_started();
     task_main();
 }
@@ -816,7 +1017,6 @@ static void riscv64_first_user_task_bootstrap_continue(void) {
 static void riscv64_first_user_task_bootstrap(void) {
     struct task* current;
 
-    riscv64_uart_puts("  first user task bootstrap start\n");
     task_init();
     current = get_current_task();
     if (!current) {
@@ -870,8 +1070,6 @@ void riscv64_early_main(uint64_t hart_id, uint64_t dtb_pa) {
     riscv64_trap_init();
     riscv64_trap_set_kernel_stack(riscv64_boot_stack_top());
     riscv64_timer_init();
-    riscv64_vm_dump_plan();
     riscv64_first_user_task_bootstrap();
-    riscv64_uart_puts("TODO: parse DTB, build fuller Sv39 mappings\n");
     riscv64_wait_forever();
 }

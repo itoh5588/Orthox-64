@@ -21,11 +21,34 @@ LLVM_CLANG = $(shell command -v clang 2>/dev/null || \
 	if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then printf /opt/homebrew/opt/llvm/bin/clang; \
 	elif [ -x /usr/local/opt/llvm/bin/clang ]; then printf /usr/local/opt/llvm/bin/clang; \
 	else printf clang; fi)
+LLVM_OBJCOPY = $(shell if [ -x /opt/homebrew/opt/llvm/bin/llvm-objcopy ]; then printf /opt/homebrew/opt/llvm/bin/llvm-objcopy; \
+	elif [ -x /usr/local/opt/llvm/bin/llvm-objcopy ]; then printf /usr/local/opt/llvm/bin/llvm-objcopy; \
+	elif [ -x /opt/homebrew/bin/llvm-objcopy ]; then printf /opt/homebrew/bin/llvm-objcopy; \
+	elif [ -x /usr/local/bin/llvm-objcopy ]; then printf /usr/local/bin/llvm-objcopy; \
+	else printf llvm-objcopy; fi)
+LLVM_AR = $(shell if [ -x /opt/homebrew/opt/llvm/bin/llvm-ar ]; then printf /opt/homebrew/opt/llvm/bin/llvm-ar; \
+	elif [ -x /usr/local/opt/llvm/bin/llvm-ar ]; then printf /usr/local/opt/llvm/bin/llvm-ar; \
+	elif [ -x /opt/homebrew/bin/llvm-ar ]; then printf /opt/homebrew/bin/llvm-ar; \
+	elif [ -x /usr/local/bin/llvm-ar ]; then printf /usr/local/bin/llvm-ar; \
+	else printf ar; fi)
+LLVM_RANLIB = $(shell if [ -x /opt/homebrew/opt/llvm/bin/llvm-ranlib ]; then printf /opt/homebrew/opt/llvm/bin/llvm-ranlib; \
+	elif [ -x /usr/local/opt/llvm/bin/llvm-ranlib ]; then printf /usr/local/opt/llvm/bin/llvm-ranlib; \
+	elif [ -x /opt/homebrew/bin/llvm-ranlib ]; then printf /opt/homebrew/bin/llvm-ranlib; \
+	elif [ -x /usr/local/bin/llvm-ranlib ]; then printf /usr/local/bin/llvm-ranlib; \
+	else printf ranlib; fi)
+LLVM_STRIP = $(shell if [ -x /opt/homebrew/opt/llvm/bin/llvm-strip ]; then printf /opt/homebrew/opt/llvm/bin/llvm-strip; \
+	elif [ -x /usr/local/opt/llvm/bin/llvm-strip ]; then printf /usr/local/opt/llvm/bin/llvm-strip; \
+	elif [ -x /opt/homebrew/bin/llvm-strip ]; then printf /opt/homebrew/bin/llvm-strip; \
+	elif [ -x /usr/local/bin/llvm-strip ]; then printf /usr/local/bin/llvm-strip; \
+	else printf strip; fi)
 RISCV64_CC = $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then printf /opt/homebrew/opt/llvm/bin/clang; \
 	elif [ -x /usr/local/opt/llvm/bin/clang ]; then printf /usr/local/opt/llvm/bin/clang; \
 	elif [ -x /opt/homebrew/bin/clang ]; then printf /opt/homebrew/bin/clang; \
 	elif [ -x /usr/local/bin/clang ]; then printf /usr/local/bin/clang; \
 	else printf clang; fi)
+RISCV64_GCC = $(shell if [ -x /opt/homebrew/bin/riscv64-elf-gcc ]; then printf /opt/homebrew/bin/riscv64-elf-gcc; \
+	elif [ -x /usr/local/bin/riscv64-elf-gcc ]; then printf /usr/local/bin/riscv64-elf-gcc; \
+	else printf riscv64-elf-gcc; fi)
 QEMU_RISCV64 = $(shell command -v qemu-system-riscv64 2>/dev/null || \
 	if [ -x /opt/homebrew/bin/qemu-system-riscv64 ]; then printf /opt/homebrew/bin/qemu-system-riscv64; \
 	elif [ -x /usr/local/bin/qemu-system-riscv64 ]; then printf /usr/local/bin/qemu-system-riscv64; \
@@ -48,12 +71,34 @@ KERNEL_LDFLAGS = -nostdlib -static -T scripts/kernel.ld
 RISCV64_CFLAGS = --target=riscv64-none-elf -march=rv64gc -mabi=lp64 -ffreestanding \
 	-fno-stack-protector -fno-stack-check -fno-lto -fno-PIE -mcmodel=medany -O2 -Wall -Wextra \
 	-Iinclude -MMD -MP
+ifneq ($(RISCV64_BOOTSTRAP_ARG0_VALUE),)
+RISCV64_CFLAGS += '-DRISCV64_BOOTSTRAP_ARG0="$(RISCV64_BOOTSTRAP_ARG0_VALUE)"'
+endif
+ifneq ($(RISCV64_BOOTSTRAP_ARG1_VALUE),)
+RISCV64_CFLAGS += '-DRISCV64_BOOTSTRAP_ARG1="$(RISCV64_BOOTSTRAP_ARG1_VALUE)"'
+endif
+ifneq ($(RISCV64_BOOTSTRAP_ARG2_VALUE),)
+RISCV64_CFLAGS += '-DRISCV64_BOOTSTRAP_ARG2="$(RISCV64_BOOTSTRAP_ARG2_VALUE)"'
+endif
+ifneq ($(RISCV64_BOOTSTRAP_ARG3_VALUE),)
+RISCV64_CFLAGS += '-DRISCV64_BOOTSTRAP_ARG3="$(RISCV64_BOOTSTRAP_ARG3_VALUE)"'
+endif
+RISCV64_CFLAGS += $(RISCV64_CFLAGS_EXTRA)
 RISCV64_LDFLAGS = -flavor gnu -m elf64lriscv -nostdlib -static -T scripts/kernel-riscv64.ld
+RISCV64_USER_CFLAGS = --target=riscv64-none-elf -march=rv64gc -mabi=lp64 -ffreestanding \
+	-fno-stack-protector -fno-stack-check -fno-lto -fno-PIE -mcmodel=medany -O2 -Wall -Wextra \
+	-Iinclude -Iuser/include -MMD -MP
+RISCV64_USER_LDFLAGS = -flavor gnu -m elf64lriscv -nostdlib -static --entry=_start -Ttext 0x400000
+RISCV64_MUSL_CFLAGS = --target=riscv64-linux-musl -march=rv64gc -mabi=lp64d -ffreestanding \
+	-fno-stack-protector -fno-stack-check -fno-lto -fno-PIE -mcmodel=medany -O2 -Wall -Wextra \
+	-I$(RISCV64_MUSL_SYSROOT)/include -Iinclude -Iuser/include -MMD -MP
+RISCV64_MUSL_LDFLAGS = -flavor gnu -m elf64lriscv -nostdlib -static --entry=_start -Ttext 0x400000
 
 # libc / sysroot 設定
 LIBC_IMPL ?= musl
 NEWLIB_SYSROOT = user
 MUSL_SYSROOT ?= ports/musl-install
+RISCV64_MUSL_SYSROOT ?= ports/musl-install-riscv64
 
 ifeq ($(LIBC_IMPL),musl)
 USER_SYSROOT = $(MUSL_SYSROOT)
@@ -83,6 +128,15 @@ LIBGCC = $(shell $(XGCC) -print-libgcc-file-name)
 # 出力ファイル名
 KERNEL_ELF = $(OUT_DIR)/kernel.elf
 RISCV64_KERNEL_ELF = $(OUT_DIR)/kernel-riscv64.elf
+RISCV64_BOOTSTRAP_USER_BUILD_ELF = $(OUT_DIR)/bootstrap-user-riscv64-default.elf
+RISCV64_BOOTSTRAP_USER_EMBED_ELF = $(OUT_DIR)/bootstrap-user-riscv64.elf
+RISCV64_BOOTSTRAP_USER_SRC_ELF ?= $(RISCV64_BOOTSTRAP_USER_BUILD_ELF)
+RISCV64_BOOTSTRAP_ARG0_VALUE ?=
+RISCV64_BOOTSTRAP_ARG1_VALUE ?=
+RISCV64_BOOTSTRAP_ARG2_VALUE ?=
+RISCV64_BOOTSTRAP_ARG3_VALUE ?=
+RISCV64_MUSL_PROBE_ELF = $(OUT_DIR)/riscv64-musl-probe.elf
+RISCV64_BUSYBOX_ASH_MUSL_ELF = $(OUT_DIR)/busybox-riscv64-musl.elf
 USER_ELF = user/user_test.elf
 MUSL_USER_ELF = user/user_test-musl.elf
 EXEC_ELF = user/exec_test.elf
@@ -154,6 +208,8 @@ SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/x86_64/gdt.c kernel/x86_64
 RISCV64_C_SRCS = kernel/riscv64/boot.c kernel/riscv64/bootstrap_user.c kernel/riscv64/elf.c kernel/riscv64/entry.c kernel/riscv64/fs.c kernel/riscv64/net_socket.c kernel/riscv64/pmm.c kernel/riscv64/runtime.c kernel/riscv64/task.c kernel/riscv64/trap.c kernel/riscv64/syscall.c kernel/riscv64/vm.c
 RISCV64_SHARED_C_SRCS = kernel/task.c kernel/elf.c kernel/cstring.c
 RISCV64_ASM_SRCS = kernel/riscv64/start.S kernel/riscv64/trap.S kernel/riscv64/entry.S
+RISCV64_USER_SRCS = user/riscv64_fs_smoke.c
+RISCV64_MUSL_PROBE_SRCS = user/riscv64_musl_probe.c
 
 LWIP_CORE_SRCS = \
 	ports/lwip/src/core/def.c \
@@ -191,7 +247,12 @@ OBJS = $(patsubst kernel/%.c, $(BUILD_DIR)/kernel/%.o, $(filter %.c, $(SRCS))) \
        $(patsubst ports/lwip/src/%.c, $(BUILD_DIR)/lwip/%.o, $(LWIP_SRCS))
 RISCV64_OBJS = $(patsubst kernel/riscv64/%.c, $(BUILD_DIR)/riscv64/kernel/%.o, $(RISCV64_C_SRCS)) \
 	       $(patsubst kernel/%.c, $(BUILD_DIR)/riscv64/kernel/shared/%.o, $(RISCV64_SHARED_C_SRCS)) \
-	       $(patsubst kernel/riscv64/%.S, $(BUILD_DIR)/riscv64/kernel/%_asm.o, $(RISCV64_ASM_SRCS))
+	       $(patsubst kernel/riscv64/%.S, $(BUILD_DIR)/riscv64/kernel/%_asm.o, $(RISCV64_ASM_SRCS)) \
+	       $(BUILD_DIR)/riscv64/kernel/bootstrap_user_blob.o
+
+RISCV64_USER_OBJS = $(patsubst user/%.c, $(BUILD_DIR)/riscv64/user/%.o, $(RISCV64_USER_SRCS))
+RISCV64_MUSL_PROBE_OBJS = $(BUILD_DIR)/riscv64-musl/user/crt0.o \
+	$(patsubst user/%.c, $(BUILD_DIR)/riscv64-musl/user/%.o, $(RISCV64_MUSL_PROBE_SRCS))
 
 DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/crt0.d $(USER_BUILD_DIR)/syscalls.d $(USER_BUILD_DIR)/syscalls_musl.d $(USER_BUILD_DIR)/syscall_wrap.d \
@@ -208,7 +269,7 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/mkdirtest.d $(USER_BUILD_DIR)/wadheadtest.d \
        $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d
 
-.PHONY: all clean run smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install riscv64-run riscv64-smoke
+.PHONY: all clean run smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install riscv64-run riscv64-smoke riscv64-musl-sysroot riscv64-musl-probe riscv64-busybox-musl
 
 all: $(ISO)
 
@@ -281,6 +342,32 @@ $(RISCV64_KERNEL_ELF): $(RISCV64_OBJS)
 	@mkdir -p $(@D)
 	$(LLD) $(RISCV64_LDFLAGS) $(RISCV64_OBJS) -o $@
 
+$(RISCV64_BOOTSTRAP_USER_BUILD_ELF): $(RISCV64_USER_OBJS)
+	@mkdir -p $(@D)
+	$(LLD) $(RISCV64_USER_LDFLAGS) $(RISCV64_USER_OBJS) -o $@
+
+$(RISCV64_MUSL_SYSROOT)/lib/libc.a:
+	TARGET=riscv64-linux-musl CLANG_BIN="$(RISCV64_CC)" LLVM_AR_BIN="$(LLVM_AR)" LLVM_RANLIB_BIN="$(LLVM_RANLIB)" ./ports/build_musl.sh $(abspath ports/musl) $(abspath $(RISCV64_MUSL_SYSROOT)) riscv64-linux-musl
+
+riscv64-musl-sysroot: $(RISCV64_MUSL_SYSROOT)/lib/libc.a
+
+$(BUILD_DIR)/riscv64-musl/user/crt0.o: user/crt0_musl_riscv64.S
+	@mkdir -p $(@D)
+	$(RISCV64_CC) $(RISCV64_MUSL_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/riscv64-musl/user/%.o: user/%.c $(RISCV64_MUSL_SYSROOT)/lib/libc.a
+	@mkdir -p $(@D)
+	$(RISCV64_CC) $(RISCV64_MUSL_CFLAGS) -c $< -o $@
+
+$(RISCV64_MUSL_PROBE_ELF): $(RISCV64_MUSL_PROBE_OBJS) $(RISCV64_MUSL_SYSROOT)/lib/libc.a
+	@mkdir -p $(@D)
+	$(LLD) $(RISCV64_MUSL_LDFLAGS) $(RISCV64_MUSL_PROBE_OBJS) $(RISCV64_MUSL_SYSROOT)/lib/libc.a -o $@
+
+riscv64-musl-probe: $(RISCV64_MUSL_PROBE_ELF)
+
+riscv64-busybox-musl: $(RISCV64_MUSL_SYSROOT)/lib/libc.a $(BUILD_DIR)/riscv64-musl/user/crt0.o
+	ORTHOS_TARGET=riscv64-linux-musl ORTHOS_CC="$(RISCV64_CC)" ORTHOS_FUSE_LD=lld ORTHOS_LIBGCC="$$($(RISCV64_GCC) -print-libgcc-file-name)" ORTHOS_SYSROOT=$(abspath $(RISCV64_MUSL_SYSROOT)) ORTHOS_INCLUDEDIR=$(abspath $(RISCV64_MUSL_SYSROOT))/include ORTHOS_LIBDIR=$(abspath $(RISCV64_MUSL_SYSROOT))/lib ORTHOS_CRT0=$(abspath $(BUILD_DIR)/riscv64-musl/user/crt0.o) ORTHOS_SYSCALLS_O= ORTHOS_SYSCALL_WRAP_O= ORTHOS_AR="$(LLVM_AR)" ORTHOS_RANLIB="$(LLVM_RANLIB)" ORTHOS_STRIP="$(LLVM_STRIP)" ./ports/build_busybox_ash.sh $(abspath ports/busybox) $(abspath $(RISCV64_BUSYBOX_ASH_MUSL_ELF))
+
 $(BUILD_DIR)/kernel/%.o: kernel/%.c
 	@mkdir -p $(@D)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
@@ -300,6 +387,15 @@ $(BUILD_DIR)/riscv64/kernel/shared/%.o: kernel/%.c
 $(BUILD_DIR)/riscv64/kernel/%_asm.o: kernel/riscv64/%.S
 	@mkdir -p $(@D)
 	$(RISCV64_CC) $(RISCV64_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/riscv64/user/%.o: user/%.c
+	@mkdir -p $(@D)
+	$(RISCV64_CC) $(RISCV64_USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/riscv64/kernel/bootstrap_user_blob.o: $(RISCV64_BOOTSTRAP_USER_SRC_ELF)
+	@mkdir -p $(@D)
+	@if [ "$<" != "$(RISCV64_BOOTSTRAP_USER_EMBED_ELF)" ]; then cp "$<" "$(RISCV64_BOOTSTRAP_USER_EMBED_ELF)"; fi
+	$(LLVM_OBJCOPY) -I binary -O elf64-littleriscv $(RISCV64_BOOTSTRAP_USER_EMBED_ELF) $@
 
 $(BUILD_DIR)/lwip/%.o: ports/lwip/src/%.c
 	@mkdir -p $(@D)

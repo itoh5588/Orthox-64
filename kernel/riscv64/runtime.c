@@ -10,8 +10,13 @@ uint64_t g_hhdm_offset;
 
 static spinlock_t g_riscv64_kernel_lock;
 static struct smp_cpu_info g_riscv64_bsp_cpu = { 0, 0, 0, 1, 1 };
+static uint8_t g_riscv64_console_buf[256];
+static uint32_t g_riscv64_console_head;
+static uint32_t g_riscv64_console_tail;
+static struct task* g_riscv64_console_waiter;
 
 void net_poll(void) {
+    riscv64_console_poll_input();
 }
 
 uint64_t arch_time_now_ms(void) {
@@ -103,6 +108,7 @@ int kernel_lock_held(void) {
 void kernel_yield(void) {
     struct cpu_local* cpu = get_cpu_local();
     uint32_t depth = cpu ? cpu->kernel_lock_depth : 0;
+    riscv64_console_poll_input();
     for (uint32_t i = 0; i < depth; i++) kernel_lock_exit();
     schedule();
     for (uint32_t i = 0; i < depth; i++) kernel_lock_enter();
@@ -114,6 +120,42 @@ void puts(const char* s) {
 
 void puthex(uint64_t value) {
     riscv64_uart_puthex64(value);
+}
+
+void riscv64_console_poll_input(void) {
+    int ch = riscv64_uart_getchar_nonblock();
+    while (ch >= 0) {
+        uint32_t next_head = (g_riscv64_console_head + 1U) % (uint32_t)sizeof(g_riscv64_console_buf);
+        if (ch == '\r') ch = '\n';
+        if (next_head != g_riscv64_console_tail) {
+            g_riscv64_console_buf[g_riscv64_console_head] = (uint8_t)ch;
+            g_riscv64_console_head = next_head;
+            if (g_riscv64_console_waiter && g_riscv64_console_waiter->state == TASK_SLEEPING) {
+                task_wake(g_riscv64_console_waiter);
+                g_riscv64_console_waiter = 0;
+            }
+        }
+        ch = riscv64_uart_getchar_nonblock();
+    }
+}
+
+int riscv64_console_read(char* buf, int count) {
+    int read = 0;
+    if (!buf || count <= 0) return 0;
+    while (read < count) {
+        if (g_riscv64_console_head == g_riscv64_console_tail) break;
+        buf[read++] = (char)g_riscv64_console_buf[g_riscv64_console_tail];
+        g_riscv64_console_tail = (g_riscv64_console_tail + 1U) % (uint32_t)sizeof(g_riscv64_console_buf);
+    }
+    return read;
+}
+
+void riscv64_console_set_waiter(struct task* t) {
+    g_riscv64_console_waiter = t;
+}
+
+void riscv64_console_clear_waiter(struct task* t) {
+    if (g_riscv64_console_waiter == t) g_riscv64_console_waiter = 0;
 }
 
 const struct smp_cpu_info* smp_get_cpu_info(uint32_t cpu_index) {
