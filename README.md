@@ -5,6 +5,15 @@
 
 Orthox-64 is a project that presents a modern approach to operating system development from scratch.
 
+## Demo Videos
+- **Boot Demo:** Replace this with your GitHub Release or external video link, for example `https://github.com/itoh5588/Orthox-64/releases`.
+- **DOOM Demo:** Replace this with your GitHub Release or external video link after uploading the capture.
+- Recommended capture flow:
+  - Boot banner
+  - Shell prompt
+  - SMP / network proof such as `runqstat` or `httpsfetch`
+  - `doom-musl.elf` launch and in-game movement
+
 ## Concept and Design Philosophy
 - **Etymology:** "Ortho-" comes from orthogonality and correctness, combined with "-x" from the Unix tradition. Orthox-64 aims to be an orthodox, minimal Unix-like operating system.
 - **Lightweight & Robust:** Orthox-64 rejects unnecessary system complexity and focuses on a small, stable kernel and userland substrate.
@@ -33,6 +42,8 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 
 ## Status
 The project is currently in active development. The current SMP scheduler phase has reached its acceptance target: Orthox-64 now boots and runs on 4 CPUs in QEMU, uses a per-CPU run queue, restores fork spread, and has validated pipe, `wait4()`, DNS, socket, UDP echo, BusyBox `httpd`, and userspace HTTPS paths under SMP. Current focus is on expanding userland compatibility and moving from this stabilized SMP base toward broader load balancing and higher-level functionality.
+
+The RISC-V `virt` bring-up track has also reached a practical milestone. Orthox-64 now boots on QEMU `riscv64`, completes PMM/VMM and first-user-task bring-up, runs `musl` user ELFs, and has verified BusyBox applets such as `pwd`, `ls`, and `cat`, along with BusyBox `ash` startup. Current RISC-V work is focused on further shell and userland stabilization from this working baseline.
 
 ## Acknowledgements
 Orthox-64 is inspired by and references the following projects:
