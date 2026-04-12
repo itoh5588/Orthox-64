@@ -42,8 +42,17 @@ MUSL_USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 \
 
 USER_LDFLAGS = -m elf_x86_64 -nostdlib -static -Ttext 0x400000
 
-# x86_64-elf-gcc を使って libgcc.a の正確なパスを取得
-LIBGCC = $(shell x86_64-elf-gcc -print-libgcc-file-name)
+# x86_64-elf-gcc が無い環境では host clang/gcc の libgcc を使う
+LIBGCC = $(shell \
+	if command -v x86_64-elf-gcc >/dev/null 2>&1; then \
+		x86_64-elf-gcc -print-libgcc-file-name; \
+	elif command -v clang >/dev/null 2>&1; then \
+		clang --print-libgcc-file-name; \
+	elif command -v gcc >/dev/null 2>&1; then \
+		gcc -print-libgcc-file-name; \
+	else \
+		printf libgcc.a; \
+	fi)
 
 # 出力ファイル名
 KERNEL_ELF = kernel.elf
@@ -87,6 +96,15 @@ TICKRATE_TEST_ELF = user/tickratecheck.elf
 UDP_ECHO_TEST_ELF = user/udpecho.elf
 UDP_NB_TEST_ELF = user/udpnb.elf
 HTTPS_FETCH_ELF = user/httpsfetch.elf
+STATERRNO_ELF = user/staterrno.elf
+PYENC_CHECK_ELF = user/pyenccheck.elf
+MUSL_DIRCHECK_ELF = user/musldircheck.elf
+MUSL_FORKPROBE_ELF = user/muslforkprobe.elf
+MUSL_EXECPROBE_ELF = user/muslexecprobe.elf
+MUSL_ENVSHOW_ELF = user/muslenvshow.elf
+RETROFS_BASIC_ELF = user/retrofsbasic.elf
+RETROFS_EDGE_ELF = user/retrofsedge.elf
+RUST_HELLO_STD_ELF = ports/rust/hello_std
 CC1_ELF = ports/gcc-4.7.4/build/gcc/cc1
 CC1_SRC_MUSL = ports/gcc-4.7.4/build-musl/gcc/cc1
 CC1_MUSL_ELF = user/cc1-musl.elf
@@ -105,14 +123,16 @@ AS_SRC_MUSL = ports/binutils-2.26/binutils-2.26/build-musl/gas/as-new
 LD_SRC_MUSL = ports/binutils-2.26/binutils-2.26/build-musl/ld/ld-new
 OSSTUBS_A = ports/libosstubs.a
 ISO = orthos.iso
+RETROFS_ISO = orthos-retrofs.iso
 USB_IMG = usb.img
 ROOTFS_TAR = rootfs.tar
+ROOTFS_IMG = rootfs.img
 ROOTFS_FILES = $(shell find rootfs -type f 2>/dev/null)
 
 # ソース
 SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
        kernel/vmm.c kernel/idt.c kernel/interrupt.S kernel/lapic.c kernel/sound.c kernel/syscall.c kernel/syscall_entry.S \
-       kernel/task.c kernel/task_switch.S kernel/fs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio_net.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
+       kernel/task.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/retrofs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio_net.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
 
 LWIP_CORE_SRCS = \
 	ports/lwip/src/core/def.c \
@@ -164,7 +184,7 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/mkdirtest.d $(USER_BUILD_DIR)/wadheadtest.d \
        $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d
 
-.PHONY: all clean run smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
+.PHONY: all clean run ac97run ac97smoke doomac97smoke muslforkprobesmoke muslexecprobesmoke muslforkexecwaitsmoke muslbusyboxsmoke muslbusyboxenvshowsmoke smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
 
 all: $(ISO)
 
@@ -259,8 +279,9 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF)
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(RUST_HELLO_STD_ELF)
 	mkdir -p rootfs/bin
+	rm -f rootfs/bin/staterrno.elf
 	# Install musl development files
 	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
 	cp $(BUILD_DIR)/musl/user/syscalls_musl.o rootfs/syscalls.o
@@ -268,6 +289,7 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(UDP_ECHO_TEST_ELF) rootfs/bin/udpecho.elf
 	cp $(UDP_NB_TEST_ELF) rootfs/bin/udpnb.elf
 	cp $(HTTPS_FETCH_ELF) rootfs/bin/httpsfetch.elf
+	cp $(STATERRNO_ELF) rootfs/bin/staterrno.elf
 	cp $(TIME_TEST_ELF) rootfs/bin/testtime.elf
 	cp $(TICKRATE_TEST_ELF) rootfs/bin/tickratecheck.elf
 	cp $(SHOWCPU_ELF) rootfs/bin/showcpu.elf
@@ -279,16 +301,38 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(SMP_STRESS_ELF) rootfs/bin/smpstress.elf
 	cp $(SCHEDMIX_ELF) rootfs/bin/schedmix.elf
 	cp $(REAP_TEST_ELF) rootfs/bin/reaptest.elf
+	cp $(PYENC_CHECK_ELF) rootfs/bin/pyenccheck
+	cp $(MUSL_DIRCHECK_ELF) rootfs/bin/musldircheck
+	cp $(MUSL_FORKPROBE_ELF) rootfs/bin/muslforkprobe.elf
+	cp $(MUSL_EXECPROBE_ELF) rootfs/bin/muslexecprobe.elf
+	cp $(MUSL_ENVSHOW_ELF) rootfs/bin/muslenvshow.elf
+	cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic
+	cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge
+	cp $(RUST_HELLO_STD_ELF) rootfs/bin/hello_std
+	cp $(RUST_HELLO_STD_ELF) rootfs/bin/hellostd
 	# Remove old bin-musl if it exists to avoid confusion
 	rm -rf rootfs/bin-musl
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .
 
-$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR)
+$(ROOTFS_IMG): FORCE $(ROOTFS_FILES) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF)
+	mkdir -p rootfs/bin
+	rm -f rootfs/bin/staterrno.elf
+	cp $(STATERRNO_ELF) rootfs/bin/staterrno.elf
+	cp $(PYENC_CHECK_ELF) rootfs/bin/pyenccheck
+	cp $(MUSL_DIRCHECK_ELF) rootfs/bin/musldircheck
+	cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic
+	cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge
+	cp $(SOUND_TEST_ELF) rootfs/bin/testsound
+	cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf
+	python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG)
+
+$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR) $(ROOTFS_IMG)
 	rm -rf iso_root
 	mkdir -p iso_root/boot/limine
 	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
 	cp $(SH_ELF) iso_root/boot/sh.elf
 	cp $(ROOTFS_TAR) iso_root/boot/rootfs.tar
+	cp $(ROOTFS_IMG) iso_root/boot/rootfs.img
 	cp iso/limine.conf iso_root/boot/limine/limine.conf
 
 	mkdir -p iso_root/EFI/BOOT
@@ -303,8 +347,52 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR)
 	$(CURDIR)/limine/limine bios-install $(ISO)
 	rm -rf iso_root
 
+$(RETROFS_ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine-retrofs.conf limine/limine $(ROOTFS_IMG)
+	rm -rf iso_root
+	mkdir -p iso_root/boot/limine
+	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
+	cp $(SH_ELF) iso_root/boot/sh.elf
+	cp $(ROOTFS_IMG) iso_root/boot/rootfs.img
+	cp iso/limine-retrofs.conf iso_root/boot/limine/limine.conf
+
+	mkdir -p iso_root/EFI/BOOT
+	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
+	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
+	cp limine/BOOTIA32.EFI iso_root/EFI/BOOT/
+	xorriso -as mkisofs -v -R -r -J -b boot/limine/limine-bios-cd.bin \
+		-no-emul-boot -boot-load-size 4 -boot-info-table -hfsplus \
+		-apm-block-size 2048 --efi-boot boot/limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		iso_root -o $(RETROFS_ISO)
+	$(CURDIR)/limine/limine bios-install $(RETROFS_ISO)
+	rm -rf iso_root
+
 run: $(ISO)
 	bash ./run_qemu_stdio.sh
+
+ac97run: $(ISO)
+	bash ./run_qemu_ac97.sh
+
+ac97smoke: $(RETROFS_ISO)
+	bash ./tests/ac97_smoke.sh $(RETROFS_ISO)
+
+doomac97smoke: $(RETROFS_ISO)
+	bash ./tests/doom_ac97_smoke.sh $(RETROFS_ISO)
+
+muslforkprobesmoke: $(ISO)
+	bash ./tests/musl_forkprobe_smoke.sh $(ISO)
+
+muslexecprobesmoke: $(ISO)
+	bash ./tests/musl_execprobe_smoke.sh $(ISO)
+
+muslforkexecwaitsmoke: $(ISO)
+	bash ./tests/musl_forkexecwait_smoke.sh $(ISO)
+
+muslbusyboxsmoke: $(ISO)
+	bash ./tests/musl_busybox_smoke.sh $(ISO)
+
+muslbusyboxenvshowsmoke: $(ISO)
+	bash ./tests/musl_busybox_envshow_smoke.sh $(ISO)
 
 smprun: $(ISO)
 	bash ./run_qemu_stdio.sh \

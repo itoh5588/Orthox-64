@@ -25,10 +25,10 @@ static int g_fork_spread_enabled = 1;
 #define USER_STACK_TOP_VADDR   0x7FFFFFFFF000ULL
 #define USER_STACK_PAGES       64
 #define USER_STACK_GUARD_PAGES 1
-#define EXEC_COPY_PAGES        4
+#define EXEC_COPY_PAGES        10
 #define EXEC_MAX_PATH_LEN      1024
 #define EXEC_MAX_VEC_STRINGS   32
-#define EXEC_MAX_VEC_STR_LEN   160
+#define EXEC_MAX_VEC_STR_LEN   512
 
 extern volatile struct limine_module_request module_request;
 
@@ -481,6 +481,11 @@ static int task_reap_locked(struct task* t) {
 
     t->state = TASK_DEAD;
 
+    if (t->deferred_cr3 && t->deferred_cr3 != vmm_get_kernel_pml4_phys()) {
+        vmm_free_user_pml4(t->deferred_cr3);
+        t->deferred_cr3 = 0;
+    }
+
     if (t->ctx.cr3 && t->ctx.cr3 != vmm_get_kernel_pml4_phys()) {
         vmm_free_user_pml4(t->ctx.cr3);
         t->ctx.cr3 = 0;
@@ -812,8 +817,14 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     void* exec_copy_phys = 0;
     struct exec_copy_buf* exec_copy = 0;
     uint64_t old_cr3 = 0;
+    struct task* t = get_current_task_raw();
     extern int fs_get_file_data(const char* path, void** data, size_t* size);
     extern int sys_close(int fd);
+    if (t && t->deferred_cr3 && t->deferred_cr3 != t->ctx.cr3 &&
+        t->deferred_cr3 != vmm_get_kernel_pml4_phys()) {
+        vmm_free_user_pml4(t->deferred_cr3);
+        t->deferred_cr3 = 0;
+    }
     exec_copy_phys = pmm_alloc(EXEC_COPY_PAGES);
     if (!exec_copy_phys) {
         return -1;
@@ -831,7 +842,6 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
         pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
         return -1;
     }
-    struct task* t = get_current_task_raw();
     void* pml4_phys = pmm_alloc(1);
     if (!pml4_phys) {
         puts("Exec: pml4 alloc failed\r\n");
@@ -860,7 +870,23 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     t->heap_break = info.max_vaddr;
     t->mmap_end = 0x4000000000ULL;
     t->user_entry = (uint64_t)info.entry;
+    t->sig_pending = 0;
+    t->sig_mask = 0;
+    for (int i = 0; i < 32; i++) {
+        t->sig_handlers[i] = 0;
+        t->sig_action_masks[i] = 0;
+        t->sig_action_flags[i] = 0;
+    }
     t->user_fs_base = 0;
+    t->tls_vaddr = info.tls_vaddr;
+    t->tls_filesz = info.tls_filesz;
+    t->tls_memsz = info.tls_memsz;
+    t->tls_align = info.tls_align;
+    for (int i = 0; i < 512; i++) t->ctx.fxsave_area[i] = 0;
+    t->ctx.fxsave_area[0] = 0x7f;
+    t->ctx.fxsave_area[1] = 0x03;
+    t->ctx.fxsave_area[24] = 0x80;
+    t->ctx.fxsave_area[25] = 0x1f;
     for (int i = 3; i < MAX_FDS; i++) {
         if (t->fds[i].in_use && (t->fds[i].fd_flags & 1)) {
             sys_close(i);
@@ -877,19 +903,22 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     frame->r10 = 0;
     frame->rax = 0;
     frame->rip = t->user_entry;
+    frame->cs = 0x23;
+    frame->ss = 0x1B;
     frame->rsp = t->user_stack;
+    frame->rflags = 0x202ULL;
     frame->rdi = t->user_argc;
     frame->rsi = t->user_argv;
     frame->rdx = t->user_envp;
     __asm__ volatile("mov %0, %%cr3" : : "r"(t->ctx.cr3) : "memory");
     wrmsr(MSR_FS_BASE, t->user_fs_base);
+    __asm__ volatile("fninit");
     if (old_cr3 && old_cr3 != t->ctx.cr3 && old_cr3 != vmm_get_kernel_pml4_phys()) {
-        vmm_free_user_pml4(old_cr3);
+        t->deferred_cr3 = old_cr3;
     }
     pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
     return 0;
 }
-
 
 void task_main(void) {
     struct task* t = get_current_task();
@@ -1079,6 +1108,13 @@ int task_fork(struct syscall_frame* frame) {
     child->ppid = parent->pid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
+    child->sig_pending = 0;
+    child->sig_mask = parent->sig_mask;
+    for (int i = 0; i < 32; i++) {
+        child->sig_handlers[i] = parent->sig_handlers[i];
+        child->sig_action_masks[i] = parent->sig_action_masks[i];
+        child->sig_action_flags[i] = parent->sig_action_flags[i];
+    }
     uint32_t spawn_cpu = g_fork_spread_enabled
         ? choose_spawn_cpu_locked((uint32_t)parent->cpu_affinity)
         : (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
@@ -1091,6 +1127,10 @@ int task_fork(struct syscall_frame* frame) {
     child->user_stack_bottom = parent->user_stack_bottom;
     child->user_stack_guard = parent->user_stack_guard;
     child->user_fs_base = parent->user_fs_base;
+    child->tls_vaddr = parent->tls_vaddr;
+    child->tls_filesz = parent->tls_filesz;
+    child->tls_memsz = parent->tls_memsz;
+    child->tls_align = parent->tls_align;
     child->timeslice_ticks = TASK_TIMESLICE_TICKS;
     child->ctx.cr3 = vmm_copy_pml4((uint64_t*)PHYS_TO_VIRT(parent->ctx.cr3));
     kernel_strcpy(child->cwd, parent->cwd, sizeof(child->cwd));
@@ -1102,6 +1142,7 @@ int task_fork(struct syscall_frame* frame) {
         ((uint8_t*)child_frame)[i] = ((uint8_t*)frame)[i];
     }
     child_frame->rax = 0;
+    child_frame->rflags &= ~0x400ULL;
     uint64_t* sp = (uint64_t*)child_frame;
     *(--sp) = (uint64_t)fork_child_entry;
     *(--sp) = 0x202;

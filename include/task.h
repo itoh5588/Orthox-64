@@ -69,6 +69,11 @@ struct task {
     uint64_t user_argv;
     uint64_t user_envp;
     uint64_t user_fs_base;
+    uint64_t deferred_cr3;
+    uint64_t tls_vaddr;
+    uint64_t tls_filesz;
+    uint64_t tls_memsz;
+    uint64_t tls_align;
     uint64_t sleep_until_ms;
     int timeslice_ticks;
     char cwd[256];
