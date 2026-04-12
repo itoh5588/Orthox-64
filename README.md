@@ -38,3 +38,4 @@ The project is currently in active development. The current SMP scheduler phase 
 Orthox-64 is inspired by and references the following projects:
 - **[MikanOS](https://github.com/uchan-nos/mikanos)**: A modern educational OS by [uchan-nos](https://github.com/uchan-nos). The kernel architecture and some primitive setups were developed with reference to its implementation.
 - **[Limine](https://github.com/limine-bootloader/limine)**: Used as the bootloader for modern UEFI/BIOS support.
+- **[retro-rocket](https://github.com/brainboxdotcc/retro-rocket)**: Referenced while integrating RetroFS support into Orthox-64.
