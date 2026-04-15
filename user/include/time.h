@@ -7,6 +7,17 @@
 #ifndef _TIME_H_
 #define _TIME_H_
 
+#define _POSIX_TIMERS 1
+#define _POSIX_MONOTONIC_CLOCK 1
+#define __TM_ZONE tm_zone
+#define __TM_GMTOFF tm_gmtoff
+#ifndef timezone
+#define timezone _timezone
+#endif
+#ifndef daylight
+#define daylight _daylight
+#endif
+
 #include "_ansi.h"
 #include <sys/cdefs.h>
 #include <sys/reent.h>

@@ -132,7 +132,7 @@ ROOTFS_FILES = $(shell find rootfs -type f 2>/dev/null)
 # ソース
 SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
        kernel/vmm.c kernel/idt.c kernel/interrupt.S kernel/lapic.c kernel/sound.c kernel/syscall.c kernel/syscall_entry.S \
-       kernel/task.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/retrofs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio_net.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
+       kernel/task.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/retrofs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio.c kernel/virtio_net.c kernel/virtio_blk.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
 
 LWIP_CORE_SRCS = \
 	ports/lwip/src/core/def.c \

@@ -8,9 +8,9 @@
 
 _start:
     xor %rbp, %rbp
-    mov %rsp, %rax
-    mov (%rax), %rsi
-    lea 8(%rax), %rdx
+
+    mov (%rsp), %rsi
+    lea 8(%rsp), %rdx
     lea main(%rip), %rdi
     lea _init(%rip), %rcx
     lea _fini(%rip), %r8

@@ -11,15 +11,29 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/ip.h"
 
+void puts(const char* s);
+void puthex(uint64_t v);
+
 #define AF_INET 2
 #define SOCK_STREAM 1
 #define SOCK_DGRAM 2
+#define SOCK_TYPE_MASK 0x0f
+#define SOCK_NONBLOCK 0x800
+#define SOCK_CLOEXEC 0x80000
+#define MSG_NOSIGNAL 0x4000
 #define INADDR_ANY 0U
 #define SOL_SOCKET 1
 #define SO_REUSEADDR 2
 #define SO_KEEPALIVE 9
 #define ORTH_LINUX_O_NONBLOCK 0x800
 #define ORTH_ERR_EAGAIN 11
+#define ORTH_ERR_EINVAL 22
+#define ORTH_ERR_ECONNRESET 104
+#define ORTH_ERR_ECONNREFUSED 111
+#define ORTH_ERR_ECONNABORTED 113
+#define ORTH_ERR_ETIMEDOUT 116
+#define ORTH_ERR_EHOSTUNREACH 118
+#define ORTH_ERR_ENOTCONN 128
 
 struct orth_in_addr {
     uint32_t s_addr;
@@ -72,6 +86,34 @@ typedef struct net_socket_backend {
     struct net_socket_backend* accept_tail;
     struct net_socket_backend* accept_next;
 } net_socket_backend_t;
+
+static int socket_errno_from_lwip(err_t err) {
+    switch (err) {
+        case ERR_OK:
+            return 0;
+        case ERR_TIMEOUT:
+            return ORTH_ERR_ETIMEDOUT;
+        case ERR_RTE:
+            return ORTH_ERR_EHOSTUNREACH;
+        case ERR_ABRT:
+            return ORTH_ERR_ECONNABORTED;
+        case ERR_RST:
+            return ORTH_ERR_ECONNRESET;
+        case ERR_CLSD:
+        case ERR_CONN:
+            return ORTH_ERR_ENOTCONN;
+        case ERR_VAL:
+        default:
+            return ORTH_ERR_EINVAL;
+    }
+}
+
+static int64_t socket_send_error(err_t err, size_t sent) {
+    puts("[sock] send err=0x");
+    puthex((uint64_t)(uint32_t)err);
+    puts("\r\n");
+    return sent ? (int64_t)sent : -(int64_t)socket_errno_from_lwip(err);
+}
 
 static void socket_wake_waiter(struct task** waiter) {
     if (!waiter || !*waiter) return;
@@ -431,19 +473,24 @@ static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* so
             socket_clear_waiter(&sock->tx_waiter, current);
             continue;
         }
-        if (err != ERR_OK) return sent ? (int64_t)sent : -1;
+        if (err != ERR_OK) return socket_send_error(err, sent);
         sent += chunk;
-        (void)tcp_output(sock->pcb.tcp);
+        err = tcp_output(sock->pcb.tcp);
+        if (err != ERR_OK) return socket_send_error(err, sent);
     }
     return (int64_t)sent;
 }
 
 int sys_socket(int domain, int type, int protocol) {
     struct task* current = get_current_task();
+    int base_type = type & SOCK_TYPE_MASK;
+    int extra_flags = type & ~SOCK_TYPE_MASK;
+
     if (!current || domain != AF_INET) return -1;
-    if (type != SOCK_DGRAM && type != SOCK_STREAM) return -1;
-    if (type == SOCK_DGRAM && protocol != 0 && protocol != 17) return -1;
-    if (type == SOCK_STREAM && protocol != 0 && protocol != 6) return -1;
+    if (extra_flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) return -1;
+    if (base_type != SOCK_DGRAM && base_type != SOCK_STREAM) return -1;
+    if (base_type == SOCK_DGRAM && protocol != 0 && protocol != 17) return -1;
+    if (base_type == SOCK_STREAM && protocol != 0 && protocol != 6) return -1;
 
     int fd = alloc_fd_slot(current);
     if (fd < 0) return -1;
@@ -452,10 +499,10 @@ int sys_socket(int domain, int type, int protocol) {
     if (!sock) return -1;
 
     sock->domain = domain;
-    sock->type = type;
+    sock->type = base_type;
     sock->protocol = protocol;
 
-    if (type == SOCK_DGRAM) {
+    if (base_type == SOCK_DGRAM) {
         sock->pcb.udp = udp_new();
         if (!sock->pcb.udp) {
             destroy_socket_backend(sock);
@@ -475,7 +522,7 @@ int sys_socket(int domain, int type, int protocol) {
     current->fds[fd].size = 0;
     current->fds[fd].offset = 0;
     current->fds[fd].in_use = 1;
-    current->fds[fd].flags = 0;
+    current->fds[fd].flags = (extra_flags & SOCK_NONBLOCK) ? ORTH_LINUX_O_NONBLOCK : 0;
     current->fds[fd].fd_flags = 0;
     current->fds[fd].name[0] = '\0';
     current->fds[fd].aux0 = 0;
@@ -536,9 +583,11 @@ int sys_connect(int fd, const void* addr, uint32_t addrlen) {
         tcp_sent(sock->pcb.tcp, tcp_stream_sent);
         tcp_err(sock->pcb.tcp, tcp_stream_err);
 
-        if (tcp_connect(sock->pcb.tcp, &ipaddr, be16_to_cpu(in->sin_port), tcp_client_connected) != ERR_OK) {
+        err_t err = tcp_connect(sock->pcb.tcp, &ipaddr, be16_to_cpu(in->sin_port), tcp_client_connected);
+        if (err != ERR_OK) {
             sock->connecting = 0;
-            return -1;
+            sock->error = err;
+            return -socket_errno_from_lwip(err);
         }
 
         while (sock->connecting) {
@@ -552,7 +601,8 @@ int sys_connect(int fd, const void* addr, uint32_t addrlen) {
             kernel_yield();
             socket_clear_waiter(&sock->connect_waiter, current);
         }
-        return sock->connected ? 0 : -1;
+        if (sock->connected) return 0;
+        return -socket_errno_from_lwip((err_t)sock->error);
     }
 
     if (udp_connect(sock->pcb.udp, &ipaddr, be16_to_cpu(in->sin_port)) != ERR_OK) return -1;
@@ -686,7 +736,7 @@ int sys_shutdown(int fd, int how) {
 int64_t sys_sendto(int fd, const void* buf, size_t len, int flags, const void* dest_addr, uint32_t addrlen) {
     struct task* current = get_current_task();
     if (!current || !buf) return -1;
-    if (flags != 0) return -1;
+    if (flags & ~MSG_NOSIGNAL) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     file_descriptor_t* f = &current->fds[fd];
     net_socket_backend_t* sock = socket_backend_from_fd(f);

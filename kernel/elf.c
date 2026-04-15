@@ -56,7 +56,7 @@ static void update_page_flags(uint64_t* pml4, uint64_t vaddr, uint64_t new_flags
 }
 
 struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
-    struct elf_info info = { NULL, 0, 0, 0, 0 };
+    struct elf_info info = { NULL, 0, 0, 0, 0, 0, 0, 0, 0 };
     Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_data;
 
     if (memcmp(ehdr->e_ident, ELFMAG, 4) != 0) {
@@ -78,6 +78,13 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
     }
 
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type == PT_TLS) {
+            info.tls_vaddr = phdr[i].p_vaddr;
+            info.tls_filesz = phdr[i].p_filesz;
+            info.tls_memsz = phdr[i].p_memsz;
+            info.tls_align = phdr[i].p_align;
+        }
+
         if (phdr[i].p_type == PT_LOAD) {
             uint64_t vaddr_start = phdr[i].p_vaddr;
             uint64_t vaddr_end = vaddr_start + phdr[i].p_memsz;

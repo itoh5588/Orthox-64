@@ -117,6 +117,10 @@ struct sigaction {
 
 #define SA_NOCLDSTOP 1  /* only value supported now for sa_flags */
 #define SA_RESTART   2
+#define SA_ONSTACK   4
+#define SA_SIGINFO   8
+#define SA_NODEFER   16
+#define SA_RESETHAND 32
 
 typedef void (*_sig_func_ptr)(int);
 

@@ -11,9 +11,14 @@
 #include "task.h"
 #include "smp.h"
 #include "lapic.h"
+#include "sound.h"
 #include "spinlock.h"
 #include "pci.h"
+#include "fs.h"
 #include "net.h"
+#include "retrofs.h"
+#include "storage.h"
+#include "virtio_blk.h"
 #include "usb.h"
 
 LIMINE_BASE_REVISION(0);
@@ -150,6 +155,81 @@ static void enable_paging_features(void) {
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
 }
 
+static int path_has_suffix(const char* path, const char* suffix) {
+    int len_f = 0;
+    int len_s = 0;
+    int i;
+    if (!path || !suffix) return 0;
+    while (path[len_f]) len_f++;
+    while (suffix[len_s]) len_s++;
+    if (len_f < len_s) return 0;
+    for (i = 0; i < len_s; i++) {
+        if (path[len_f - len_s + i] != suffix[i]) return 0;
+    }
+    return 1;
+}
+
+static struct limine_file* find_module_by_suffix(const char* suffix) {
+    if (!module_request.response) return 0;
+    for (uint64_t i = 0; i < module_request.response->module_count; i++) {
+        struct limine_file* m = module_request.response->modules[i];
+        if (path_has_suffix(m->path, suffix)) return m;
+    }
+    return 0;
+}
+
+static int virtio_blk_storage_read(void* ctx, uint64_t lba, void* buf, size_t count) {
+    (void)ctx;
+    return virtio_blk_read(lba, buf, (uint32_t)count);
+}
+
+static int virtio_blk_storage_write(void* ctx, uint64_t lba, const void* buf, size_t count) {
+    (void)ctx;
+    return virtio_blk_write(lba, buf, (uint32_t)count);
+}
+
+static void register_virtio_blk_image(void) {
+    if (virtio_blk_init() == 0) {
+        uint64_t capacity = virtio_blk_capacity();
+        if (storage_register_device("vblk0", 512, capacity, virtio_blk_storage_read, virtio_blk_storage_write, NULL, 0) == 0) {
+            puts("[boot] registered virtio-blk as vblk0\r\n");
+            if (retrofs_mount_storage("vblk0") == 0) {
+                puts("[boot] mounted RetroFS root image on vblk0\r\n");
+                if (fs_mount_retrofs_root() == 0) {
+                    puts("[boot] switched root source to RetroFS (vblk0)\r\n");
+                }
+            } else {
+                puts("[boot] vblk0 is not RetroFS\r\n");
+            }
+        }
+    }
+}
+
+static void register_boot_rootfs_image(void) {
+    if (storage_find_device("vblk0")) return; // Already mounted vblk0
+    struct limine_file* img = find_module_by_suffix("rootfs.img");
+    uint64_t blocks;
+    if (!img) return;
+    if ((img->size % 512U) != 0) {
+        puts("[boot] rootfs.img size not 512-byte aligned\r\n");
+        return;
+    }
+    blocks = img->size / 512U;
+    if (storage_register_memory_device("bootimg0", img->address, 512U, blocks, 0) == 0) {
+        puts("[boot] registered rootfs.img as storage device bootimg0\r\n");
+        if (retrofs_mount_storage("bootimg0") == 0) {
+            puts("[boot] mounted RetroFS root image on bootimg0\r\n");
+            if (fs_mount_retrofs_root() == 0) {
+                puts("[boot] switched root source to RetroFS\r\n");
+            }
+        } else {
+            puts("[boot] rootfs.img is not RetroFS yet\r\n");
+        }
+    } else {
+        puts("[boot] failed to register rootfs.img storage device\r\n");
+    }
+}
+
 void _start(void) {
     init_serial();
     puts("\r\n--- Orthox-64 Boot ---\r\n");
@@ -170,8 +250,12 @@ void _start(void) {
         pic_init();
         lapic_init();
         pci_init();
+        sound_init();
+        fs_init();
         net_init();
         usb_init();
+        register_virtio_blk_image();
+        register_boot_rootfs_image();
         smp_init(smp_request.response);
         puts("SMP CPUs detected: ");
         putdec(smp_get_cpu_count());
@@ -199,24 +283,7 @@ void _start(void) {
 
         if (module_request.response && module_request.response->module_count > 0) {
             struct limine_file* module = NULL;
-            for (uint64_t i = 0; i < module_request.response->module_count; i++) {
-                struct limine_file* m = module_request.response->modules[i];
-                const char* path = m->path;
-                int len_f = 0; while(path[len_f]) len_f++;
-                const char* suffix = "sh.elf";
-                int len_s = 0; while(suffix[len_s]) len_s++;
-                int match = 1;
-                if (len_f >= len_s) {
-                    for (int j = 0; j < len_s; j++) {
-                        if (path[len_f - len_s + j] != suffix[j]) match = 0;
-                    }
-                } else match = 0;
-                
-                if (match) {
-                    module = m;
-                    break;
-                }
-            }
+            module = find_module_by_suffix("sh.elf");
 
             if (module) {
                 // 最初は1つのタスクだけ作成

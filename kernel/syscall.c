@@ -126,6 +126,13 @@ struct orth_timespec_k {
     int64_t tv_nsec;
 };
 
+struct linux_rt_sigaction_k {
+    uint64_t handler;
+    uint64_t flags;
+    uint64_t restorer;
+    uint32_t mask[2];
+};
+
 static int is_leap_year(int year) {
     if ((year % 4) != 0) return 0;
     if ((year % 100) != 0) return 1;
@@ -847,6 +854,11 @@ static int sys_sigprocmask(int how, const uint64_t* set, uint64_t* oldset) {
     return 0;
 }
 
+static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset, size_t sigsetsize) {
+    if (sigsetsize < sizeof(uint64_t)) return -1;
+    return sys_sigprocmask(how, set, oldset);
+}
+
 static int sys_sigpending(uint64_t* set) {
     struct task* current = get_current_task();
     if (!current || !set) return -1;
@@ -874,6 +886,31 @@ static int sys_sigaction(int sig, const struct orth_sigaction* act, struct orth_
     return 0;
 }
 
+static int sys_rt_sigaction(int sig, const struct linux_rt_sigaction_k* act,
+                            struct linux_rt_sigaction_k* oldact, size_t sigsetsize) {
+    struct orth_sigaction in_act;
+    struct orth_sigaction out_act;
+    int ret;
+
+    if (sigsetsize < sizeof(uint64_t)) return -1;
+    if (act) {
+        in_act.sa_handler = act->handler;
+        in_act.sa_mask = ((uint64_t)act->mask[1] << 32) | act->mask[0];
+        in_act.sa_flags = (uint32_t)act->flags;
+        in_act.reserved = 0;
+    }
+    ret = sys_sigaction(sig, act ? &in_act : 0, oldact ? &out_act : 0);
+    if (ret < 0) return ret;
+    if (oldact) {
+        oldact->handler = out_act.sa_handler;
+        oldact->flags = out_act.sa_flags;
+        oldact->restorer = 0;
+        oldact->mask[0] = (uint32_t)(out_act.sa_mask & 0xffffffffU);
+        oldact->mask[1] = (uint32_t)(out_act.sa_mask >> 32);
+    }
+    return 0;
+}
+
 extern int task_fork(struct syscall_frame* frame);
 extern int task_execve(struct syscall_frame* frame, const char* path, char* const argv[], char* const envp[]);
 extern int64_t sys_write(int fd, const void* buf, size_t count);
@@ -885,6 +922,10 @@ extern void sys_ls(void);
 extern int sys_fstat(int fd, struct kstat* st);
 extern int sys_stat(const char* path, struct kstat* st);
 extern int sys_fstatat(int dirfd, const char* path, struct kstat* st, int flags);
+extern int sys_access(const char* path, int mode);
+extern int sys_faccessat(int dirfd, const char* path, int mode, int flags);
+extern int64_t sys_readlink(const char* path, char* buf, size_t bufsiz);
+extern int64_t sys_readlinkat(int dirfd, const char* path, char* buf, size_t bufsiz);
 extern int64_t sys_lseek(int fd, int64_t offset, int whence);
 extern int sys_unlink(const char* path);
 extern int sys_unlinkat(int dirfd, const char* path, int flags);
@@ -910,6 +951,7 @@ extern int sys_shutdown(int fd, int how);
 extern int64_t sys_sendto(int fd, const void* buf, size_t len, int flags, const void* dest_addr, uint32_t addrlen);
 extern int64_t sys_recvfrom(int fd, void* buf, size_t len, int flags, void* src_addr, uint32_t* addrlen);
 extern int sys_mkdirat(int dirfd, const char* path, int mode);
+extern int sys_utimensat(int dirfd, const char* path, const void* times, int flags);
 extern int fs_mount_usb_root_tar(const char* path);
 extern int fs_mount_module_root(void);
 extern int fs_get_mount_status(char* buf, size_t size);
@@ -939,8 +981,27 @@ void syscall_dispatch(struct syscall_frame* frame) {
         case SYS_FSTAT:
             frame->rax = (uint64_t)sys_fstat((int)frame->rdi, (struct kstat*)frame->rsi);
             break;
+        case SYS_LSTAT:
+            frame->rax = (uint64_t)sys_stat((const char*)frame->rdi, (struct kstat*)frame->rsi);
+            break;
+        case SYS_ACCESS:
+            frame->rax = (uint64_t)sys_access((const char*)frame->rdi, (int)frame->rsi);
+            break;
         case SYS_FSTATAT:
             frame->rax = (uint64_t)sys_fstatat((int)frame->rdi, (const char*)frame->rsi, (struct kstat*)frame->rdx, (int)frame->r10);
+            break;
+        case SYS_READLINK:
+            frame->rax = (uint64_t)sys_readlink((const char*)frame->rdi, (char*)frame->rsi, (size_t)frame->rdx);
+            break;
+        case SYS_READLINKAT:
+            frame->rax = (uint64_t)sys_readlinkat((int)frame->rdi, (const char*)frame->rsi, (char*)frame->rdx, (size_t)frame->r10);
+            break;
+        case SYS_FACCESSAT:
+            frame->rax = (uint64_t)sys_faccessat((int)frame->rdi, (const char*)frame->rsi, (int)frame->rdx, (int)frame->r10);
+            break;
+        case SYS_UTIMENSAT:
+            frame->rax = (uint64_t)sys_utimensat((int)frame->rdi, (const char*)frame->rsi,
+                                                 (const void*)frame->rdx, (int)frame->r10);
             break;
         case SYS_LSEEK:
             frame->rax = (uint64_t)sys_lseek((int)frame->rdi, (int64_t)frame->rsi, (int)frame->rdx);
@@ -1004,6 +1065,18 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case SYS_BRK:
             frame->rax = sys_brk(frame->rdi);
+            break;
+        case SYS_RT_SIGACTION:
+            frame->rax = (uint64_t)sys_rt_sigaction((int)frame->rdi,
+                                                    (const struct linux_rt_sigaction_k*)frame->rsi,
+                                                    (struct linux_rt_sigaction_k*)frame->rdx,
+                                                    (size_t)frame->r10);
+            break;
+        case SYS_RT_SIGPROCMASK:
+            frame->rax = (uint64_t)sys_rt_sigprocmask((int)frame->rdi,
+                                                      (const uint64_t*)frame->rsi,
+                                                      (uint64_t*)frame->rdx,
+                                                      (size_t)frame->r10);
             break;
         case SYS_GETPID:
             frame->rax = sys_getpid();
@@ -1073,6 +1146,9 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case SYS_ARCH_PRCTL:
             frame->rax = (uint64_t)sys_arch_prctl((int)frame->rdi, frame->rsi);
+            break;
+        case SYS_SYNC:
+            frame->rax = (uint64_t)sys_sync();
             break;
         case SYS_FUTEX:
             frame->rax = (uint64_t)sys_futex((volatile int*)frame->rdi, (int)frame->rsi, (int)frame->rdx);
@@ -1199,7 +1275,6 @@ void syscall_dispatch(struct syscall_frame* frame) {
             frame->rax = (uint64_t)-1;
             break;
     }
-
     // Timer IRQ sets resched pending; perform context switch at syscall boundary,
     // not in interrupt return path, to avoid iretq frame corruption.
     if (task_consume_resched()) {

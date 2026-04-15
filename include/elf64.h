@@ -46,6 +46,7 @@ typedef struct {
 #define ELFMAG        "\177ELF"
 
 #define PT_LOAD       1
+#define PT_TLS        7
 
 // セグメントフラグ
 #define PF_X          1
@@ -59,6 +60,11 @@ struct elf_info {
     uint64_t phdr_vaddr;
     uint64_t phent;
     uint64_t phnum;
+    // TLS 情報
+    uint64_t tls_vaddr;
+    uint64_t tls_filesz;
+    uint64_t tls_memsz;
+    uint64_t tls_align;
 };
 
 // elf_load の返り値を構造体に

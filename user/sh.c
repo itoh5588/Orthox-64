@@ -5,6 +5,7 @@
 #include <sys/wait.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <glob.h>
@@ -39,6 +40,17 @@ static char* g_initial_envp[] = { g_env_path, g_env_pwd, g_env_home, NULL };
 static pid_t g_shell_pgrp = 0;
 
 #define USB_READ_RETRIES 3
+
+static void shell_restore_foreground(void);
+static int run_pipeline_or_redirect(int argc, char** args);
+static void run_write_check(const char* path);
+static void run_dir_check(const char* path);
+static void run_scandir_check(const char* path);
+static void run_glob_check(const char* pattern);
+static void run_usb_root_check(void);
+static void run_usb_ash_check(void);
+static void run_musl_check(void);
+static void run_usb_musl_check(void);
 
 static int usb_read_blocks_safe(uint32_t lba, void* buf, uint32_t count) {
     uint8_t* dst = (uint8_t*)buf;
@@ -594,6 +606,372 @@ static int run_command_child(int argc, char** args) {
     return 1;
 }
 
+static void run_shell_line(char* line) {
+    if (!line || strlen(line) == 0) return;
+    if (strcmp(line, "exit") == 0) return;
+
+    char *args[MAX_ARGS];
+    int argc = 0;
+    char *token = strtok(line, " ");
+    while (token && argc < MAX_ARGS - 1) {
+        args[argc++] = token;
+        token = strtok(NULL, " ");
+    }
+    args[argc] = NULL;
+
+    if (argc == 0 || args[0] == NULL) {
+        return;
+    }
+
+    {
+        int special = run_pipeline_or_redirect(argc, args);
+        if (special != -2) return;
+    }
+
+    {
+        int builtin = run_builtin(argc, args);
+        if (builtin >= 0) return;
+    }
+
+    if (strcmp(args[0], "mount") == 0) {
+        char status[256];
+        if (argc == 1) {
+            if (get_mount_status(status, sizeof(status)) == 0) {
+                printf("%s\n", status);
+            } else {
+                printf("mount: status unavailable\n");
+            }
+            return;
+        }
+        if (argc >= 2 && strcmp(args[1], "usbroot") == 0) {
+            const char* path = (argc >= 3) ? args[2] : "/usb/usbroot.tar";
+            if (mount_usb_root(path) == 0) {
+                sync_shell_cwd();
+                printf("mount: root switched to %s\n", path);
+            } else {
+                printf("mount: failed to mount %s\n", path);
+            }
+            return;
+        }
+        if (argc >= 2 && strcmp(args[1], "module") == 0) {
+            if (mount_module_root() == 0) {
+                sync_shell_cwd();
+                printf("mount: root switched to module rootfs.tar\n");
+            } else {
+                printf("mount: failed to switch root to module\n");
+            }
+            return;
+        }
+        printf("mount: usage: mount [usbroot [/usb/usbroot.tar]|module]\n");
+        return;
+    }
+
+    if (strcmp(args[0], "usbrootcheck") == 0) {
+        run_usb_root_check();
+        return;
+    }
+
+    if (strcmp(args[0], "usbashcheck") == 0) {
+        run_usb_ash_check();
+        return;
+    }
+
+    if (strcmp(args[0], "muslcheck") == 0) {
+        run_musl_check();
+        return;
+    }
+
+    if (strcmp(args[0], "usbmuslcheck") == 0) {
+        run_usb_musl_check();
+        return;
+    }
+
+    if (strcmp(args[0], "writecheck") == 0) {
+        run_write_check((argc >= 2) ? args[1] : "scratch.txt");
+        return;
+    }
+
+    if (strcmp(args[0], "dircheck") == 0) {
+        run_dir_check((argc >= 2) ? args[1] : "/");
+        return;
+    }
+
+    if (strcmp(args[0], "scandircheck") == 0) {
+        run_scandir_check((argc >= 2) ? args[1] : "/");
+        return;
+    }
+
+    if (strcmp(args[0], "globcheck") == 0) {
+        run_glob_check((argc >= 2) ? args[1] : "/usb/*");
+        return;
+    }
+
+    if (strcmp(args[0], "usb") == 0) {
+        if (argc >= 2 && strcmp(args[1], "mbr") == 0) {
+            if (usb_read_block_sys(0, g_usb_read_buf, 1) < 0) {
+                printf("usb: failed to read MBR\n");
+                return;
+            }
+            printf("mbr signature: %02x%02x\n", g_usb_read_buf[510], g_usb_read_buf[511]);
+            for (int part = 0; part < 4; part++) {
+                uint8_t *e = &g_usb_read_buf[446 + part * 16];
+                uint32_t start = (uint32_t)e[8] |
+                                 ((uint32_t)e[9] << 8) |
+                                 ((uint32_t)e[10] << 16) |
+                                 ((uint32_t)e[11] << 24);
+                uint32_t sectors = (uint32_t)e[12] |
+                                   ((uint32_t)e[13] << 8) |
+                                   ((uint32_t)e[14] << 16) |
+                                   ((uint32_t)e[15] << 24);
+                if (e[4] == 0 || sectors == 0) continue;
+                printf("part%d: boot=%02x type=%02x start=%u sectors=%u\n",
+                       part + 1, e[0], e[4], start, sectors);
+            }
+            return;
+        }
+        if (argc >= 2 && strcmp(args[1], "fat") == 0) {
+            struct fat_boot_info info;
+            {
+                char oem[9];
+                char label[12];
+                char fstype[9];
+                if (usb_load_fat_boot(&info) < 0) {
+                    printf("usb: failed to load FAT boot sector\n");
+                    return;
+                }
+                memcpy(oem, &g_usb_read_buf[3], 8);
+                oem[8] = '\0';
+                memcpy(label, &g_usb_read_buf[71], 11);
+                label[11] = '\0';
+                memcpy(fstype, &g_usb_read_buf[82], 8);
+                fstype[8] = '\0';
+                printf("fat: start=%u sectors=%u oem='%s' label='%s' type='%s'\n",
+                       info.part_start, info.part_sectors, oem, label, fstype);
+                printf("fat: bps=%u spc=%u reserved=%u fats=%u fatsz=%u root_cluster=%u\n",
+                       info.bytes_per_sector, info.sectors_per_cluster, info.reserved_sectors,
+                       info.fats, info.fat_size, info.root_cluster);
+            }
+            return;
+        }
+        if (argc >= 2 && strcmp(args[1], "ls") == 0) {
+            struct fat_boot_info info;
+            uint32_t dir_cluster = 0;
+            struct fat_dir_entry_info ent;
+            if (usb_load_fat_boot(&info) < 0) {
+                printf("usb: failed to load FAT boot sector\n");
+                return;
+            }
+            if (argc >= 3) {
+                if (fat_resolve_path(&info, args[2], &ent) < 0) {
+                    printf("usb: path not found: %s\n", args[2]);
+                    return;
+                }
+                if ((ent.attr & 0x10U) == 0) {
+                    printf("usb: not a directory: %s\n", args[2]);
+                    return;
+                }
+                dir_cluster = ent.first_cluster;
+            } else {
+                dir_cluster = info.root_cluster;
+            }
+            if (fat_for_each_dir_entry(&info, dir_cluster, fat_print_entry_cb, 0) < 0) {
+                printf("usb: failed to read directory cluster=%u\n", dir_cluster);
+            }
+            return;
+        }
+        if (argc >= 2 && strcmp(args[1], "stat") == 0) {
+            struct fat_boot_info info;
+            struct fat_dir_entry_info ent;
+            if (argc < 3) {
+                printf("usb: usage: usb stat <path>\n");
+                return;
+            }
+            if (usb_load_fat_boot(&info) < 0) {
+                printf("usb: failed to load FAT boot sector\n");
+                return;
+            }
+            if (fat_resolve_path(&info, args[2], &ent) < 0) {
+                printf("usb: path not found: %s\n", args[2]);
+                return;
+            }
+            printf("name: %s\n", ent.name);
+            printf("type: %s\n", (ent.attr & 0x10U) ? "directory" : "file");
+            printf("attr: %02x\n", ent.attr);
+            printf("cluster: %u\n", ent.first_cluster);
+            printf("size: %u\n", ent.size);
+            return;
+        }
+        if (argc >= 2 && strcmp(args[1], "tree") == 0) {
+            struct fat_boot_info info;
+            struct fat_dir_entry_info ent;
+            struct fat_tree_ctx tree;
+            uint32_t dir_cluster;
+            if (usb_load_fat_boot(&info) < 0) {
+                printf("usb: failed to load FAT boot sector\n");
+                return;
+            }
+            tree.info = &info;
+            tree.depth = 0;
+            if (argc >= 3) {
+                if (fat_resolve_path(&info, args[2], &ent) < 0) {
+                    printf("usb: path not found: %s\n", args[2]);
+                    return;
+                }
+                if ((ent.attr & 0x10U) == 0) {
+                    printf("usb: not a directory: %s\n", args[2]);
+                    return;
+                }
+                printf("%s/\n", args[2]);
+                dir_cluster = ent.first_cluster;
+                tree.depth = 1;
+            } else {
+                printf("/\n");
+                dir_cluster = info.root_cluster;
+            }
+            if (fat_for_each_dir_entry(&info, dir_cluster, fat_tree_cb, &tree) < 0) {
+                printf("usb: failed to read tree at cluster=%u\n", dir_cluster);
+            }
+            return;
+        }
+        if (argc >= 3 && strcmp(args[1], "cat") == 0) {
+            struct fat_boot_info info;
+            struct fat_dir_entry_info ent;
+            uint32_t cluster;
+            uint32_t remaining;
+            uint8_t last_byte = 0;
+            if (usb_load_fat_boot(&info) < 0) {
+                printf("usb: failed to load FAT boot sector\n");
+                return;
+            }
+            if (fat_resolve_path(&info, args[2], &ent) < 0) {
+                printf("usb: file not found: %s\n", args[2]);
+                return;
+            }
+            if (ent.attr & 0x10U) {
+                printf("usb: is a directory: %s\n", args[2]);
+                return;
+            }
+            cluster = ent.first_cluster;
+            remaining = ent.size;
+            while (remaining > 0 && cluster >= 2 && cluster < 0x0FFFFFF8U) {
+                uint32_t lba = fat_cluster_to_lba(&info, cluster);
+                uint32_t chunk = info.bytes_per_sector * (uint32_t)info.sectors_per_cluster;
+                if (chunk > remaining) chunk = remaining;
+                if (usb_read_blocks_safe(lba, g_usb_read_buf, info.sectors_per_cluster) < 0) {
+                    printf("usb: failed to read file cluster at lba=%u\n", lba);
+                    break;
+                }
+                fwrite(g_usb_read_buf, 1, chunk, stdout);
+                if (chunk > 0) last_byte = g_usb_read_buf[chunk - 1];
+                remaining -= chunk;
+                if (remaining == 0) break;
+                cluster = fat_read_next_cluster(&info, cluster);
+            }
+            if (ent.size == 0 || last_byte != '\n') {
+                printf("\n");
+            }
+            return;
+        }
+        if (argc >= 3 && strcmp(args[1], "read") == 0) {
+            uint32_t lba = (uint32_t)strtoul(args[2], NULL, 0);
+            uint32_t count = (argc >= 4) ? (uint32_t)strtoul(args[3], NULL, 0) : 1;
+            uint32_t total;
+            if (count == 0 || count > 8) {
+                printf("usb: count must be 1..8\n");
+                return;
+            }
+            if (usb_read_block_sys(lba, g_usb_read_buf, count) < 0) {
+                printf("usb: read failed at lba=%u count=%u\n", lba, count);
+            } else {
+                total = count * 512U;
+                for (uint32_t i = 0; i < total; i += 16) {
+                    printf("%08x: ", i);
+                    for (int j = 0; j < 16; j++) {
+                        printf("%02x ", g_usb_read_buf[i + j]);
+                    }
+                    printf(" ");
+                    for (int j = 0; j < 16; j++) {
+                        unsigned char c = g_usb_read_buf[i + j];
+                        printf("%c", (c >= 32 && c <= 126) ? c : '.');
+                    }
+                    printf("\n");
+                }
+            }
+            return;
+        }
+        if (argc >= 5 && strcmp(args[1], "soak") == 0) {
+            uint32_t lba = (uint32_t)strtoul(args[2], NULL, 0);
+            uint32_t count = (uint32_t)strtoul(args[3], NULL, 0);
+            uint32_t iters = (uint32_t)strtoul(args[4], NULL, 0);
+            uint32_t ok = 0;
+            uint32_t fail = 0;
+            if (count == 0 || count > 8 || iters == 0) {
+                printf("usb soak: count must be 1..8 and iters > 0\n");
+                return;
+            }
+            for (uint32_t i = 0; i < iters; i++) {
+                if (usb_read_block_sys(lba, g_usb_read_buf, count) == 0) ok++;
+                else fail++;
+            }
+            printf("usb soak: lba=%lu count=%lu iters=%lu ok=%lu fail=%lu\n",
+                   (unsigned long)lba,
+                   (unsigned long)count,
+                   (unsigned long)iters,
+                   (unsigned long)ok,
+                   (unsigned long)fail);
+            return;
+        }
+        int ready = usb_info();
+        printf("usb: xhci %s\n", (ready > 0) ? "ready" : "not-ready");
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        (void)setpgid(0, 0);
+        exit(run_command_child(argc, args));
+    } else if (pid > 0) {
+        int status;
+        (void)setpgid(pid, pid);
+        (void)tcsetpgrp(0, pid);
+        waitpid(pid, &status, 0);
+        shell_restore_foreground();
+    } else {
+        perror("fork");
+    }
+}
+
+static void try_run_bootcmd(void) {
+    char buf[512];
+    int fd;
+    ssize_t n;
+    fd = open("/etc/bootcmd", O_RDONLY);
+    if (fd < 0) {
+        return;
+    }
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return;
+    }
+    buf[n] = '\0';
+    char* line = buf;
+    while (*line) {
+        char* next = line;
+        while (*next && *next != '\n' && *next != '\r') next++;
+        if (*next) {
+            *next = '\0';
+            next++;
+            while (*next == '\n' || *next == '\r') next++;
+        }
+        if (*line) {
+            printf("# bootcmd: %s\n", line);
+            run_shell_line(line);
+        }
+        line = next;
+    }
+}
+
 static void shell_init_job_control(void) {
     pid_t pgrp;
     if (setpgid(0, 0) == 0 || getpgrp() > 0) {
@@ -884,7 +1262,7 @@ static void run_musl_check(void) {
     char* argv[] = {
         "ash",
         "-c",
-        "pwd && ls /bin && touch /muslcheck.tmp && mkdir /muslcheck.dir && cp /hello.txt /muslcheck.dir/hello.copy && tail -n 1 /hello.txt && wc /hello.txt && stat /muslcheck.dir/hello.copy && rm /muslcheck.dir/hello.copy && rmdir /muslcheck.dir && rm /muslcheck.tmp",
+        "pwd && ls /bin && touch /muslcheck.tmp && mkdir /muslcheck.dir && cp /hello.txt /muslcheck.dir/hello.copy && tail -n 1 /hello.txt && wc /hello.txt && stat /muslcheck.dir/hello.copy && rm -f /muslcheck.dir/hello.copy && rmdir /muslcheck.dir && rm -f /muslcheck.tmp",
         NULL
     };
 
@@ -950,8 +1328,25 @@ static void run_usb_musl_check(void) {
     printf("usbmuslcheck: PASS\n");
 }
 
+static void try_autostart_saba(void) {
+    struct stat st;
+    struct stat marker;
+    char *argv[] = { "saba", NULL };
+
+    if (stat("/bin/.autostart_saba", &marker) < 0) {
+        return;
+    }
+    if (stat("/bin/saba", &st) < 0) {
+        return;
+    }
+    printf("Autostarting /bin/saba...\n");
+    execve("/bin/saba", argv, environ);
+    perror("execve /bin/saba");
+}
+
 int main() {
     printf("Welcome to Orthox-64 Shell!\n");
+    run_musl_check();
     
     // 初期シェルとして環境変数をセットアップ
     if (environ == NULL || environ[0] == NULL) {
@@ -960,6 +1355,8 @@ int main() {
     sync_shell_cwd();
     sync_shell_env();
     shell_init_job_control();
+    try_run_bootcmd();
+    // try_autostart_saba();
 
     while (1) {
         sync_shell_cwd();
@@ -970,342 +1367,7 @@ int main() {
         get_line(line, sizeof(line));
 
         if (strlen(line) == 0) continue;
-
-        if (strcmp(line, "exit") == 0) {
-            break;
-        }
-
-        // Tokenize
-        char *args[MAX_ARGS];
-        int argc = 0;
-        char *token = strtok(line, " ");
-        while (token && argc < MAX_ARGS - 1) {
-            args[argc++] = token;
-            token = strtok(NULL, " ");
-        }
-        args[argc] = NULL;
-
-        if (argc == 0 || args[0] == NULL) {
-            continue;
-        }
-
-        {
-            int special = run_pipeline_or_redirect(argc, args);
-            if (special != -2) continue;
-        }
-
-        {
-            int builtin = run_builtin(argc, args);
-            if (builtin >= 0) continue;
-        }
-
-        if (strcmp(args[0], "mount") == 0) {
-            char status[256];
-            if (argc == 1) {
-                if (get_mount_status(status, sizeof(status)) == 0) {
-                    printf("%s\n", status);
-                } else {
-                    printf("mount: status unavailable\n");
-                }
-                continue;
-            }
-            if (argc >= 2 && strcmp(args[1], "usbroot") == 0) {
-                const char* path = (argc >= 3) ? args[2] : "/usb/usbroot.tar";
-                if (mount_usb_root(path) == 0) {
-                    sync_shell_cwd();
-                    printf("mount: root switched to %s\n", path);
-                } else {
-                    printf("mount: failed to mount %s\n", path);
-                }
-                continue;
-            }
-            if (argc >= 2 && strcmp(args[1], "module") == 0) {
-                if (mount_module_root() == 0) {
-                    sync_shell_cwd();
-                    printf("mount: root switched to module rootfs.tar\n");
-                } else {
-                    printf("mount: failed to switch root to module\n");
-                }
-                continue;
-            }
-            printf("mount: usage: mount [usbroot [/usb/usbroot.tar]|module]\n");
-            continue;
-        }
-
-        if (strcmp(args[0], "usbrootcheck") == 0) {
-            run_usb_root_check();
-            continue;
-        }
-
-        if (strcmp(args[0], "usbashcheck") == 0) {
-            run_usb_ash_check();
-            continue;
-        }
-
-        if (strcmp(args[0], "muslcheck") == 0) {
-            run_musl_check();
-            continue;
-        }
-
-        if (strcmp(args[0], "usbmuslcheck") == 0) {
-            run_usb_musl_check();
-            continue;
-        }
-
-        if (strcmp(args[0], "writecheck") == 0) {
-            run_write_check((argc >= 2) ? args[1] : "scratch.txt");
-            continue;
-        }
-
-        if (strcmp(args[0], "dircheck") == 0) {
-            run_dir_check((argc >= 2) ? args[1] : "/");
-            continue;
-        }
-
-        if (strcmp(args[0], "scandircheck") == 0) {
-            run_scandir_check((argc >= 2) ? args[1] : "/");
-            continue;
-        }
-
-        if (strcmp(args[0], "globcheck") == 0) {
-            run_glob_check((argc >= 2) ? args[1] : "/usb/*");
-            continue;
-        }
-
-        if (strcmp(args[0], "usb") == 0) {
-            if (argc >= 2 && strcmp(args[1], "mbr") == 0) {
-                if (usb_read_block_sys(0, g_usb_read_buf, 1) < 0) {
-                    printf("usb: failed to read MBR\n");
-                    continue;
-                }
-                printf("mbr signature: %02x%02x\n", g_usb_read_buf[510], g_usb_read_buf[511]);
-                for (int part = 0; part < 4; part++) {
-                    uint8_t *e = &g_usb_read_buf[446 + part * 16];
-                    uint32_t start = (uint32_t)e[8] |
-                                     ((uint32_t)e[9] << 8) |
-                                     ((uint32_t)e[10] << 16) |
-                                     ((uint32_t)e[11] << 24);
-                    uint32_t sectors = (uint32_t)e[12] |
-                                       ((uint32_t)e[13] << 8) |
-                                       ((uint32_t)e[14] << 16) |
-                                       ((uint32_t)e[15] << 24);
-                    if (e[4] == 0 || sectors == 0) continue;
-                    printf("part%d: boot=%02x type=%02x start=%u sectors=%u\n",
-                           part + 1, e[0], e[4], start, sectors);
-                }
-                continue;
-            }
-            if (argc >= 2 && strcmp(args[1], "fat") == 0) {
-                struct fat_boot_info info;
-                {
-                    char oem[9];
-                    char label[12];
-                    char fstype[9];
-                    if (usb_load_fat_boot(&info) < 0) {
-                        printf("usb: failed to load FAT boot sector\n");
-                        continue;
-                    }
-                    memcpy(oem, &g_usb_read_buf[3], 8);
-                    oem[8] = '\0';
-                    memcpy(label, &g_usb_read_buf[71], 11);
-                    label[11] = '\0';
-                    memcpy(fstype, &g_usb_read_buf[82], 8);
-                    fstype[8] = '\0';
-                    printf("fat: start=%u sectors=%u oem='%s' label='%s' type='%s'\n",
-                           info.part_start, info.part_sectors, oem, label, fstype);
-                    printf("fat: bps=%u spc=%u reserved=%u fats=%u fatsz=%u root_cluster=%u\n",
-                           info.bytes_per_sector, info.sectors_per_cluster, info.reserved_sectors,
-                           info.fats, info.fat_size, info.root_cluster);
-                }
-                continue;
-            }
-            if (argc >= 2 && strcmp(args[1], "ls") == 0) {
-                struct fat_boot_info info;
-                uint32_t dir_cluster = 0;
-                struct fat_dir_entry_info ent;
-                if (usb_load_fat_boot(&info) < 0) {
-                    printf("usb: failed to load FAT boot sector\n");
-                    continue;
-                }
-                if (argc >= 3) {
-                    if (fat_resolve_path(&info, args[2], &ent) < 0) {
-                        printf("usb: path not found: %s\n", args[2]);
-                        continue;
-                    }
-                    if ((ent.attr & 0x10U) == 0) {
-                        printf("usb: not a directory: %s\n", args[2]);
-                        continue;
-                    }
-                    dir_cluster = ent.first_cluster;
-                } else {
-                    dir_cluster = info.root_cluster;
-                }
-                if (fat_for_each_dir_entry(&info, dir_cluster, fat_print_entry_cb, 0) < 0) {
-                    printf("usb: failed to read directory cluster=%u\n", dir_cluster);
-                }
-                continue;
-            }
-            if (argc >= 2 && strcmp(args[1], "stat") == 0) {
-                struct fat_boot_info info;
-                struct fat_dir_entry_info ent;
-                if (argc < 3) {
-                    printf("usb: usage: usb stat <path>\n");
-                    continue;
-                }
-                if (usb_load_fat_boot(&info) < 0) {
-                    printf("usb: failed to load FAT boot sector\n");
-                    continue;
-                }
-                if (fat_resolve_path(&info, args[2], &ent) < 0) {
-                    printf("usb: path not found: %s\n", args[2]);
-                    continue;
-                }
-                printf("name: %s\n", ent.name);
-                printf("type: %s\n", (ent.attr & 0x10U) ? "directory" : "file");
-                printf("attr: %02x\n", ent.attr);
-                printf("cluster: %u\n", ent.first_cluster);
-                printf("size: %u\n", ent.size);
-                continue;
-            }
-            if (argc >= 2 && strcmp(args[1], "tree") == 0) {
-                struct fat_boot_info info;
-                struct fat_dir_entry_info ent;
-                struct fat_tree_ctx tree;
-                uint32_t dir_cluster;
-                if (usb_load_fat_boot(&info) < 0) {
-                    printf("usb: failed to load FAT boot sector\n");
-                    continue;
-                }
-                tree.info = &info;
-                tree.depth = 0;
-                if (argc >= 3) {
-                    if (fat_resolve_path(&info, args[2], &ent) < 0) {
-                        printf("usb: path not found: %s\n", args[2]);
-                        continue;
-                    }
-                    if ((ent.attr & 0x10U) == 0) {
-                        printf("usb: not a directory: %s\n", args[2]);
-                        continue;
-                    }
-                    printf("%s/\n", args[2]);
-                    dir_cluster = ent.first_cluster;
-                    tree.depth = 1;
-                } else {
-                    printf("/\n");
-                    dir_cluster = info.root_cluster;
-                }
-                if (fat_for_each_dir_entry(&info, dir_cluster, fat_tree_cb, &tree) < 0) {
-                    printf("usb: failed to read tree at cluster=%u\n", dir_cluster);
-                }
-                continue;
-            }
-            if (argc >= 3 && strcmp(args[1], "cat") == 0) {
-                struct fat_boot_info info;
-                struct fat_dir_entry_info ent;
-                uint32_t cluster;
-                uint32_t remaining;
-                uint8_t last_byte = 0;
-                if (usb_load_fat_boot(&info) < 0) {
-                    printf("usb: failed to load FAT boot sector\n");
-                    continue;
-                }
-                if (fat_resolve_path(&info, args[2], &ent) < 0) {
-                    printf("usb: file not found: %s\n", args[2]);
-                    continue;
-                }
-                if (ent.attr & 0x10U) {
-                    printf("usb: is a directory: %s\n", args[2]);
-                    continue;
-                }
-                cluster = ent.first_cluster;
-                remaining = ent.size;
-                while (remaining > 0 && cluster >= 2 && cluster < 0x0FFFFFF8U) {
-                    uint32_t lba = fat_cluster_to_lba(&info, cluster);
-                    uint32_t chunk = info.bytes_per_sector * (uint32_t)info.sectors_per_cluster;
-                    if (chunk > remaining) chunk = remaining;
-                    if (usb_read_blocks_safe(lba, g_usb_read_buf, info.sectors_per_cluster) < 0) {
-                        printf("usb: failed to read file cluster at lba=%u\n", lba);
-                        break;
-                    }
-                    fwrite(g_usb_read_buf, 1, chunk, stdout);
-                    if (chunk > 0) last_byte = g_usb_read_buf[chunk - 1];
-                    remaining -= chunk;
-                    if (remaining == 0) break;
-                    cluster = fat_read_next_cluster(&info, cluster);
-                }
-                if (ent.size == 0 || last_byte != '\n') {
-                    printf("\n");
-                }
-                continue;
-            }
-            if (argc >= 3 && strcmp(args[1], "read") == 0) {
-                uint32_t lba = (uint32_t)strtoul(args[2], NULL, 0);
-                uint32_t count = (argc >= 4) ? (uint32_t)strtoul(args[3], NULL, 0) : 1;
-                uint32_t total;
-                if (count == 0 || count > 8) {
-                    printf("usb: count must be 1..8\n");
-                    continue;
-                }
-                if (usb_read_block_sys(lba, g_usb_read_buf, count) < 0) {
-                    printf("usb: read failed at lba=%u count=%u\n", lba, count);
-                } else {
-                    total = count * 512U;
-                    for (uint32_t i = 0; i < total; i += 16) {
-                        printf("%08x: ", i);
-                        for (int j = 0; j < 16; j++) {
-                            printf("%02x ", g_usb_read_buf[i + j]);
-                        }
-                        printf(" ");
-                        for (int j = 0; j < 16; j++) {
-                            unsigned char c = g_usb_read_buf[i + j];
-                            printf("%c", (c >= 32 && c <= 126) ? c : '.');
-                        }
-                        printf("\n");
-                    }
-                }
-                continue;
-            }
-            if (argc >= 5 && strcmp(args[1], "soak") == 0) {
-                uint32_t lba = (uint32_t)strtoul(args[2], NULL, 0);
-                uint32_t count = (uint32_t)strtoul(args[3], NULL, 0);
-                uint32_t iters = (uint32_t)strtoul(args[4], NULL, 0);
-                uint32_t ok = 0;
-                uint32_t fail = 0;
-                if (count == 0 || count > 8 || iters == 0) {
-                    printf("usb soak: count must be 1..8 and iters > 0\n");
-                    continue;
-                }
-                for (uint32_t i = 0; i < iters; i++) {
-                    if (usb_read_block_sys(lba, g_usb_read_buf, count) == 0) ok++;
-                    else fail++;
-                }
-                printf("usb soak: lba=%lu count=%lu iters=%lu ok=%lu fail=%lu\n",
-                       (unsigned long)lba,
-                       (unsigned long)count,
-                       (unsigned long)iters,
-                       (unsigned long)ok,
-                       (unsigned long)fail);
-                continue;
-            }
-            int ready = usb_info();
-            printf("usb: xhci %s\n", (ready > 0) ? "ready" : "not-ready");
-            continue;
-        }
-
-        pid_t pid = fork();
-        if (pid == 0) {
-            (void)setpgid(0, 0);
-            exit(run_command_child(argc, args));
-        } else if (pid > 0) {
-            // Parent
-            int status;
-            (void)setpgid(pid, pid);
-            (void)tcsetpgrp(0, pid);
-            waitpid(pid, &status, 0);
-            shell_restore_foreground();
-        } else {
-            perror("fork");
-        }
+        run_shell_line(line);
     }
 
     printf("Goodbye!\n");

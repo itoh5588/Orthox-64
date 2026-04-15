@@ -1,16 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-rm -f qemu.sock serial.log
+QEMU_SOCK="${TMPDIR:-/tmp}/orthox-musl-smoke.sock"
+
+rm -f "$QEMU_SOCK" serial.log
 
 qemu-system-x86_64 -M pc -m 2G -cdrom orthos.iso -boot d -display none \
-    -serial file:serial.log -monitor unix:qemu.sock,server,nowait -k en-us &
+    -serial file:serial.log -monitor unix:"$QEMU_SOCK",server,nowait -k en-us &
 QEMU_PID=$!
 
 cleanup() {
     kill "$QEMU_PID" 2>/dev/null || true
     wait "$QEMU_PID" 2>/dev/null || true
-    rm -f qemu.sock
+    rm -f "$QEMU_SOCK"
 }
 trap cleanup EXIT
 
@@ -28,10 +30,10 @@ import socket
 import time
 
 def connect_monitor():
-    for _ in range(50):
+    for _ in range(150):
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.connect("qemu.sock")
+            s.connect("/tmp/orthox-musl-smoke.sock")
             s.settimeout(0.2)
             break
         except OSError:
@@ -96,6 +98,7 @@ try:
         ("wc /hello.txt", 1.0),
         ("stat /hello.txt", 1.0),
         ("attest-musl.elf", 1.5),
+        ("hellostd", 2.0),
         ("ls /bin", 2.0),
         ("exit", 1.0),
         ("exit", 1.0),
@@ -120,6 +123,7 @@ grep -q "/hello.txt" serial.log
 grep -q "movedcopy.txt" serial.log
 grep -q "0600/-rw-------" serial.log
 grep -q "at_test: PASS" serial.log
+grep -q "Hello from Rust Standard Library on Orthox-64!" serial.log
 grep -q "busybox" serial.log
 grep -q "Goodbye!" serial.log
 

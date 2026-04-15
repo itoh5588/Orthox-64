@@ -46,6 +46,10 @@ static int64_t syscall(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3
     return (int64_t)ret;
 }
 
+int arch_prctl(int code, unsigned long addr) {
+    return (int)syscall(SYS_ARCH_PRCTL, (uint64_t)code, (uint64_t)addr, 0);
+}
+
 static int64_t syscall6(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3,
                         uint64_t arg4, uint64_t arg5, uint64_t arg6) {
     uint64_t ret;
@@ -220,15 +224,22 @@ void* _sbrk(intptr_t increment) {
 struct kstat {
     uint64_t dev;
     uint64_t ino;
+    uint64_t nlink;
     uint32_t mode;
     uint32_t uid;
     uint32_t gid;
-    uint32_t nlink;
+    uint32_t pad0;
     uint64_t rdev;
     int64_t size;
+    int64_t blksize;
+    int64_t blocks;
     int64_t atime_sec;
+    int64_t atime_nsec;
     int64_t mtime_sec;
+    int64_t mtime_nsec;
     int64_t ctime_sec;
+    int64_t ctime_nsec;
+    int64_t unused[3];
 };
 
 static void stat_from_kstat(struct stat* st, const struct kstat* kst) {
@@ -242,11 +253,14 @@ static void stat_from_kstat(struct stat* st, const struct kstat* kst) {
     st->st_gid = kst->gid;
     st->st_rdev = (dev_t)kst->rdev;
     st->st_size = kst->size;
-    st->st_blksize = 512;
-    st->st_blocks = (kst->size + 511) / 512;
+    st->st_blksize = kst->blksize;
+    st->st_blocks = kst->blocks;
     st->st_atim.tv_sec = kst->atime_sec;
+    st->st_atim.tv_nsec = kst->atime_nsec;
     st->st_mtim.tv_sec = kst->mtime_sec;
+    st->st_mtim.tv_nsec = kst->mtime_nsec;
     st->st_ctim.tv_sec = kst->ctime_sec;
+    st->st_ctim.tv_nsec = kst->ctime_nsec;
 }
 
 int _fstat(int fd, struct stat *st) {
@@ -256,6 +270,7 @@ int _fstat(int fd, struct stat *st) {
         stat_from_kstat(st, &kst);
     } else {
         errno = ENOENT;
+        ret = -1;
     }
     return ret;
 }
@@ -266,7 +281,8 @@ int _stat(const char *path, struct stat *st) {
     if (ret == 0) {
         stat_from_kstat(st, &kst);
     } else {
-        errno = ENOENT;
+        errno = (ret == -1) ? ENOENT : -ret;
+        ret = -1;
     }
     return ret;
 }
@@ -293,7 +309,12 @@ WEAK_SYM int unlinkat(int dirfd, const char *path, int flags) { return (int)sysc
 WEAK_SYM int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     struct kstat kst;
     int ret = (int)syscall6(SYS_FSTATAT, (uint64_t)dirfd, (uint64_t)path, (uint64_t)&kst, (uint64_t)flags, 0, 0);
-    if (ret == 0) stat_from_kstat(st, &kst); else errno = ENOENT;
+    if (ret == 0) {
+        stat_from_kstat(st, &kst);
+    } else {
+        errno = (ret == -1) ? ENOENT : -ret;
+        ret = -1;
+    }
     return ret;
 }
 int getcwd_sys(char* buf, uint32_t size) { return (int)syscall(SYS_GETCWD, (uint64_t)buf, (uint64_t)size, 0); }

@@ -6,6 +6,10 @@ $(USER_BUILD_DIR)/syscalls.o: user/syscalls.c
 	@mkdir -p $(@D)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
+$(USER_BUILD_DIR)/tls.o: user/tls.c
+	@mkdir -p $(@D)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
 $(USER_BUILD_DIR)/syscall_wrap.o: user/syscall_wrap.S
 	@mkdir -p $(@D)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
@@ -114,7 +118,7 @@ $(USER_BUILD_DIR)/tickratecheck.o: user/tickratecheck.c
 	@mkdir -p $(@D)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-USER_COMMON_OBJS = $(USER_BUILD_DIR)/syscalls.o $(USER_BUILD_DIR)/syscall_wrap.o
+USER_COMMON_OBJS = $(USER_BUILD_DIR)/syscalls.o $(USER_BUILD_DIR)/tls.o $(USER_BUILD_DIR)/syscall_wrap.o
 
 $(USER_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/user_test.o $(USER_COMMON_OBJS) $(LIBC)
 	$(LD) $(USER_LDFLAGS) $^ $(LIBGCC) -o $@

@@ -7,6 +7,9 @@
 #include "lapic.h"
 #include "net_socket.h"
 #include "spinlock.h"
+#include "storage.h"
+#include "vfs.h"
+#include "retrofs.h"
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -29,6 +32,12 @@ extern void puthex(uint64_t v);
 #define ORTH_LINUX_O_TRUNC   0x200
 #define ORTH_LINUX_O_APPEND  0x400
 #define ORTH_LEGACY_O_DIRECTORY 0x200000
+#ifndef ENOENT
+#define ENOENT 2
+#endif
+#ifndef EINVAL
+#define EINVAL 22
+#endif
 
 static void pipe_wake_task(struct task* waiter) {
     if (!waiter) return;
@@ -201,8 +210,12 @@ static int resolve_dirfd_path(int dirfd, const char* path, char* out, size_t siz
         resolve_task_path(path, out, size);
         return 0;
     }
-    if (!current || dirfd < 0 || dirfd >= MAX_FDS || !current->fds[dirfd].in_use) return -1;
-    if (current->fds[dirfd].type != FT_DIR || current->fds[dirfd].name[0] == '\0') return -1;
+    if (!current || dirfd < 0 || dirfd >= MAX_FDS || !current->fds[dirfd].in_use) {
+        return -1;
+    }
+    if (current->fds[dirfd].type != FT_DIR || current->fds[dirfd].name[0] == '\0') {
+        return -1;
+    }
     base = current->fds[dirfd].name;
     while (base[j] && i + 1 < size) out[i++] = base[j++];
     if (i > 0 && out[i - 1] != '/' && i + 1 < size) out[i++] = '/';
@@ -482,27 +495,13 @@ struct ramfs_file {
 
 static struct ramfs_file ramfs_table[MAX_RAMFS_FILES];
 
-enum mount_type {
-    MOUNT_NONE = 0,
-    MOUNT_USB_FAT = 1,
-};
-
 enum root_source_type {
     ROOT_SOURCE_MODULE = 0,
     ROOT_SOURCE_USB = 1,
+    ROOT_SOURCE_RETROFS = 2,
 };
 
-struct mount_point {
-    const char* path;
-    enum mount_type type;
-    int active;
-};
-
-static struct mount_point g_mounts[] = {
-    { "usb", MOUNT_USB_FAT, 1 },
-};
-
-#define DIR_BUF_PAGES 4
+#define DIR_BUF_PAGES 64
 #define DIR_BUF_BYTES (DIR_BUF_PAGES * PAGE_SIZE)
 
 #define USB_ROOT_CACHE_SLOTS 4
@@ -561,15 +560,24 @@ static void kstat_set_defaults(struct kstat* st, uint32_t mode, int64_t size) {
     if (!st) return;
     st->dev = 0;
     st->ino = 0;
+    st->nlink = ((mode & 0170000U) == KSTAT_MODE_DIR) ? 2U : 1U;
     st->mode = mode;
     st->uid = 0;
     st->gid = 0;
-    st->nlink = ((mode & 0170000U) == KSTAT_MODE_DIR) ? 2U : 1U;
+    st->pad0 = 0;
     st->rdev = 0;
     st->size = size;
+    st->blksize = 512;
+    st->blocks = (size > 0) ? ((size + 511) / 512) : 0;
     st->atime_sec = 0;
+    st->atime_nsec = 0;
     st->mtime_sec = 0;
+    st->mtime_nsec = 0;
     st->ctime_sec = 0;
+    st->ctime_nsec = 0;
+    st->unused[0] = 0;
+    st->unused[1] = 0;
+    st->unused[2] = 0;
 }
 
 static void kstat_from_ramfs(struct kstat* st, const struct ramfs_file* rf) {
@@ -580,11 +588,20 @@ static void kstat_from_ramfs(struct kstat* st, const struct ramfs_file* rf) {
     st->uid = rf->uid;
     st->gid = rf->gid;
     st->nlink = rf->nlink;
+    st->pad0 = 0;
     st->rdev = 0;
     st->size = (int64_t)rf->size;
+    st->blksize = 512;
+    st->blocks = (rf->size + 511U) / 512U;
     st->atime_sec = (int64_t)rf->atime_sec;
+    st->atime_nsec = 0;
     st->mtime_sec = (int64_t)rf->mtime_sec;
+    st->mtime_nsec = 0;
     st->ctime_sec = (int64_t)rf->ctime_sec;
+    st->ctime_nsec = 0;
+    st->unused[0] = 0;
+    st->unused[1] = 0;
+    st->unused[2] = 0;
 }
 
 static uint32_t tar_mode_from_header(const struct tar_header* h) {
@@ -602,46 +619,25 @@ static void kstat_from_tar_header(struct kstat* st, const struct tar_header* h, 
     st->uid = h ? (uint32_t)oct2int(h->uid, 8) : 0;
     st->gid = h ? (uint32_t)oct2int(h->gid, 8) : 0;
     st->nlink = (h && h->typeflag == '5') ? 2U : 1U;
+    st->pad0 = 0;
     st->rdev = 0;
     st->size = (int64_t)size;
+    st->blksize = 512;
+    st->blocks = (size + 511U) / 512U;
     st->atime_sec = mtime;
+    st->atime_nsec = 0;
     st->mtime_sec = mtime;
+    st->mtime_nsec = 0;
     st->ctime_sec = mtime;
+    st->ctime_nsec = 0;
+    st->unused[0] = 0;
+    st->unused[1] = 0;
+    st->unused[2] = 0;
 }
 
 static int usb_read_file_range(const struct fat_dir_entry_info* ent, uint64_t offset, void* out_buf, size_t size);
 static int fs_try_active_root_lookup(const char* path, void** data, size_t* size, uint32_t* mode);
 static int fs_try_active_root_stat(const char* path, struct kstat* st);
-
-static int path_component_match(const char* path, const char* prefix) {
-    while (*prefix) {
-        if (*path != *prefix) return 0;
-        path++;
-        prefix++;
-    }
-    return (*path == '\0' || *path == '/');
-}
-
-static struct mount_point* fs_resolve_mount(const char* path, const char** subpath) {
-    struct mount_point* best = 0;
-    size_t best_len = 0;
-    const char* norm = normalize_fs_path(path);
-    for (size_t i = 0; i < sizeof(g_mounts) / sizeof(g_mounts[0]); i++) {
-        size_t len = 0;
-        if (!g_mounts[i].active) continue;
-        while (g_mounts[i].path[len]) len++;
-        if (!path_component_match(norm, g_mounts[i].path)) continue;
-        if (len < best_len) continue;
-        best = &g_mounts[i];
-        best_len = len;
-    }
-    if (!best) return 0;
-    if (subpath) {
-        *subpath = norm + best_len;
-        if (**subpath == '/') (*subpath)++;
-    }
-    return best;
-}
 
 static void usb_root_cache_reset(void) {
     for (int i = 0; i < USB_ROOT_CACHE_SLOTS; i++) {
@@ -662,9 +658,6 @@ static struct usb_root_cache_entry* usb_root_cache_find(const char* path) {
     const char* norm = normalize_fs_path(path);
     for (int i = 0; i < USB_ROOT_CACHE_SLOTS; i++) {
         if (g_usb_root_cache[i].valid && strcmp_exact(g_usb_root_cache[i].path, norm)) {
-            puts("[usbfs] cache hit ");
-            puts(norm);
-            puts("\r\n");
             return &g_usb_root_cache[i];
         }
     }
@@ -687,17 +680,12 @@ static void usb_root_cache_store(const char* path, uint32_t mode, void* data, si
         if (norm[i] == '\0') break;
     }
     slot->path[sizeof(slot->path) - 1] = '\0';
-    puts("[usbfs] cache store ");
-    puts(slot->path);
-    puts(" size=0x");
-    puthex(size);
-    puts("\r\n");
     g_usb_root_cache_next++;
 }
 
 static int fs_is_mount_dir(const char* path) {
     const char* subpath = 0;
-    return fs_resolve_mount(path, &subpath) && subpath && *subpath == '\0';
+    return vfs_find_mountpoint(path, &subpath) && subpath && *subpath == '\0';
 }
 
 static int dirent_name_exists(const struct orth_dirent* dirents, size_t count, const char* name) {
@@ -853,7 +841,9 @@ static int build_root_dirents(struct orth_dirent* dirents, size_t max_entries, s
         if (contains_char(ramfs_table[i].name, '/')) continue;
         if (dirent_append(dirents, max_entries, &count, ramfs_table[i].name, ramfs_table[i].mode, (uint32_t)ramfs_table[i].size) < 0) return -1;
     }
-    if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
+    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        if (retrofs_list_dir("", dirents, max_entries, &count) < 0) return -1;
+    } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
         if (build_tar_dirents_from_archive(g_usb_root_tar, g_usb_root_tar_size, "", dirents, max_entries, &count) < 0) return -1;
     } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
         if (build_tar_dirents_from_usb_root("", dirents, max_entries, &count) < 0) return -1;
@@ -867,9 +857,10 @@ static int build_root_dirents(struct orth_dirent* dirents, size_t max_entries, s
         }
     }
     if (usb_block_device_ready()) {
-        for (size_t i = 0; i < sizeof(g_mounts) / sizeof(g_mounts[0]); i++) {
-            if (!g_mounts[i].active) continue;
-            if (dirent_append(dirents, max_entries, &count, g_mounts[i].path, KSTAT_MODE_DIR, 0) < 0) return -1;
+        const struct vfs_mountpoint* mounts[VFS_MAX_MOUNTPOINTS];
+        size_t mount_count = vfs_list_mountpoints(mounts, VFS_MAX_MOUNTPOINTS);
+        for (size_t i = 0; i < mount_count; i++) {
+            if (dirent_append(dirents, max_entries, &count, mounts[i]->path, KSTAT_MODE_DIR, 0) < 0) return -1;
         }
     }
     *out_count = count;
@@ -885,8 +876,8 @@ static int build_usb_dirents(const char* path, struct orth_dirent* dirents, size
     struct fat_lfn_state lfn;
     size_t count = 0;
     const char* usb_path = 0;
-    struct mount_point* mp = fs_resolve_mount(path, &usb_path);
-    if (!mp || mp->type != MOUNT_USB_FAT) return -1;
+    const struct vfs_mountpoint* mp = vfs_find_mountpoint(path, &usb_path);
+    if (!mp || mp->kind != VFS_MOUNT_USB_FAT) return -1;
     if (usb_load_fat_boot(&info) < 0) return -1;
     if (*usb_path == '\0') {
         dir_cluster = info.root_cluster;
@@ -939,34 +930,83 @@ static struct ramfs_file* find_ramfs(const char* name);
 
 static int build_active_root_dirents(const char* path, struct orth_dirent* dirents, size_t max_entries, size_t* out_count) {
     const char* norm = normalize_fs_path(path);
+    size_t count = out_count ? *out_count : 0;
     size_t dir_size = 0;
     uint32_t dir_mode = 0;
+    int explicit_dir = 0;
     int found = 0;
     if (norm[0] == '\0') return build_root_dirents(dirents, max_entries, out_count);
-    if (build_ramfs_subdir_dirents(norm, dirents, max_entries, out_count) == 0) {
+    if (build_ramfs_subdir_dirents(norm, dirents, max_entries, &count) == 0) {
         found = 1;
     }
     if (fs_try_active_root_lookup(norm, 0, &dir_size, &dir_mode) == 0) {
         if ((dir_mode & 0170000U) != KSTAT_MODE_DIR) return -1;
-        found = 1;
-        if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
-            return build_tar_dirents_from_archive(g_usb_root_tar, g_usb_root_tar_size, norm, dirents, max_entries, out_count);
+        explicit_dir = 1;
+        if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+            if (retrofs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
+            found = 1;
+        } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
+            if (build_tar_dirents_from_archive(g_usb_root_tar, g_usb_root_tar_size, norm, dirents, max_entries, &count) < 0) {
+                return -1;
+            }
+            found = 1;
         }
-        if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
-            return build_tar_dirents_from_usb_root(norm, dirents, max_entries, out_count);
+        else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
+            if (build_tar_dirents_from_usb_root(norm, dirents, max_entries, &count) < 0) {
+                return -1;
+            }
+            found = 1;
         }
-        if (module_request.response) {
+        else if (module_request.response) {
             for (uint64_t i = 0; i < module_request.response->module_count; i++) {
                 struct limine_file* m = module_request.response->modules[i];
                 if (!strcmp_suffix_fs(m->path, ".tar")) continue;
-                return build_tar_dirents_from_archive((uint8_t*)m->address, m->size, norm, dirents, max_entries, out_count);
+                if (build_tar_dirents_from_archive((uint8_t*)m->address, m->size, norm, dirents, max_entries, &count) < 0) {
+                    return -1;
+                }
+                found = 1;
+                break;
             }
         }
     }
+    if (!found && !explicit_dir) {
+        if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+            size_t before = count;
+            if (retrofs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
+            if (count > before) found = 1;
+        } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
+            size_t before = count;
+            if (build_tar_dirents_from_archive(g_usb_root_tar, g_usb_root_tar_size, norm, dirents, max_entries, &count) < 0) {
+                return -1;
+            }
+            if (count > before) found = 1;
+        } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
+            size_t before = count;
+            if (build_tar_dirents_from_usb_root(norm, dirents, max_entries, &count) < 0) {
+                return -1;
+            }
+            if (count > before) found = 1;
+        } else if (module_request.response) {
+            for (uint64_t i = 0; i < module_request.response->module_count; i++) {
+                struct limine_file* m = module_request.response->modules[i];
+                size_t before = count;
+                if (!strcmp_suffix_fs(m->path, ".tar")) continue;
+                if (build_tar_dirents_from_archive((uint8_t*)m->address, m->size, norm, dirents, max_entries, &count) < 0) {
+                    return -1;
+                }
+                if (count > before) {
+                    found = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (out_count) *out_count = count;
     return found ? 0 : -1;
 }
 
 void fs_init(void) {
+    storage_init();
     for (int i = 0; i < MAX_RAMFS_FILES; i++) {
         ramfs_table[i].in_use = 0;
         ramfs_table[i].data = NULL;
@@ -978,6 +1018,8 @@ void fs_init(void) {
         ramfs_table[i].mtime_sec = 0;
         ramfs_table[i].ctime_sec = 0;
     }
+    vfs_init();
+    vfs_register_mountpoint("usb", VFS_MOUNT_USB_FAT, 0);
 }
 
 static struct ramfs_file* find_ramfs(const char* name) {
@@ -1238,12 +1280,36 @@ static void fs_prefetch_usb_root_shell(void) {
     size_t size = 0;
     uint32_t mode = 0;
     if (usb_root_cache_find("bin/sh")) return;
-    if (fs_try_usb_root_tar_lookup("bin/sh", &data, &size, &mode) == 0) {
-        puts("[usbfs] prefetched bin/sh\r\n");
-    }
+    (void)fs_try_usb_root_tar_lookup("bin/sh", &data, &size, &mode);
 }
 
 static int fs_try_active_root_lookup(const char* path, void** data, size_t* size, uint32_t* mode) {
+    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        uint64_t retro_size = 0;
+        int64_t retro_mtime = 0;
+        uint32_t retro_mode = 0;
+        if (retrofs_stat_path(path, &retro_mode, &retro_size, &retro_mtime) < 0) return -1;
+        if (mode) *mode = retro_mode;
+        if (size) *size = (size_t)retro_size;
+        if (data) {
+            uint64_t pages;
+            uint8_t* buf;
+            if ((retro_mode & 0170000U) == KSTAT_MODE_DIR || retro_size == 0) {
+                *data = 0;
+                return 0;
+            }
+            pages = (retro_size + PAGE_SIZE - 1U) / PAGE_SIZE;
+            if (pages == 0) pages = 1;
+            buf = (uint8_t*)PHYS_TO_VIRT(pmm_alloc((int)pages));
+            if (!buf) return -1;
+            if (retrofs_read_file(path, 0, buf, (size_t)retro_size) < 0) {
+                pmm_free((void*)VIRT_TO_PHYS((uint64_t)buf), (int)pages);
+                return -1;
+            }
+            *data = buf;
+        }
+        return 0;
+    }
     if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
         return fs_try_archive_lookup(g_usb_root_tar, g_usb_root_tar_size, path, data, size, mode);
     }
@@ -1263,6 +1329,19 @@ static int fs_try_active_root_lookup(const char* path, void** data, size_t* size
 }
 
 static int fs_try_active_root_stat(const char* path, struct kstat* st) {
+    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        uint32_t mode = 0;
+        uint64_t size = 0;
+        int64_t mtime = 0;
+        if (retrofs_stat_path(path, &mode, &size, &mtime) < 0) return -1;
+        kstat_set_defaults(st, mode, (int64_t)size);
+        st->dev = FS_DEV_ROOT_ARCHIVE;
+        st->ino = fs_hash_name(path);
+        st->mtime_sec = mtime;
+        st->ctime_sec = mtime;
+        st->atime_sec = mtime;
+        return 0;
+    }
     if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
         if (fs_try_archive_stat_lookup(g_usb_root_tar, g_usb_root_tar_size, path, st) == 0) {
             st->dev = FS_DEV_USB_ROOT_ARCHIVE;
@@ -1369,8 +1448,17 @@ int fs_mount_module_root(void) {
     return 0;
 }
 
+int fs_mount_retrofs_root(void) {
+    if (!retrofs_is_mounted()) return -1;
+    g_root_source = ROOT_SOURCE_RETROFS;
+    g_usb_root_tar_file_ready = 0;
+    usb_root_cache_reset();
+    return 0;
+}
+
 int fs_get_mount_status(char* buf, size_t size) {
     const char* module_root = "root=module:boot/rootfs.tar\n/usb -> usb-fat";
+    const char* retrofs_root = "root=retrofs:bootimg0";
     const char* usb_prefix = "root=usb:/";
     size_t i = 0;
     size_t j = 0;
@@ -1378,6 +1466,11 @@ int fs_get_mount_status(char* buf, size_t size) {
     if (g_root_source == ROOT_SOURCE_MODULE) {
         while (module_root[i] && i + 1 < size) {
             buf[i] = module_root[i];
+            i++;
+        }
+    } else if (g_root_source == ROOT_SOURCE_RETROFS) {
+        while (retrofs_root[i] && i + 1 < size) {
+            buf[i] = retrofs_root[i];
             i++;
         }
     } else {
@@ -1401,7 +1494,7 @@ int sys_open(const char* path, int flags, int mode) {
     int want_creat = (flags & (O_CREAT | ORTH_LINUX_O_CREAT)) != 0;
     int want_trunc = (flags & (O_TRUNC | ORTH_LINUX_O_TRUNC)) != 0;
     const char* mount_subpath = 0;
-    struct mount_point* mount = 0;
+    const struct vfs_mountpoint* mount = 0;
     char resolved_path[256];
     if (!current) return -1;
 
@@ -1416,7 +1509,7 @@ int sys_open(const char* path, int flags, int mode) {
 
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     path = normalize_fs_path(resolved_path);
-    mount = fs_resolve_mount(path, &mount_subpath);
+    mount = vfs_find_mountpoint(path, &mount_subpath);
 
     if (want_dir) {
         struct orth_dirent* dirents;
@@ -1429,7 +1522,7 @@ int sys_open(const char* path, int flags, int mode) {
                 pmm_free(phys, DIR_BUF_PAGES);
                 return -1;
             }
-        } else if (mount && mount->type == MOUNT_USB_FAT) {
+        } else if (mount && mount->kind == VFS_MOUNT_USB_FAT) {
             if (build_usb_dirents(path, dirents, DIR_BUF_BYTES / sizeof(struct orth_dirent), &entry_count) < 0) {
                 pmm_free(phys, DIR_BUF_PAGES);
                 return -1;
@@ -1461,7 +1554,7 @@ int sys_open(const char* path, int flags, int mode) {
         return fd;
     }
 
-    if (mount && mount->type == MOUNT_USB_FAT) {
+    if (mount && mount->kind == VFS_MOUNT_USB_FAT) {
         struct fat_dir_entry_info ent;
         if ((flags & O_WRONLY) || (flags & O_RDWR) || want_creat) return -1;
         if (fat_resolve_path(path, &ent) < 0) return -1;
@@ -1504,6 +1597,28 @@ int sys_open(const char* path, int flags, int mode) {
     }
 
     if (want_creat) {
+        if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+            if (retrofs_create_file(path, (uint32_t)mode) == 0) {
+                void* tar_data = 0;
+                size_t tar_size = 0;
+                uint32_t tar_mode = 0;
+                if (fs_try_active_root_lookup(path, &tar_data, &tar_size, &tar_mode) == 0) {
+                    current->fds[fd].type = FT_RETROFS;
+                    current->fds[fd].data = tar_data;
+                    current->fds[fd].size = tar_size;
+                    current->fds[fd].offset = 0;
+                    current->fds[fd].in_use = 1;
+                    current->fds[fd].flags = flags;
+                    current->fds[fd].aux0 = (uint32_t)((tar_size + PAGE_SIZE - 1U) / PAGE_SIZE);
+                    for (int j = 0; j < 63; j++) {
+                        current->fds[fd].name[j] = path[j];
+                        if (path[j] == '\0') break;
+                    }
+                    current->fds[fd].name[63] = '\0';
+                    return fd;
+                }
+            }
+        }
         rf = create_ramfs(path, (uint32_t)mode);
         if (rf) {
             current->fds[fd].type = FT_RAMFS;
@@ -1525,12 +1640,16 @@ int sys_open(const char* path, int flags, int mode) {
         size_t tar_size = 0;
         uint32_t tar_mode = 0;
         if (fs_try_active_root_lookup(path, &tar_data, &tar_size, &tar_mode) == 0) {
-            current->fds[fd].type = FT_TAR;
+            if ((tar_mode & 0170000U) == KSTAT_MODE_DIR) {
+                return -1;
+            }
+            current->fds[fd].type = (g_root_source == ROOT_SOURCE_RETROFS) ? FT_RETROFS : FT_TAR;
             current->fds[fd].data = tar_data;
             current->fds[fd].size = tar_size;
             current->fds[fd].offset = 0;
             current->fds[fd].in_use = 1;
             current->fds[fd].flags = flags;
+            current->fds[fd].aux0 = (uint32_t)((tar_size + PAGE_SIZE - 1U) / PAGE_SIZE);
             for (int j = 0; j < 63; j++) {
                 current->fds[fd].name[j] = path[j];
                 if (path[j] == '\0') break;
@@ -1636,6 +1755,17 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
 
     if (f->type == FT_SOCKET) {
         return net_socket_write_fd(f, buf, count);
+    }
+
+    if (f->type == FT_RETROFS) {
+        if (retrofs_write_file(f->name, f->offset, buf, count) == 0) {
+            f->offset += count;
+            if (f->offset > f->size) {
+                f->size = f->offset;
+            }
+            return (int64_t)count;
+        }
+        return -1;
     }
 
     if (f->type != FT_RAMFS) return -1;
@@ -1805,6 +1935,10 @@ int sys_close(int fd) {
         (void)net_socket_close_fd(&current->fds[fd]);
     } else if (current->fds[fd].type == FT_DIR) {
         if (current->fds[fd].data) {
+            pmm_free((void*)VIRT_TO_PHYS((uint64_t)current->fds[fd].data), (int)current->fds[fd].aux0);
+        }
+    } else if (current->fds[fd].type == FT_RETROFS) {
+        if (current->fds[fd].data && current->fds[fd].aux0) {
             pmm_free((void*)VIRT_TO_PHYS((uint64_t)current->fds[fd].data), (int)current->fds[fd].aux0);
         }
     }
@@ -1985,7 +2119,7 @@ int sys_fstat(int fd, struct kstat* st) {
         st->ino = f->name[0] ? fs_hash_name(f->name) : ((uint64_t)f->aux0 + 1U);
         return 0;
     }
-    if ((f->type == FT_RAMFS || f->type == FT_TAR || f->type == FT_MODULE || f->type == FT_USBROOT) && f->name[0]) {
+    if ((f->type == FT_RAMFS || f->type == FT_TAR || f->type == FT_MODULE || f->type == FT_USBROOT || f->type == FT_RETROFS) && f->name[0]) {
         return sys_stat(f->name, st);
     }
     kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_FILE), (int64_t)f->size);
@@ -2079,12 +2213,12 @@ int sys_getdents64(int fd, void* dirp, size_t count) {
 
 int sys_stat(const char* path, struct kstat* st) {
     const char* mount_subpath = 0;
-    struct mount_point* mount = 0;
+    const struct vfs_mountpoint* mount = 0;
     char resolved_path[256];
-    if (!st || !path) return -1;
+    if (!st || !path) return -EINVAL;
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     path = normalize_fs_path(resolved_path);
-    mount = fs_resolve_mount(path, &mount_subpath);
+    mount = vfs_find_mountpoint(path, &mount_subpath);
 
     if (*path == '\0') {
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_DIR), 0);
@@ -2097,7 +2231,7 @@ int sys_stat(const char* path, struct kstat* st) {
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_DIR), 0);
         st->dev = FS_DEV_SYNTH;
         st->ino = fs_hash_name(path);
-        return usb_block_device_ready() ? 0 : -1;
+        return usb_block_device_ready() ? 0 : -ENOENT;
     }
     
     struct ramfs_file* rf = find_ramfs(path);
@@ -2106,9 +2240,9 @@ int sys_stat(const char* path, struct kstat* st) {
         return 0;
     }
 
-    if (mount && mount->type == MOUNT_USB_FAT) {
+    if (mount && mount->kind == VFS_MOUNT_USB_FAT) {
         struct fat_dir_entry_info ent;
-        if (fat_resolve_path(path, &ent) < 0) return -1;
+        if (fat_resolve_path(path, &ent) < 0) return -ENOENT;
         kstat_set_defaults(st,
                            fs_default_mode_for_type((ent.attr & 0x10U) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE),
                            (int64_t)ent.size);
@@ -2121,7 +2255,7 @@ int sys_stat(const char* path, struct kstat* st) {
         if (fs_try_active_root_stat(path, st) == 0) {
             return 0;
         }
-        if (fs_root_is_usb_only()) return -1;
+        if (fs_root_is_usb_only()) return -ENOENT;
     }
     
     if (module_request.response) {
@@ -2149,14 +2283,114 @@ int sys_stat(const char* path, struct kstat* st) {
             }
         }
     }
-    return -1; // File not found
+    return -ENOENT;
 }
 
 int sys_fstatat(int dirfd, const char* path, struct kstat* st, int flags) {
     char resolved_path[256];
     (void)flags;
+    if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) {
+        return -ENOENT;
+    }
+    {
+        int ret = sys_stat(resolved_path, st);
+        return ret;
+    }
+}
+
+#ifndef F_OK
+#define F_OK 0
+#endif
+#ifndef X_OK
+#define X_OK 1
+#endif
+#ifndef W_OK
+#define W_OK 2
+#endif
+#ifndef R_OK
+#define R_OK 4
+#endif
+#ifndef AT_EACCESS
+#define AT_EACCESS 0x0001
+#endif
+#ifndef AT_SYMLINK_NOFOLLOW
+#define AT_SYMLINK_NOFOLLOW 0x0002
+#endif
+int sys_access(const char* path, int mode) {
+    return sys_faccessat(-100, path, mode, 0);
+}
+
+int sys_faccessat(int dirfd, const char* path, int mode, int flags) {
+    struct kstat st;
+    uint32_t perm_bits;
+    char resolved_path[256];
+    if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW)) return -1;
     if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -1;
-    return sys_stat(resolved_path, st);
+    if (sys_stat(resolved_path, &st) < 0) {
+        return -1;
+    }
+    if (mode == F_OK) return 0;
+    perm_bits = st.mode & 0777U;
+    if ((mode & R_OK) && (perm_bits & 0444U) == 0) return -1;
+    if ((mode & W_OK) && (perm_bits & 0222U) == 0) return -1;
+    if ((mode & X_OK) && (perm_bits & 0111U) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int sys_utimensat(int dirfd, const char* path, const void* times, int flags) {
+    char resolved_path[256];
+    struct kstat st;
+    struct ramfs_file* rf;
+    const char* norm;
+    uint64_t now;
+    (void)times;
+
+    if (flags & ~AT_SYMLINK_NOFOLLOW) return -EINVAL;
+
+    if (!path) {
+        struct task* current = get_current_task();
+        file_descriptor_t* f;
+        if (!current) return -EINVAL;
+        if (dirfd < 0 || dirfd >= MAX_FDS || !current->fds[dirfd].in_use) return -EINVAL;
+        f = &current->fds[dirfd];
+        if (!f->name[0]) return -EINVAL;
+        if (sys_stat(f->name, &st) < 0) return -ENOENT;
+        rf = find_ramfs(f->name);
+        if (rf) {
+            now = fs_now_sec();
+            rf->atime_sec = now;
+            rf->mtime_sec = now;
+            rf->ctime_sec = now;
+        }
+        return 0;
+    }
+
+    if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -ENOENT;
+    if (sys_stat(resolved_path, &st) < 0) return -ENOENT;
+    norm = normalize_fs_path(resolved_path);
+    rf = find_ramfs(norm);
+    if (rf) {
+        now = fs_now_sec();
+        rf->atime_sec = now;
+        rf->mtime_sec = now;
+        rf->ctime_sec = now;
+    }
+    return 0;
+}
+
+int64_t sys_readlink(const char* path, char* buf, size_t bufsiz) {
+    return sys_readlinkat(-100, path, buf, bufsiz);
+}
+
+int64_t sys_readlinkat(int dirfd, const char* path, char* buf, size_t bufsiz) {
+    struct kstat dummy;
+    (void)buf;
+    (void)bufsiz;
+    if (!path) return -1;
+    if (sys_fstatat(dirfd, path, &dummy, AT_SYMLINK_NOFOLLOW) < 0) return -1;
+    return -1;
 }
 
 int64_t sys_lseek(int fd, int64_t offset, int whence) {
@@ -2190,6 +2424,10 @@ int sys_unlink(const char* path) {
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     path = normalize_fs_path(resolved_path);
     
+    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        if (retrofs_unlink(path) == 0) return 0;
+    }
+
     // 現在の簡易実装では Ramfs のファイルのみ削除可能とする
     for (int i = 0; i < MAX_RAMFS_FILES; i++) {
         if (ramfs_table[i].in_use && strcmp_exact(ramfs_table[i].name, path)) {
@@ -2267,6 +2505,11 @@ int sys_mkdir(const char* path, int mode) {
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     norm = normalize_fs_path(resolved_path);
     if (*norm == '\0') return -1;
+
+    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        if (retrofs_mkdir(norm, (uint32_t)mode) == 0) return 0;
+    }
+
     if (contains_char(norm, '/')) return -1;
     if (find_ramfs(norm)) return -1;
     return create_ramfs_dir(norm, (uint32_t)mode) ? 0 : -1;
@@ -2285,6 +2528,11 @@ int sys_rmdir(const char* path) {
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     norm = normalize_fs_path(resolved_path);
     if (*norm == '\0') return -1;
+
+    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        if (retrofs_rmdir(norm) == 0) return 0;
+    }
+
     for (int i = 0; i < MAX_RAMFS_FILES; i++) {
         if (!ramfs_table[i].in_use) continue;
         if (!strcmp_exact(ramfs_table[i].name, norm)) continue;
@@ -2303,6 +2551,13 @@ int sys_rmdir(const char* path) {
         return 0;
     }
     return -1;
+}
+
+int sys_sync(void) {
+    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        return retrofs_sync();
+    }
+    return 0;
 }
 
 int sys_unlinkat(int dirfd, const char* path, int flags) {
@@ -2433,11 +2688,12 @@ void sys_ls(void) {
         }
     }
     if (usb_block_device_ready()) {
-        for (size_t i = 0; i < sizeof(g_mounts) / sizeof(g_mounts[0]); i++) {
-            if (!g_mounts[i].active) continue;
-            puts(g_mounts[i].path);
+        const struct vfs_mountpoint* mounts[VFS_MAX_MOUNTPOINTS];
+        size_t mount_count = vfs_list_mountpoints(mounts, VFS_MAX_MOUNTPOINTS);
+        for (size_t i = 0; i < mount_count; i++) {
+            puts(mounts[i]->path);
             puts(" (");
-            if (g_mounts[i].type == MOUNT_USB_FAT) puts("USB mount");
+            if (mounts[i]->kind == VFS_MOUNT_USB_FAT) puts("USB mount");
             else puts("mount");
             puts(")\n");
         }

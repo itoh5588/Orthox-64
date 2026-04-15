@@ -9,6 +9,10 @@ $(USER_BUILD_DIR)/syscalls_musl.o: user/syscalls_musl.c
 	@mkdir -p $(@D)
 	$(CC) $(MUSL_USER_CFLAGS) -c $< -o $@
 
+$(USER_BUILD_DIR)/tls.o: user/tls.c
+	@mkdir -p $(@D)
+	$(CC) $(MUSL_USER_CFLAGS) -c $< -o $@
+
 $(USER_BUILD_DIR)/syscall_wrap.o: user/syscall_wrap.S
 	@mkdir -p $(@D)
 	$(CC) $(MUSL_USER_CFLAGS) -c $< -o $@
@@ -33,7 +37,7 @@ $(USER_BUILD_DIR)/gcc.o: user/gcc.c
 	@mkdir -p $(@D)
 	$(CC) $(MUSL_USER_CFLAGS) -c $< -o $@
 
-USER_COMMON_OBJS = $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/syscall_wrap.o
+USER_COMMON_OBJS = $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/tls.o $(USER_BUILD_DIR)/syscall_wrap.o
 
 $(USER_BUILD_DIR)/%.o: user/%.c
 	@mkdir -p $(@D)
@@ -72,21 +76,21 @@ $(GCC_MUSL_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/gcc.o $(USER_COMMON_
 $(GCC_ELF): $(GCC_MUSL_ELF)
 	cp $(GCC_MUSL_ELF) $(GCC_ELF)
 
-$(CC1_MUSL_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/syscall_wrap.o $(OSSTUBS_A) $(LIBC) ports/build_gcc_musl.sh
+$(CC1_MUSL_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/tls.o $(USER_BUILD_DIR)/syscall_wrap.o $(OSSTUBS_A) $(LIBC) ports/build_gcc_musl.sh
 	ORTHOS_SYSROOT=$(abspath $(MUSL_SYSROOT)) ORTHOS_INCLUDEDIR=$(abspath $(MUSL_SYSROOT))/include ORTHOS_LIBDIR=$(abspath $(MUSL_SYSROOT))/lib ORTHOS_CRT0=$(abspath $(USER_BUILD_DIR)/crt0.o) ORTHOS_SYSCALLS_O=$(abspath $(USER_BUILD_DIR)/syscalls_musl.o) ORTHOS_SYSCALL_WRAP_O=$(abspath $(USER_BUILD_DIR)/syscall_wrap.o) ./ports/build_gcc_musl.sh
 	cp $(CC1_SRC_MUSL) $@
 
 $(CC1_ELF): $(CC1_MUSL_ELF)
 	cp $(CC1_MUSL_ELF) $(CC1_ELF)
 
-$(AS_MUSL_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/syscall_wrap.o $(LIBC)
+$(AS_MUSL_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/tls.o $(USER_BUILD_DIR)/syscall_wrap.o $(LIBC)
 	ORTHOS_SYSROOT=$(abspath $(MUSL_SYSROOT)) ORTHOS_INCLUDEDIR=$(abspath $(MUSL_SYSROOT))/include ORTHOS_LIBDIR=$(abspath $(MUSL_SYSROOT))/lib ORTHOS_CRT0=$(abspath $(USER_BUILD_DIR)/crt0.o) ORTHOS_SYSCALLS_O=$(abspath $(USER_BUILD_DIR)/syscalls_musl.o) ORTHOS_SYSCALL_WRAP_O=$(abspath $(USER_BUILD_DIR)/syscall_wrap.o) ./ports/build_binutils_musl.sh
 	cp $(AS_SRC_MUSL) $@
 
 $(AS_ELF): $(AS_MUSL_ELF)
 	cp $(AS_MUSL_ELF) $(AS_ELF)
 
-$(LD_MUSL_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/syscall_wrap.o $(AS_MUSL_ELF) $(LIBC)
+$(LD_MUSL_ELF): $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/tls.o $(USER_BUILD_DIR)/syscall_wrap.o $(AS_MUSL_ELF) $(LIBC)
 	ORTHOS_SYSROOT=$(abspath $(MUSL_SYSROOT)) ORTHOS_INCLUDEDIR=$(abspath $(MUSL_SYSROOT))/include ORTHOS_LIBDIR=$(abspath $(MUSL_SYSROOT))/lib ORTHOS_CRT0=$(abspath $(USER_BUILD_DIR)/crt0.o) ORTHOS_SYSCALLS_O=$(abspath $(USER_BUILD_DIR)/syscalls_musl.o) ORTHOS_SYSCALL_WRAP_O=$(abspath $(USER_BUILD_DIR)/syscall_wrap.o) ./ports/build_binutils_musl.sh
 	cp $(LD_SRC_MUSL) $@
 
@@ -95,7 +99,7 @@ $(LD_ELF): $(LD_MUSL_ELF)
 
 toolchain-musl: $(CC1_MUSL_ELF) $(AS_MUSL_ELF) $(LD_MUSL_ELF) $(GCC_MUSL_ELF)
 
-$(BUSYBOX_ASH_MUSL_ELF): $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/syscall_wrap.o ports/build_busybox_ash.sh ports/busybox-ash.config
+$(BUSYBOX_ASH_MUSL_ELF): $(USER_BUILD_DIR)/syscalls_musl.o $(USER_BUILD_DIR)/tls.o $(USER_BUILD_DIR)/syscall_wrap.o ports/build_busybox_ash.sh ports/busybox-ash.config
 	ORTHOS_SYSROOT=$(abspath $(MUSL_SYSROOT)) ORTHOS_INCLUDEDIR=$(abspath $(MUSL_SYSROOT))/include ORTHOS_LIBDIR=$(abspath $(MUSL_SYSROOT))/lib ORTHOS_CRT0=$(abspath $(USER_BUILD_DIR)/crt0.o) ORTHOS_SYSCALLS_O=$(abspath $(USER_BUILD_DIR)/syscalls_musl.o) ORTHOS_SYSCALL_WRAP_O=$(abspath $(USER_BUILD_DIR)/syscall_wrap.o) ./ports/build_busybox_ash.sh $(abspath ports/busybox) $(abspath $(BUSYBOX_ASH_MUSL_ELF))
 
 __busybox_ash_musl: $(BUSYBOX_ASH_MUSL_ELF)

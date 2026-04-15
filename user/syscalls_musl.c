@@ -38,6 +38,10 @@ static int64_t orth_syscall3(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_
     return (int64_t)ret;
 }
 
+int arch_prctl(int code, unsigned long addr) {
+    return (int)orth_syscall3(SYS_ARCH_PRCTL, (uint64_t)code, (uint64_t)addr, 0);
+}
+
 static int64_t orth_syscall6(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3,
                              uint64_t arg4, uint64_t arg5, uint64_t arg6) {
     uint64_t ret;
@@ -56,15 +60,22 @@ static int64_t orth_syscall6(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_
 struct kstat {
     uint64_t dev;
     uint64_t ino;
+    uint64_t nlink;
     uint32_t mode;
     uint32_t uid;
     uint32_t gid;
-    uint32_t nlink;
+    uint32_t pad0;
     uint64_t rdev;
     int64_t size;
+    int64_t blksize;
+    int64_t blocks;
     int64_t atime_sec;
+    int64_t atime_nsec;
     int64_t mtime_sec;
+    int64_t mtime_nsec;
     int64_t ctime_sec;
+    int64_t ctime_nsec;
+    int64_t unused[3];
 };
 
 static uint64_t orth_sigset_to_u64(const sigset_t *set) {
@@ -92,12 +103,19 @@ static void stat_from_kstat(struct stat* st, const struct kstat* kst) {
     st->st_gid = kst->gid;
     st->st_rdev = kst->rdev;
     st->st_size = kst->size;
-    st->st_blksize = 512;
-    st->st_blocks = (kst->size + 511) / 512;
+    st->st_blksize = kst->blksize;
+    st->st_blocks = kst->blocks;
     st->st_atim.tv_sec = kst->atime_sec;
+    st->st_atim.tv_nsec = kst->atime_nsec;
     st->st_mtim.tv_sec = kst->mtime_sec;
+    st->st_mtim.tv_nsec = kst->mtime_nsec;
     st->st_ctim.tv_sec = kst->ctime_sec;
+    st->st_ctim.tv_nsec = kst->ctime_nsec;
 }
+
+ssize_t readlink(const char *path, char *buf, size_t bufsiz);
+ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz);
+int faccessat(int dirfd, const char *path, int mode, int flags);
 
 int _fork(void) { return (int)orth_syscall3(SYS_FORK, 0, 0, 0); }
 int _execve(const char *pathname, char *const argv[], char *const envp[]) { return (int)orth_syscall3(SYS_EXECVE, (uint64_t)pathname, (uint64_t)argv, (uint64_t)envp); }
@@ -149,6 +167,7 @@ int _fstat(int fd, struct stat *st) {
         stat_from_kstat(st, &kst);
     } else {
         errno = ENOENT;
+        ret = -1;
     }
     return ret;
 }
@@ -159,8 +178,29 @@ int _stat(const char *path, struct stat *st) {
     if (ret == 0) {
         stat_from_kstat(st, &kst);
     } else {
-        errno = ENOENT;
+        errno = (ret == -1) ? ENOENT : -ret;
+        ret = -1;
     }
+    return ret;
+}
+
+ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
+    ssize_t ret = (ssize_t)orth_syscall3(SYS_READLINK, (uint64_t)path, (uint64_t)buf, (uint64_t)bufsiz);
+    if (ret < 0) errno = EINVAL;
+    return ret;
+}
+
+ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
+    ssize_t ret = (ssize_t)orth_syscall6(SYS_READLINKAT, (uint64_t)dirfd, (uint64_t)path,
+                                         (uint64_t)buf, (uint64_t)bufsiz, 0, 0);
+    if (ret < 0) errno = EINVAL;
+    return ret;
+}
+
+int faccessat(int dirfd, const char *path, int mode, int flags) {
+    int ret = (int)orth_syscall6(SYS_FACCESSAT, (uint64_t)dirfd, (uint64_t)path,
+                                 (uint64_t)mode, (uint64_t)flags, 0, 0);
+    if (ret < 0) errno = EACCES;
     return ret;
 }
 
@@ -234,13 +274,62 @@ ssize_t getrandom(void *buf, size_t buflen, unsigned flags) {
     }
     return ret;
 }
-int socket(int domain, int type, int protocol) { return (int)orth_syscall3(SYS_SOCKET, (uint64_t)domain, (uint64_t)type, (uint64_t)protocol); }
-int connect(int fd, const struct sockaddr *addr, socklen_t addrlen) { return (int)orth_syscall3(SYS_CONNECT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
-int accept(int fd, struct sockaddr *addr, socklen_t *addrlen) { return (int)orth_syscall3(SYS_ACCEPT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
-int bind(int fd, const struct sockaddr *addr, socklen_t addrlen) { return (int)orth_syscall3(SYS_BIND, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
-int listen(int fd, int backlog) { return (int)orth_syscall3(SYS_LISTEN, (uint64_t)fd, (uint64_t)backlog, 0); }
-int getsockname(int fd, struct sockaddr *addr, socklen_t *addrlen) { return (int)orth_syscall3(SYS_GETSOCKNAME, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
-int getpeername(int fd, struct sockaddr *addr, socklen_t *addrlen) { return (int)orth_syscall3(SYS_GETPEERNAME, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen); }
+int socket(int domain, int type, int protocol) {
+    int ret = (int)orth_syscall3(SYS_SOCKET, (uint64_t)domain, (uint64_t)type, (uint64_t)protocol);
+    if (ret < 0) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    return ret;
+}
+int connect(int fd, const struct sockaddr *addr, socklen_t addrlen) {
+    int ret = (int)orth_syscall3(SYS_CONNECT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+int accept(int fd, struct sockaddr *addr, socklen_t *addrlen) {
+    int ret = (int)orth_syscall3(SYS_ACCEPT, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = (ret == -11) ? EAGAIN : EINVAL;
+        return -1;
+    }
+    return ret;
+}
+int bind(int fd, const struct sockaddr *addr, socklen_t addrlen) {
+    int ret = (int)orth_syscall3(SYS_BIND, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+int listen(int fd, int backlog) {
+    int ret = (int)orth_syscall3(SYS_LISTEN, (uint64_t)fd, (uint64_t)backlog, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+int getsockname(int fd, struct sockaddr *addr, socklen_t *addrlen) {
+    int ret = (int)orth_syscall3(SYS_GETSOCKNAME, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+int getpeername(int fd, struct sockaddr *addr, socklen_t *addrlen) {
+    int ret = (int)orth_syscall3(SYS_GETPEERNAME, (uint64_t)fd, (uint64_t)addr, (uint64_t)addrlen);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
 int setsockopt(int fd, int level, int optname, const void *optval, socklen_t optlen) {
     int ret = (int)orth_syscall6(SYS_SETSOCKOPT, (uint64_t)fd, (uint64_t)level, (uint64_t)optname,
                                  (uint64_t)optval, (uint64_t)optlen, 0);
@@ -250,7 +339,14 @@ int setsockopt(int fd, int level, int optname, const void *optval, socklen_t opt
     }
     return 0;
 }
-int shutdown(int fd, int how) { return (int)orth_syscall3(SYS_SHUTDOWN, (uint64_t)fd, (uint64_t)how, 0); }
+int shutdown(int fd, int how) {
+    int ret = (int)orth_syscall3(SYS_SHUTDOWN, (uint64_t)fd, (uint64_t)how, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
 ssize_t sendto(int fd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen) {
     ssize_t ret = (ssize_t)orth_syscall6(SYS_SENDTO, (uint64_t)fd, (uint64_t)buf, (uint64_t)len,
                                          (uint64_t)flags, (uint64_t)dest_addr, (uint64_t)addrlen);
@@ -279,12 +375,16 @@ int unlinkat(int dirfd, const char *path, int flags) { return (int)orth_syscall3
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     struct kstat kst;
     int ret = (int)orth_syscall6(SYS_FSTATAT, (uint64_t)dirfd, (uint64_t)path, (uint64_t)&kst, (uint64_t)flags, 0, 0);
-    if (ret == 0) stat_from_kstat(st, &kst); else errno = ENOENT;
+    if (ret == 0) {
+        stat_from_kstat(st, &kst);
+    } else {
+        errno = (ret == -1) ? ENOENT : -ret;
+        ret = -1;
+    }
     return ret;
 }
 int getcwd_sys(char *buf, uint32_t size) { return (int)orth_syscall3(SYS_GETCWD, (uint64_t)buf, (uint64_t)size, 0); }
 
-int fork(void) { return _fork(); }
 int execve(const char *path, char *const argv[], char *const envp[]) { return _execve(path, argv, envp); }
 ssize_t write(int fd, const void *buf, size_t count) { return _write(fd, buf, count); }
 ssize_t read(int fd, void *buf, size_t count) { return _read(fd, buf, count); }
@@ -296,7 +396,7 @@ int waitpid(pid_t pid, int *wstatus, int options) { return (int)orth_syscall3(SY
 int fstat(int fd, struct stat *st) { return _fstat(fd, st); }
 int stat(const char *path, struct stat *st) { return _stat(path, st); }
 int lstat(const char *path, struct stat *st) { return _stat(path, st); }
-int access(const char *path, int mode) { (void)mode; return _stat(path, &(struct stat){0}); }
+int access(const char *path, int mode) { return faccessat(-100, path, mode, 0); }
 int isatty(int fd) { return _isatty(fd); }
 off_t lseek(int fd, off_t ptr, int dir) { return _lseek(fd, ptr, dir); }
 int unlink(const char *path) { return _unlink(path); }

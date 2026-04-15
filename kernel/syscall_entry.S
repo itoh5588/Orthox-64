@@ -41,7 +41,7 @@ syscall_entry:
     andq $-16, %rsp
     call syscall_dispatch
     mov %rbx, %rsp
-    
+
     # 7. レジスタ復元
     pop %r15
     pop %r14

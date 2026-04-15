@@ -39,6 +39,7 @@ typedef enum {
     FT_SOCKET,  // lwIP-backed socket
     FT_USB,     // USB FAT file
     FT_USBROOT, // file inside mounted USB TAR root
+    FT_RETROFS, // file inside RetroFS root image
     FT_DIR      // synthesized directory listing
 } file_type_t;
 
@@ -83,15 +84,22 @@ typedef struct {
 struct kstat {
     uint64_t dev;
     uint64_t ino;
+    uint64_t nlink;
     uint32_t mode;
     uint32_t uid;
     uint32_t gid;
-    uint32_t nlink;
+    uint32_t pad0;
     uint64_t rdev;
     int64_t size;
+    int64_t blksize;
+    int64_t blocks;
     int64_t atime_sec;
+    int64_t atime_nsec;
     int64_t mtime_sec;
+    int64_t mtime_nsec;
     int64_t ctime_sec;
+    int64_t ctime_nsec;
+    int64_t unused[3];
 };
 
 #ifndef ORTH_DIRENT_DEFINED
@@ -111,6 +119,10 @@ int sys_close(int fd);
 int sys_fstat(int fd, struct kstat* st);
 int sys_stat(const char* path, struct kstat* st);
 int sys_fstatat(int dirfd, const char* path, struct kstat* st, int flags);
+int sys_access(const char* path, int mode);
+int sys_faccessat(int dirfd, const char* path, int mode, int flags);
+int64_t sys_readlink(const char* path, char* buf, size_t bufsiz);
+int64_t sys_readlinkat(int dirfd, const char* path, char* buf, size_t bufsiz);
 int64_t sys_lseek(int fd, int64_t offset, int whence);
 int sys_unlink(const char* path);
 int sys_unlinkat(int dirfd, const char* path, int flags);
@@ -121,6 +133,7 @@ int sys_fchdir(int fd);
 int sys_mkdir(const char* path, int mode);
 int sys_mkdirat(int dirfd, const char* path, int mode);
 int sys_rmdir(const char* path);
+int sys_sync(void);
 int sys_getcwd(char* buf, size_t size);
 int sys_getdents(int fd, struct orth_dirent* dirp, size_t count);
 int sys_getdents64(int fd, void* dirp, size_t count);
@@ -128,6 +141,7 @@ int sys_fcntl(int fd, int cmd, uint64_t arg);
 int sys_pipe2(int pipefd[2], int flags);
 int fs_mount_usb_root_tar(const char* path);
 int fs_mount_module_root(void);
+int fs_mount_retrofs_root(void);
 int fs_get_mount_status(char* buf, size_t size);
 
 #endif

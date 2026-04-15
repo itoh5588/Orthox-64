@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "virtio_net.h"
+#include "virtio.h"
 #include "pci.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -8,59 +9,15 @@
 void puts(const char* s);
 void puthex(uint64_t v);
 
-#define VIRTIO_PCI_VENDOR_ID 0x1AF4
 #define VIRTIO_PCI_DEVICE_NET_MIN 0x1000
 #define VIRTIO_PCI_DEVICE_NET_MAX 0x107F
 
-#define VIRTIO_PCI_REG_DEVICE_FEATURES 0x00
-#define VIRTIO_PCI_REG_GUEST_FEATURES  0x04
-#define VIRTIO_PCI_REG_QUEUE_PFN       0x08
-#define VIRTIO_PCI_REG_QUEUE_NUM       0x0C
-#define VIRTIO_PCI_REG_QUEUE_SEL       0x0E
-#define VIRTIO_PCI_REG_QUEUE_NOTIFY    0x10
-#define VIRTIO_PCI_REG_DEVICE_STATUS   0x12
-#define VIRTIO_PCI_REG_ISR_STATUS      0x13
-#define VIRTIO_PCI_REG_CONFIG          0x14
-
-#define VIRTIO_STATUS_ACKNOWLEDGE 0x01
-#define VIRTIO_STATUS_DRIVER      0x02
-#define VIRTIO_STATUS_DRIVER_OK   0x04
-#define VIRTIO_STATUS_FAILED      0x80
-
-#define VRING_DESC_F_NEXT  1
-#define VRING_DESC_F_WRITE 2
-
-#define VIRTQ_ALIGN        4096U
 #define VIRTIO_RX_QUEUE    0
 #define VIRTIO_TX_QUEUE    1
 #define VIRTIO_RX_SLOTS    8
 #define VIRTIO_TX_SLOT     0
 #define VIRTIO_FRAME_MAX   1514
 #define VIRTIO_RX_BUF_SIZE 2048
-
-struct vring_desc {
-    uint64_t addr;
-    uint32_t len;
-    uint16_t flags;
-    uint16_t next;
-} __attribute__((packed));
-
-struct vring_avail {
-    uint16_t flags;
-    uint16_t idx;
-    uint16_t ring[];
-} __attribute__((packed));
-
-struct vring_used_elem {
-    uint32_t id;
-    uint32_t len;
-} __attribute__((packed));
-
-struct vring_used {
-    uint16_t flags;
-    uint16_t idx;
-    struct vring_used_elem ring[];
-} __attribute__((packed));
 
 struct virtio_net_hdr {
     uint8_t flags;
@@ -70,17 +27,6 @@ struct virtio_net_hdr {
     uint16_t csum_start;
     uint16_t csum_offset;
 } __attribute__((packed));
-
-struct virtio_queue {
-    uint16_t queue_size;
-    uint16_t active_descs;
-    uint16_t last_used_idx;
-    uint64_t ring_phys;
-    uint8_t* ring_virt;
-    struct vring_desc* desc;
-    struct vring_avail* avail;
-    struct vring_used* used;
-};
 
 static struct virtio_queue g_rxq;
 static struct virtio_queue g_txq;
@@ -94,78 +40,10 @@ static int g_ready = 0;
 static int g_tx_busy = 0;
 static virtio_net_rx_cb_t g_rx_cb = 0;
 
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline void outw(uint16_t port, uint16_t val) {
-    __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline void outl(uint16_t port, uint32_t val) {
-    __asm__ volatile("outl %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-
-static inline uint16_t inw(uint16_t port) {
-    uint16_t ret;
-    __asm__ volatile("inw %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-
-static inline uint32_t inl(uint16_t port) {
-    uint32_t ret;
-    __asm__ volatile("inl %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-
 static void* kernel_memset(void* s, int c, size_t n) {
     uint8_t* p = (uint8_t*)s;
     while (n--) *p++ = (uint8_t)c;
     return s;
-}
-
-static uint32_t virtq_bytes(uint16_t queue_size) {
-    uint32_t avail_bytes = (uint32_t)(sizeof(uint16_t) * (3U + queue_size));
-    uint32_t used_off = (uint32_t)((sizeof(struct vring_desc) * queue_size + avail_bytes + (VIRTQ_ALIGN - 1)) & ~(VIRTQ_ALIGN - 1));
-    uint32_t used_bytes = (uint32_t)(sizeof(uint16_t) * 3U + sizeof(struct vring_used_elem) * queue_size);
-    return used_off + used_bytes;
-}
-
-static void virtq_layout(struct virtio_queue* q) {
-    uint32_t avail_bytes = (uint32_t)(sizeof(uint16_t) * (3U + q->queue_size));
-    uint32_t used_off = (uint32_t)((sizeof(struct vring_desc) * q->queue_size + avail_bytes + (VIRTQ_ALIGN - 1)) & ~(VIRTQ_ALIGN - 1));
-    q->desc = (struct vring_desc*)q->ring_virt;
-    q->avail = (struct vring_avail*)(q->ring_virt + sizeof(struct vring_desc) * q->queue_size);
-    q->used = (struct vring_used*)(q->ring_virt + used_off);
-}
-
-static int virtq_init(uint16_t queue_index, struct virtio_queue* q) {
-    if (!q) return -1;
-
-    outw((uint16_t)(g_iobase + VIRTIO_PCI_REG_QUEUE_SEL), queue_index);
-    q->queue_size = inw((uint16_t)(g_iobase + VIRTIO_PCI_REG_QUEUE_NUM));
-    if (q->queue_size == 0) return -1;
-
-    uint32_t bytes = virtq_bytes(q->queue_size);
-    size_t pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-    void* ring_phys = pmm_alloc(pages);
-    if (!ring_phys) return -1;
-
-    q->ring_phys = (uint64_t)ring_phys;
-    q->ring_virt = (uint8_t*)PHYS_TO_VIRT(ring_phys);
-    q->active_descs = 0;
-    q->last_used_idx = 0;
-    kernel_memset(q->ring_virt, 0, pages * PAGE_SIZE);
-    virtq_layout(q);
-
-    outl((uint16_t)(g_iobase + VIRTIO_PCI_REG_QUEUE_PFN), (uint32_t)(q->ring_phys / PAGE_SIZE));
-    return 0;
 }
 
 static void puthex8(uint8_t v) {
@@ -178,7 +56,7 @@ static void puthex8(uint8_t v) {
 }
 
 static void virtio_net_fail(const char* msg) {
-    outb((uint16_t)(g_iobase + VIRTIO_PCI_REG_DEVICE_STATUS), VIRTIO_STATUS_FAILED);
+    outb((uint16_t)(g_iobase + VIRTIO_PCI_STATUS), VIRTIO_STATUS_FAILED);
     puts("[net] virtio-net init failed: ");
     puts(msg);
     puts("\r\n");
@@ -189,11 +67,6 @@ static void virtio_net_reclaim_tx(void) {
         g_txq.last_used_idx++;
         g_tx_busy = 0;
     }
-}
-
-static void virtio_net_kick(uint16_t queue_index) {
-    __sync_synchronize();
-    outw((uint16_t)(g_iobase + VIRTIO_PCI_REG_QUEUE_NOTIFY), queue_index);
 }
 
 int virtio_net_init(void) {
@@ -216,18 +89,18 @@ int virtio_net_init(void) {
 
     pci_enable_io_busmaster(&dev);
 
-    outb((uint16_t)(g_iobase + VIRTIO_PCI_REG_DEVICE_STATUS), 0);
-    outb((uint16_t)(g_iobase + VIRTIO_PCI_REG_DEVICE_STATUS), VIRTIO_STATUS_ACKNOWLEDGE);
-    outb((uint16_t)(g_iobase + VIRTIO_PCI_REG_DEVICE_STATUS), VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+    outb((uint16_t)(g_iobase + VIRTIO_PCI_STATUS), 0);
+    outb((uint16_t)(g_iobase + VIRTIO_PCI_STATUS), VIRTIO_STATUS_ACKNOWLEDGE);
+    outb((uint16_t)(g_iobase + VIRTIO_PCI_STATUS), VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
 
-    (void)inl((uint16_t)(g_iobase + VIRTIO_PCI_REG_DEVICE_FEATURES));
-    outl((uint16_t)(g_iobase + VIRTIO_PCI_REG_GUEST_FEATURES), 0);
+    (void)inl((uint16_t)(g_iobase + VIRTIO_PCI_HOST_FEATURES));
+    outl((uint16_t)(g_iobase + VIRTIO_PCI_GUEST_FEATURES), 0);
 
-    if (virtq_init(VIRTIO_RX_QUEUE, &g_rxq) < 0) {
+    if (virtio_virtq_init(g_iobase, VIRTIO_RX_QUEUE, &g_rxq) < 0) {
         virtio_net_fail("rx queue");
         return -1;
     }
-    if (virtq_init(VIRTIO_TX_QUEUE, &g_txq) < 0) {
+    if (virtio_virtq_init(g_iobase, VIRTIO_TX_QUEUE, &g_txq) < 0) {
         virtio_net_fail("tx queue");
         return -1;
     }
@@ -271,11 +144,11 @@ int virtio_net_init(void) {
     g_txq.desc[VIRTIO_TX_SLOT].next = 0;
 
     for (uint16_t i = 0; i < 6; i++) {
-        g_mac[i] = inb((uint16_t)(g_iobase + VIRTIO_PCI_REG_CONFIG + i));
+        g_mac[i] = inb((uint16_t)(g_iobase + VIRTIO_PCI_CONFIG + i));
     }
 
-    virtio_net_kick(VIRTIO_RX_QUEUE);
-    outb((uint16_t)(g_iobase + VIRTIO_PCI_REG_DEVICE_STATUS),
+    virtio_kick(g_iobase, VIRTIO_RX_QUEUE);
+    outb((uint16_t)(g_iobase + VIRTIO_PCI_STATUS),
          VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
 
     g_ready = 1;
@@ -315,10 +188,10 @@ void virtio_net_poll(void) {
     }
 
     if (requeued) {
-        virtio_net_kick(VIRTIO_RX_QUEUE);
+        virtio_kick(g_iobase, VIRTIO_RX_QUEUE);
     }
 
-    (void)inb((uint16_t)(g_iobase + VIRTIO_PCI_REG_ISR_STATUS));
+    (void)inb((uint16_t)(g_iobase + VIRTIO_PCI_ISR));
 }
 
 int virtio_net_is_ready(void) {
@@ -344,7 +217,7 @@ int virtio_net_send(const void* frame, uint16_t len) {
     g_txq.avail->ring[g_txq.avail->idx % g_txq.queue_size] = VIRTIO_TX_SLOT;
     g_txq.avail->idx++;
     g_tx_busy = 1;
-    virtio_net_kick(VIRTIO_TX_QUEUE);
+    virtio_kick(g_iobase, VIRTIO_TX_QUEUE);
     return 0;
 }
 

@@ -16,7 +16,7 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **Bootloader:** Uses [Limine](https://github.com/limine-bootloader/limine) for modern UEFI/BIOS booting.
 - **Memory Management:** PMM (Physical Memory Manager) and VMM (Virtual Memory Manager) with paging.
 - **Multitasking:** Preemptive multitasking, kernel threads, and an SMP-ready per-CPU scheduler base.
-- **File System:** Virtual File System (VFS), RetroFS-based root filesystem support, and tar-based initial ramdisk tooling for bring-up and fallback workflows.
+- **File System:** Virtual File System (VFS), read-write RetroFS-based root filesystem support, and tar-based initial ramdisk tooling for bring-up and fallback workflows.
 - **USB Support:** Basic USB stack and Mass Storage Class (MSC) support.
 - **Networking:** `virtio-net` + `lwIP` based IPv4 networking with DHCP, DNS, ICMP, UDP, TCP, socket syscalls, BusyBox `httpd`, outbound HTTP client support, and userland HTTPS client support with BearSSL.
 - **SMP:** 4 CPU bring-up, LAPIC timer, reschedule IPI, per-CPU run queue, and validated blocking wakeup paths for pipe, wait, and socket workloads.

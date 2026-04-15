@@ -247,6 +247,8 @@ int     vhangup (void);
 #endif
 _READ_WRITE_RETURN_TYPE write (int __fd, const void *__buf, size_t __nbyte);
 
+long    syscall (long __number, ...);
+
 #ifdef __CYGWIN__
 # define __UNISTD_GETOPT__
 # include <getopt.h>
