@@ -22,12 +22,6 @@ static uint64_t g_req_hdr_phys = 0;
 static uint8_t* g_req_status = NULL;
 static uint64_t g_req_status_phys = 0;
 
-static void* kernel_memset(void* s, int c, size_t n) {
-    uint8_t* p = (uint8_t*)s;
-    while (n--) *p++ = (uint8_t)c;
-    return s;
-}
-
 static void vblk_fail(const char* msg) {
     if (g_vblk_iobase) {
         outb((uint16_t)(g_vblk_iobase + VIRTIO_PCI_STATUS), VIRTIO_STATUS_FAILED);

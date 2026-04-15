@@ -4,6 +4,8 @@
 #include <string.h>
 #include <errno.h>
 
+void sync(void);
+
 int main(int argc, char* argv[]) {
     const char* filename = "/vblk_test.txt";
     char buf[256];

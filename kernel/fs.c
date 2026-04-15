@@ -1458,8 +1458,10 @@ int fs_mount_retrofs_root(void) {
 
 int fs_get_mount_status(char* buf, size_t size) {
     const char* module_root = "root=module:boot/rootfs.tar\n/usb -> usb-fat";
-    const char* retrofs_root = "root=retrofs:bootimg0";
+    const char* retrofs_root_vblk = "root=retrofs:vblk0";
+    const char* retrofs_root_boot = "root=retrofs:bootimg0";
     const char* usb_prefix = "root=usb:/";
+    const char* retrofs_root = storage_find_device("vblk0") ? retrofs_root_vblk : retrofs_root_boot;
     size_t i = 0;
     size_t j = 0;
     if (!buf || size == 0) return -1;

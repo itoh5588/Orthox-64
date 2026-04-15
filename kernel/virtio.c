@@ -28,8 +28,8 @@ static void virtq_layout(struct virtio_queue* q) {
 int virtio_virtq_init(uint16_t iobase, uint16_t queue_index, struct virtio_queue* q) {
     if (!q) return -1;
 
-    outw((uint16_t)(iobase + VIRTIO_PCI_REG_QUEUE_SEL), queue_index);
-    q->queue_size = inw((uint16_t)(iobase + VIRTIO_PCI_REG_QUEUE_NUM));
+    outw((uint16_t)(iobase + VIRTIO_PCI_QUEUE_SEL), queue_index);
+    q->queue_size = inw((uint16_t)(iobase + VIRTIO_PCI_QUEUE_NUM));
     if (q->queue_size == 0) return -1;
 
     uint32_t bytes = virtq_bytes(q->queue_size);
@@ -44,11 +44,11 @@ int virtio_virtq_init(uint16_t iobase, uint16_t queue_index, struct virtio_queue
     kernel_memset(q->ring_virt, 0, pages * PAGE_SIZE);
     virtq_layout(q);
 
-    outl((uint16_t)(iobase + VIRTIO_PCI_REG_QUEUE_PFN), (uint32_t)(q->ring_phys / PAGE_SIZE));
+    outl((uint16_t)(iobase + VIRTIO_PCI_QUEUE_PFN), (uint32_t)(q->ring_phys / PAGE_SIZE));
     return 0;
 }
 
 void virtio_kick(uint16_t iobase, uint16_t queue_index) {
     __sync_synchronize();
-    outw((uint16_t)(iobase + VIRTIO_PCI_REG_QUEUE_NOTIFY), queue_index);
+    outw((uint16_t)(iobase + VIRTIO_PCI_QUEUE_NOTIFY), queue_index);
 }

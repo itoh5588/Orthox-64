@@ -166,7 +166,7 @@ static int retrofs_find_in_directory(uint64_t dir_sector, const char* name,
         for (size_t i = 0; i < entry_count; i++) {
             struct retrofs_directory_entry_inner* entry = &entries[i].entry;
             if (entry->filename[0] == '\0') break;
-            cprintf("find: checking '%s' == '%s'?\r\n", entry->filename, name);
+            // cprintf("find: checking '%s' == '%s'?\r\n", entry->filename, name);
             if (strcmp_exact_retrofs(entry->filename, name)) {
                 if (out_entry) *out_entry = *entry;
                 pmm_free((void*)VIRT_TO_PHYS((uint64_t)block), (int)pages);
@@ -255,7 +255,7 @@ static int retrofs_upsert_entry_in_directory(uint64_t dir_sector, const char* na
         for (size_t i = 0; i < entry_count; i++) {
             struct retrofs_directory_entry_inner* entry = &entries[i].entry;
             if (entry->filename[0] == '\0') {
-                cprintf("upsert: found empty slot at index %d\r\n", (int)i);
+                // cprintf("upsert: found empty slot at index %d\r\n", (int)i);
                 if (!have_empty_slot) {
                     have_empty_slot = 1;
                     empty_slot_sector = current;
@@ -263,7 +263,7 @@ static int retrofs_upsert_entry_in_directory(uint64_t dir_sector, const char* na
                 }
                 break;
             }
-            cprintf("upsert: checking '%s' == '%s'?\r\n", entry->filename, name);
+            // cprintf("upsert: checking '%s' == '%s'?\r\n", entry->filename, name);
             if (strcmp_exact_retrofs(entry->filename, name)) {
                 *entry = *new_entry;
                 retrofs_write_sectors(current, block, (size_t)block[0].start.sectors);

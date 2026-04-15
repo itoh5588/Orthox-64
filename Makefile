@@ -104,6 +104,7 @@ MUSL_EXECPROBE_ELF = user/muslexecprobe.elf
 MUSL_ENVSHOW_ELF = user/muslenvshow.elf
 RETROFS_BASIC_ELF = user/retrofsbasic.elf
 RETROFS_EDGE_ELF = user/retrofsedge.elf
+VBLK_TEST_ELF = user/vblk_test.elf
 RUST_HELLO_STD_ELF = ports/rust/hello_std
 CC1_ELF = ports/gcc-4.7.4/build/gcc/cc1
 CC1_SRC_MUSL = ports/gcc-4.7.4/build-musl/gcc/cc1
@@ -160,7 +161,7 @@ LWIP_IPV4_SRCS = \
 	ports/lwip/src/core/ipv4/ip4_addr.c
 LWIP_NETIF_SRCS = ports/lwip/src/netif/ethernet.c
 LWIP_SRCS = $(LWIP_CORE_SRCS) $(LWIP_IPV4_SRCS) $(LWIP_NETIF_SRCS)
-BEARSSL_SRCS = $(shell find ports/BearSSL/src -type f -name '*.c' 2>/dev/null)
+BEARSSL_SRCS = $(shell find ports/BearSSL/src -type f -name '*.c' ! -name '._*' 2>/dev/null)
 BEARSSL_OBJS = $(patsubst ports/BearSSL/src/%.c, $(BUILD_DIR)/bearssl/%.o, $(BEARSSL_SRCS))
 BEARSSL_A = $(BUILD_DIR)/bearssl/libbearssl.a
 
@@ -279,7 +280,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(RUST_HELLO_STD_ELF)
+$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(RUST_HELLO_STD_ELF)
 	mkdir -p rootfs/bin
 	rm -f rootfs/bin/staterrno.elf
 	# Install musl development files
@@ -308,13 +309,14 @@ $(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/
 	cp $(MUSL_ENVSHOW_ELF) rootfs/bin/muslenvshow.elf
 	cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic
 	cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge
+	cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test
 	cp $(RUST_HELLO_STD_ELF) rootfs/bin/hello_std
 	cp $(RUST_HELLO_STD_ELF) rootfs/bin/hellostd
 	# Remove old bin-musl if it exists to avoid confusion
 	rm -rf rootfs/bin-musl
 	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .
 
-$(ROOTFS_IMG): FORCE $(ROOTFS_FILES) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF)
+$(ROOTFS_IMG): FORCE $(ROOTFS_FILES) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF) $(VBLK_TEST_ELF)
 	mkdir -p rootfs/bin
 	rm -f rootfs/bin/staterrno.elf
 	cp $(STATERRNO_ELF) rootfs/bin/staterrno.elf
@@ -322,6 +324,7 @@ $(ROOTFS_IMG): FORCE $(ROOTFS_FILES) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_
 	cp $(MUSL_DIRCHECK_ELF) rootfs/bin/musldircheck
 	cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic
 	cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge
+	cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test
 	cp $(SOUND_TEST_ELF) rootfs/bin/testsound
 	cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf
 	python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG)
