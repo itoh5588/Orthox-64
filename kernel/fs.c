@@ -116,6 +116,35 @@ static const fs_file_ops_t g_retrofs_file_ops = {
     .release = fs_release_retrofs_file,
 };
 
+static const fs_file_ops_t g_console_file_ops = {
+    .release = 0,
+};
+
+static const fs_file_ops_t g_module_file_ops = {
+    .release = 0,
+};
+
+static const fs_file_ops_t g_usb_file_ops = {
+    .release = 0,
+};
+
+int fs_init_console_fd(file_descriptor_t* fd, int flags) {
+    fs_file_t* file;
+    if (!fd) return -1;
+    memset(fd, 0, sizeof(*fd));
+    file = fs_alloc_file();
+    if (!file) return -1;
+    file->type = FT_CONSOLE;
+    file->size = 0;
+    file->offset = 0;
+    file->ops = &g_console_file_ops;
+    fd->type = FT_CONSOLE;
+    fd->file = file;
+    fd->in_use = 1;
+    fd->flags = flags;
+    return 0;
+}
+
 file_type_t fs_fd_type(const file_descriptor_t* fd) {
     if (!fd) return FT_UNUSED;
     return fd->file ? fd->file->type : fd->type;
@@ -152,6 +181,16 @@ void fs_fd_set_size(file_descriptor_t* fd, size_t size) {
     } else {
         fd->size = size;
     }
+}
+
+uint32_t fs_fd_aux0(const file_descriptor_t* fd) {
+    if (!fd) return 0;
+    return fd->file ? fd->file->aux0 : fd->aux0;
+}
+
+uint32_t fs_fd_aux1(const file_descriptor_t* fd) {
+    if (!fd) return 0;
+    return fd->file ? fd->file->aux1 : fd->aux1;
 }
 
 const char* fs_fd_name(const file_descriptor_t* fd) {
@@ -1276,17 +1315,33 @@ int sys_open(const char* path, int flags, int mode) {
 
     if (mount && mount->kind == VFS_MOUNT_USB_FAT) {
         struct fat_dir_entry_info ent;
+        fs_file_t* file;
         if ((flags & O_WRONLY) || (flags & O_RDWR) || want_creat) return -1;
         if (fat_resolve_path(path, &ent) < 0) return -1;
         if (ent.attr & 0x10U) return -1;
+        file = fs_alloc_file();
+        if (!file) return -1;
+        file->type = FT_USB;
+        file->size = ent.size;
+        file->offset = 0;
+        file->ops = &g_usb_file_ops;
+        file->private_data = 0;
+        file->aux0 = ent.first_cluster;
+        file->aux1 = ent.attr;
+        for (int j = 0; j < 63; j++) {
+            file->path[j] = path[j];
+            if (path[j] == '\0') break;
+        }
+        file->path[63] = '\0';
         current->fds[fd].type = FT_USB;
+        current->fds[fd].file = file;
         current->fds[fd].data = NULL;
-        current->fds[fd].size = ent.size;
+        current->fds[fd].size = 0;
         current->fds[fd].offset = 0;
         current->fds[fd].in_use = 1;
         current->fds[fd].flags = flags;
-        current->fds[fd].aux0 = ent.first_cluster;
-        current->fds[fd].aux1 = ent.attr;
+        current->fds[fd].aux0 = 0;
+        current->fds[fd].aux1 = 0;
         for (int j = 0; j < 63; j++) {
             current->fds[fd].name[j] = path[j];
             if (path[j] == '\0') break;
@@ -1385,9 +1440,22 @@ int sys_open(const char* path, int flags, int mode) {
     for (uint64_t i = 0; i < module_request.response->module_count; i++) {
         struct limine_file* m = module_request.response->modules[i];
         if (strcmp_suffix_fs(m->path, path)) {
+            fs_file_t* file = fs_alloc_file();
+            if (!file) return -1;
+            file->type = FT_MODULE;
+            file->size = m->size;
+            file->offset = 0;
+            file->ops = &g_module_file_ops;
+            file->private_data = m->address;
+            for (int j = 0; j < 63; j++) {
+                file->path[j] = path[j];
+                if (path[j] == '\0') break;
+            }
+            file->path[63] = '\0';
             current->fds[fd].type = FT_MODULE;
-            current->fds[fd].data = m->address;
-            current->fds[fd].size = m->size;
+            current->fds[fd].file = file;
+            current->fds[fd].data = 0;
+            current->fds[fd].size = 0;
             current->fds[fd].offset = 0;
             current->fds[fd].in_use = 1;
             current->fds[fd].flags = flags;
@@ -1411,7 +1479,8 @@ int sys_openat(int dirfd, const char* path, int flags, int mode) {
 int64_t sys_write(int fd, const void* buf, size_t count) {
     struct task* current = get_current_task();
     if (!current) return -1;
-    if (fd >= 0 && fd < MAX_FDS && current->fds[fd].in_use && current->fds[fd].type == FT_CONSOLE) {
+    if (fd >= 0 && fd < MAX_FDS && current->fds[fd].in_use
+        && fs_fd_type(&current->fds[fd]) == FT_CONSOLE) {
         extern int64_t sys_write_serial(const char* buf, size_t count);
         return sys_write_serial((const char*)buf, count);
     }
@@ -1485,7 +1554,8 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
 int64_t sys_read(int fd, void* buf, size_t count) {
     struct task* current = get_current_task();
     if (!current) return -1;
-    if (fd >= 0 && fd < MAX_FDS && current->fds[fd].in_use && current->fds[fd].type == FT_CONSOLE) {
+    if (fd >= 0 && fd < MAX_FDS && current->fds[fd].in_use
+        && fs_fd_type(&current->fds[fd]) == FT_CONSOLE) {
         extern int kb_read(char* buf, int count);
         extern void kb_set_waiter(struct task* t);
         extern void kb_clear_waiter(struct task* t);
@@ -1565,7 +1635,7 @@ int64_t sys_read(int fd, void* buf, size_t count) {
         size_t offset_now = fs_fd_offset(f);
         size_t size_now = fs_fd_size(f);
         if (usb_load_fat_boot(&info) < 0) return -1;
-        cluster = f->aux0;
+        cluster = fs_fd_aux0(f);
         cluster_size = (uint32_t)info.bytes_per_sector * info.sectors_per_cluster;
         if (cluster_size > sizeof(sector)) return -1;
         skip = offset_now;
@@ -1770,10 +1840,10 @@ int sys_fstat(int fd, struct kstat* st) {
     if (fs_fd_type(f) == FT_USB) {
         if (fs_fd_name(f)[0]) return sys_stat(fs_fd_name(f), st);
         kstat_set_defaults(st,
-                           fs_default_mode_for_type((f->aux1 & 0x10U) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE),
+                           fs_default_mode_for_type((fs_fd_aux1(f) & 0x10U) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE),
                            (int64_t)fs_fd_size(f));
         st->dev = FS_DEV_USB_FAT;
-        st->ino = fs_fd_name(f)[0] ? fs_hash_name(fs_fd_name(f)) : ((uint64_t)f->aux0 + 1U);
+        st->ino = fs_fd_name(f)[0] ? fs_hash_name(fs_fd_name(f)) : ((uint64_t)fs_fd_aux0(f) + 1U);
         return 0;
     }
     if ((fs_fd_type(f) == FT_RAMFS || fs_fd_type(f) == FT_MODULE || fs_fd_type(f) == FT_RETROFS) && fs_fd_name(f)[0]) {

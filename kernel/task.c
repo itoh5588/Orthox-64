@@ -589,15 +589,9 @@ static void kernel_strcpy(char* dst, const char* src, size_t size) {
 
 static void init_console_fds(struct task* t) {
     if (!t) return;
-    t->fds[0].type = FT_CONSOLE;
-    t->fds[0].in_use = 1;
-    t->fds[0].flags = O_RDONLY;
-    t->fds[1].type = FT_CONSOLE;
-    t->fds[1].in_use = 1;
-    t->fds[1].flags = O_WRONLY;
-    t->fds[2].type = FT_CONSOLE;
-    t->fds[2].in_use = 1;
-    t->fds[2].flags = O_WRONLY;
+    (void)fs_init_console_fd(&t->fds[0], O_RDONLY);
+    (void)fs_init_console_fd(&t->fds[1], O_WRONLY);
+    (void)fs_init_console_fd(&t->fds[2], O_WRONLY);
 }
 
 static struct task* alloc_task_struct(void) {
