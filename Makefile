@@ -6,7 +6,7 @@ XGCC = x86_64-elf-gcc
 XAR = x86_64-elf-ar
 
 BUILD_DIR = build
-USER_BUILD_DIR = $(BUILD_DIR)/$(LIBC_IMPL)/user
+USER_BUILD_DIR = $(BUILD_DIR)/musl/user
 
 # フラグ
 KERNEL_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-stack-protector -fno-stack-check \
@@ -16,29 +16,17 @@ KERNEL_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-stack-protector -
 KERNEL_LDFLAGS = -nostdlib -static -T scripts/kernel.ld
 
 # libc / sysroot 設定
-LIBC_IMPL ?= musl
-NEWLIB_SYSROOT = user
-MUSL_SYSROOT ?= ports/musl-install
-
-ifeq ($(LIBC_IMPL),musl)
+LIBC_IMPL = musl
+MUSL_SYSROOT = ports/musl-install
 USER_SYSROOT = $(MUSL_SYSROOT)
-else
-USER_SYSROOT = $(NEWLIB_SYSROOT)
-endif
 
 USER_INCLUDEDIR = $(USER_SYSROOT)/include
-ifeq ($(LIBC_IMPL),musl)
 USER_LIBDIR = $(USER_SYSROOT)/lib
-else
-USER_LIBDIR = $(USER_SYSROOT)/libs
-endif
 LIBC = $(USER_LIBDIR)/libc.a
 
 # ユーザープログラム用フラグ
 USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 \
 	-Iinclude -I$(USER_INCLUDEDIR) -MMD -MP
-MUSL_USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 \
-	-I$(MUSL_SYSROOT)/include -Iinclude -MMD -MP
 
 USER_LDFLAGS = -m elf_x86_64 -nostdlib -static -Ttext 0x400000
 
@@ -56,22 +44,15 @@ LIBGCC = $(shell \
 
 # 出力ファイル名
 KERNEL_ELF = kernel.elf
-USER_ELF = user/user_test.elf
-MUSL_USER_ELF = user/user_test-musl.elf
-EXEC_ELF = user/exec_test.elf
 PIPE_TEST_ELF = user/pipetest.elf
 PIPE_STRESS_ELF = user/pipestress.elf
 SMP_STRESS_ELF = user/smpstress.elf
 SCHEDMIX_ELF = user/schedmix.elf
+REAP_TEST_ELF = user/reaptest.elf
 SH_ELF = user/sh.elf
-MUSL_SH_ELF = user/sh-musl.elf
-AT_TEST_MUSL_ELF = user/attest-musl.elf
-WADSTDIO_TEST_MUSL_ELF = user/wadstdio-musl.elf
-GCC_ELF = user/gcc.elf
-GCC_MUSL_ELF = user/gcc-musl.elf
+AT_TEST_ELF = user/at_test.elf
+WADSTDIO_TEST_ELF = user/wadstdio_test.elf
 LOOP_ELF = user/loop.elf
-COW_TEST_ELF = user/cowtest.elf
-RO_TEST_ELF = user/rotest.elf
 VRAM_TEST_ELF = user/testvram.elf
 TIME_TEST_ELF = user/testtime.elf
 SHOWCPU_ELF = user/showcpu.elf
@@ -81,9 +62,6 @@ FORKCPU_TEST_ELF = user/forkcputest.elf
 FORKMODE_ELF = user/forkmode.elf
 KEY_TEST_ELF = user/testkey.elf
 SOUND_TEST_ELF = user/testsound.elf
-MMAP_TEST_ELF = user/mmaptest.elf
-REAP_TEST_ELF = user/reaptest.elf
-ROBUST_TEST_ELF = user/robusttest.elf
 SIGNAL_TEST_ELF = user/signaltest.elf
 TTY_TEST_ELF = user/ttytest.elf
 SIGMASK_TEST_ELF = user/sigmasktest.elf
@@ -106,29 +84,18 @@ RETROFS_BASIC_ELF = user/retrofsbasic.elf
 RETROFS_EDGE_ELF = user/retrofsedge.elf
 VBLK_TEST_ELF = user/vblk_test.elf
 RUST_HELLO_STD_ELF = ports/rust/hello_std
-CC1_ELF = ports/gcc-4.7.4/build/gcc/cc1
-CC1_SRC_MUSL = ports/gcc-4.7.4/build-musl/gcc/cc1
-CC1_MUSL_ELF = user/cc1-musl.elf
-AS_ELF = user/as.elf
-AS_MUSL_ELF = user/as-musl.elf
-LD_ELF = user/ld.elf
-LD_MUSL_ELF = user/ld-musl.elf
-DOOM_ELF = user/doomgeneric.elf
-DOOM_MUSL_ELF = user/doomgeneric-musl.elf
-BUSYBOX_ASH_ELF = user/busybox-ash.elf
-BUSYBOX_ASH_MUSL_ELF = user/busybox-ash-musl.elf
+CC1_MUSL_ELF = user/cc1.elf
+AS_MUSL_ELF = user/as.elf
+LD_MUSL_ELF = user/ld.elf
+DOOM_MUSL_ELF = user/doomgeneric.elf
+BUSYBOX_ASH_MUSL_ELF = user/busybox-ash.elf
 BUSYBOX_ASH_APPLETS = ash sh busybox cat chmod cp echo env false head httpd ls mkdir mv printenv printf pwd rm rmdir stat tail test touch true wc
-AS_SRC = ports/binutils-2.26/binutils-2.26/build/gas/as-new
-LD_SRC = ports/binutils-2.26/binutils-2.26/build/ld/ld-new
-AS_SRC_MUSL = ports/binutils-2.26/binutils-2.26/build-musl/gas/as-new
-LD_SRC_MUSL = ports/binutils-2.26/binutils-2.26/build-musl/ld/ld-new
-OSSTUBS_A = ports/libosstubs.a
 ISO = orthos.iso
 RETROFS_ISO = orthos-retrofs.iso
-USB_IMG = usb.img
-ROOTFS_TAR = rootfs.tar
 ROOTFS_IMG = rootfs.img
 ROOTFS_FILES = $(shell find rootfs -type f 2>/dev/null)
+ROOTFS_REBUILD ?= 1
+ROOTFS_VBLK_ARGS = -drive if=none,id=rootfs,file=$(ROOTFS_IMG),format=raw -device virtio-blk-pci,drive=rootfs
 
 # ソース
 SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
@@ -171,7 +138,7 @@ OBJS = $(patsubst kernel/%.c, $(BUILD_DIR)/kernel/%.o, $(filter %.c, $(SRCS))) \
        $(patsubst ports/lwip/src/%.c, $(BUILD_DIR)/lwip/%.o, $(LWIP_SRCS))
 
 DEPS = $(OBJS:.o=.d) \
-       $(USER_BUILD_DIR)/crt0.d $(USER_BUILD_DIR)/syscalls.d $(USER_BUILD_DIR)/syscalls_musl.d $(USER_BUILD_DIR)/syscall_wrap.d \
+       $(USER_BUILD_DIR)/crt0.d $(USER_BUILD_DIR)/syscalls.d $(USER_BUILD_DIR)/syscall_wrap.d \
        $(USER_BUILD_DIR)/user_test.d $(USER_BUILD_DIR)/exec_test.d $(USER_BUILD_DIR)/pipe_test.d $(USER_BUILD_DIR)/pipestress.d $(USER_BUILD_DIR)/smpstress.d $(USER_BUILD_DIR)/schedmix.d \
        $(USER_BUILD_DIR)/at_test.d \
        $(USER_BUILD_DIR)/sh.d $(USER_BUILD_DIR)/gcc.d $(USER_BUILD_DIR)/as.d $(USER_BUILD_DIR)/ld.d \
@@ -189,66 +156,25 @@ DEPS = $(OBJS:.o=.d) \
 
 all: $(ISO)
 
-include mk/user-$(LIBC_IMPL).mk
+include mk/user-musl.mk
 
 user/crt0.o: user/crt0.S
-	$(XGCC) -std=c11 -ffreestanding -fno-PIE -O2 -Iinclude -Iuser/include -c $< -o $@
+	$(XGCC) -std=c11 -ffreestanding -fno-PIE -O2 -Iinclude -Iports/musl-install/include -c $< -o $@
 
 user/syscalls.o: user/syscalls.c
-	$(XGCC) -std=c11 -ffreestanding -fno-PIE -O2 -Iinclude -Iuser/include -c $< -o $@
+	$(XGCC) -std=c11 -ffreestanding -fno-PIE -O2 -Iinclude -Iports/musl-install/include -c $< -o $@
 
-ports/user_stubs.o: ports/user_stubs.c
-	$(XGCC) -std=c11 -ffreestanding -fno-PIE -O2 -Iinclude -Iuser/include -c $< -o $@
-
-$(OSSTUBS_A): ports/user_stubs.o
-	rm -f $@
-	$(XAR) rcs $@ $^
-
-ifeq ($(LIBC_IMPL),musl)
 toolchain: toolchain-musl
-else
-$(AS_SRC): user/crt0.o user/syscalls.o
-	rm -f $@
-	$(MAKE) -C ports/binutils-2.26/binutils-2.26/build/gas as-new
-
-$(LD_SRC): user/crt0.o user/syscalls.o $(AS_SRC)
-	rm -f $@
-	$(MAKE) -C ports/binutils-2.26/binutils-2.26/build/ld ld-new
-
-$(CC1_ELF): user/crt0.o user/syscalls.o $(OSSTUBS_A)
-	rm -f $@
-	$(MAKE) -C ports/gcc-4.7.4/build/gcc cc1
-
-toolchain: $(CC1_ELF) $(AS_SRC) $(LD_SRC)
-
-$(AS_ELF): $(AS_SRC)
-	cp $(AS_SRC) $@
-
-$(LD_ELF): $(LD_SRC)
-	cp $(LD_SRC) $@
-endif
-
-user/doomgeneric.elf:
-	$(MAKE) -C user/doomgeneric/doomgeneric
-	cp user/doomgeneric/doomgeneric/doomgeneric.elf user/doomgeneric.elf
 
 $(DOOM_MUSL_ELF): FORCE
-	$(MAKE) -C user/doomgeneric/doomgeneric LIBC_IMPL=musl OUTPUT=doomgeneric-musl.elf
-	cp user/doomgeneric/doomgeneric/doomgeneric-musl.elf $(DOOM_MUSL_ELF)
+	$(MAKE) -C user/doomgeneric/doomgeneric LIBC_IMPL=musl OUTPUT=doomgeneric.elf
+	cp user/doomgeneric/doomgeneric/doomgeneric.elf $(DOOM_MUSL_ELF)
 
 busybox-ash-musl:
 	$(MAKE) -C $(CURDIR) LIBC_IMPL=musl __busybox_ash_musl
 
 busybox-ash-musl-install:
 	$(MAKE) -C $(CURDIR) LIBC_IMPL=musl __busybox_ash_musl_install
-
-ifneq ($(LIBC_IMPL),musl)
-$(AT_TEST_MUSL_ELF): FORCE
-	$(MAKE) -C $(CURDIR) LIBC_IMPL=musl $(AT_TEST_MUSL_ELF)
-
-$(WADSTDIO_TEST_MUSL_ELF): FORCE
-	$(MAKE) -C $(CURDIR) LIBC_IMPL=musl $(WADSTDIO_TEST_MUSL_ELF)
-endif
 
 $(KERNEL_ELF): $(OBJS)
 	$(LD) $(KERNEL_LDFLAGS) $(OBJS) -o $@
@@ -280,61 +206,48 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_TAR): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(BUILD_DIR)/musl/user/crt0.o $(BUILD_DIR)/musl/user/syscalls_musl.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(RUST_HELLO_STD_ELF)
-	mkdir -p rootfs/bin
-	rm -f rootfs/bin/staterrno.elf
-	# Install musl development files
-	cp $(BUILD_DIR)/musl/user/crt0.o rootfs/crt0.o
-	cp $(BUILD_DIR)/musl/user/syscalls_musl.o rootfs/syscalls.o
-	cp $(MUSL_SYSROOT)/lib/libc.a rootfs/libc.a
-	cp $(UDP_ECHO_TEST_ELF) rootfs/bin/udpecho.elf
-	cp $(UDP_NB_TEST_ELF) rootfs/bin/udpnb.elf
-	cp $(HTTPS_FETCH_ELF) rootfs/bin/httpsfetch.elf
-	cp $(STATERRNO_ELF) rootfs/bin/staterrno.elf
-	cp $(TIME_TEST_ELF) rootfs/bin/testtime.elf
-	cp $(TICKRATE_TEST_ELF) rootfs/bin/tickratecheck.elf
-	cp $(SHOWCPU_ELF) rootfs/bin/showcpu.elf
-	cp $(RUNQSTAT_ELF) rootfs/bin/runqstat.elf
-	cp $(TCPHELLO_ELF) rootfs/bin/tcphello.elf
-	cp $(FORKCPU_TEST_ELF) rootfs/bin/forkcputest.elf
-	cp $(FORKMODE_ELF) rootfs/bin/forkmode.elf
-	cp $(PIPE_STRESS_ELF) rootfs/bin/pipestress.elf
-	cp $(SMP_STRESS_ELF) rootfs/bin/smpstress.elf
-	cp $(SCHEDMIX_ELF) rootfs/bin/schedmix.elf
-	cp $(REAP_TEST_ELF) rootfs/bin/reaptest.elf
-	cp $(PYENC_CHECK_ELF) rootfs/bin/pyenccheck
-	cp $(MUSL_DIRCHECK_ELF) rootfs/bin/musldircheck
-	cp $(MUSL_FORKPROBE_ELF) rootfs/bin/muslforkprobe.elf
-	cp $(MUSL_EXECPROBE_ELF) rootfs/bin/muslexecprobe.elf
-	cp $(MUSL_ENVSHOW_ELF) rootfs/bin/muslenvshow.elf
-	cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic
-	cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge
-	cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test
-	cp $(RUST_HELLO_STD_ELF) rootfs/bin/hello_std
-	cp $(RUST_HELLO_STD_ELF) rootfs/bin/hellostd
-	# Remove old bin-musl if it exists to avoid confusion
-	rm -rf rootfs/bin-musl
-	tar --format=ustar -cf $(ROOTFS_TAR) -C rootfs .
+$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF)
+	@if [ "$(ROOTFS_REBUILD)" = "0" ] && [ -f "$(ROOTFS_IMG)" ]; then \
+		echo "Keeping existing $(ROOTFS_IMG) (ROOTFS_REBUILD=0)"; \
+	else \
+		mkdir -p rootfs/bin; \
+		mkdir -p rootfs/work rootfs/src rootfs/tmp rootfs/home; \
+		cp $(USER_BUILD_DIR)/crt0.o rootfs/crt0.o; \
+		cp $(USER_BUILD_DIR)/syscalls.o rootfs/syscalls.o; \
+		cp $(MUSL_SYSROOT)/lib/libc.a rootfs/libc.a; \
+		cp $(UDP_ECHO_TEST_ELF) rootfs/bin/udpecho.elf; \
+		cp $(UDP_NB_TEST_ELF) rootfs/bin/udpnb.elf; \
+		cp $(HTTPS_FETCH_ELF) rootfs/bin/httpsfetch.elf; \
+		cp $(STATERRNO_ELF) rootfs/bin/staterrno.elf; \
+		cp $(TIME_TEST_ELF) rootfs/bin/testtime.elf; \
+		cp $(TICKRATE_TEST_ELF) rootfs/bin/tickratecheck.elf; \
+		cp $(SHOWCPU_ELF) rootfs/bin/showcpu.elf; \
+		cp $(RUNQSTAT_ELF) rootfs/bin/runqstat.elf; \
+		cp $(TCPHELLO_ELF) rootfs/bin/tcphello.elf; \
+		cp $(FORKCPU_TEST_ELF) rootfs/bin/forkcputest.elf; \
+		cp $(FORKMODE_ELF) rootfs/bin/forkmode.elf; \
+		cp $(PIPE_STRESS_ELF) rootfs/bin/pipestress.elf; \
+		cp $(SMP_STRESS_ELF) rootfs/bin/smpstress.elf; \
+		cp $(SCHEDMIX_ELF) rootfs/bin/schedmix.elf; \
+		cp $(REAP_TEST_ELF) rootfs/bin/reaptest.elf; \
+		cp $(PYENC_CHECK_ELF) rootfs/bin/pyenccheck; \
+		cp $(MUSL_DIRCHECK_ELF) rootfs/bin/musldircheck; \
+		cp $(MUSL_FORKPROBE_ELF) rootfs/bin/muslforkprobe.elf; \
+		cp $(MUSL_EXECPROBE_ELF) rootfs/bin/muslexecprobe.elf; \
+		cp $(MUSL_ENVSHOW_ELF) rootfs/bin/muslenvshow.elf; \
+		cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic; \
+		cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge; \
+		cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test; \
+		cp $(SOUND_TEST_ELF) rootfs/bin/testsound; \
+		cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf; \
+		python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG); \
+	fi
 
-$(ROOTFS_IMG): FORCE $(ROOTFS_FILES) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF) $(VBLK_TEST_ELF)
-	mkdir -p rootfs/bin
-	rm -f rootfs/bin/staterrno.elf
-	cp $(STATERRNO_ELF) rootfs/bin/staterrno.elf
-	cp $(PYENC_CHECK_ELF) rootfs/bin/pyenccheck
-	cp $(MUSL_DIRCHECK_ELF) rootfs/bin/musldircheck
-	cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic
-	cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge
-	cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test
-	cp $(SOUND_TEST_ELF) rootfs/bin/testsound
-	cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf
-	python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG)
-
-$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_TAR) $(ROOTFS_IMG)
+$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_IMG)
 	rm -rf iso_root
 	mkdir -p iso_root/boot/limine
 	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
 	cp $(SH_ELF) iso_root/boot/sh.elf
-	cp $(ROOTFS_TAR) iso_root/boot/rootfs.tar
 	cp $(ROOTFS_IMG) iso_root/boot/rootfs.img
 	cp iso/limine.conf iso_root/boot/limine/limine.conf
 
@@ -373,6 +286,11 @@ $(RETROFS_ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine-retrofs.conf limine/limine $(
 run: $(ISO)
 	bash ./run_qemu_stdio.sh
 
+persist-run: ROOTFS_REBUILD=0
+persist-run: $(ISO) $(ROOTFS_IMG)
+	bash ./run_qemu_stdio.sh \
+		$(ROOTFS_VBLK_ARGS)
+
 ac97run: $(ISO)
 	bash ./run_qemu_ac97.sh
 
@@ -401,12 +319,25 @@ smprun: $(ISO)
 	bash ./run_qemu_stdio.sh \
 		-smp 2
 
+persistsmprun: ROOTFS_REBUILD=0
+persistsmprun: $(ISO) $(ROOTFS_IMG)
+	bash ./run_qemu_stdio.sh \
+		$(ROOTFS_VBLK_ARGS) \
+		-smp 2
+
 smp4run: $(ISO)
 	bash ./run_qemu_stdio.sh \
 		-smp 4
 
 netrun: $(ISO)
 	bash ./run_qemu_stdio.sh \
+		-netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=udp::12345-:12345,hostfwd=udp::12346-:12346 \
+		-device virtio-net-pci,netdev=net0
+
+persistnetrun: ROOTFS_REBUILD=0
+persistnetrun: $(ISO) $(ROOTFS_IMG)
+	bash ./run_qemu_stdio.sh \
+		$(ROOTFS_VBLK_ARGS) \
 		-netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=udp::12345-:12345,hostfwd=udp::12346-:12346 \
 		-device virtio-net-pci,netdev=net0
 
@@ -437,6 +368,7 @@ clean:
 	rm -f $(MUSL_USER_ELF) $(MUSL_SH_ELF)
 	rm -f user/*.elf
 	rm -rf iso_root
+	rm -f rootfs.tar
 	$(MAKE) -C limine clean
 
 -include $(DEPS)

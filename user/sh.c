@@ -21,6 +21,8 @@ extern int scandir(const char*, struct dirent***,
 
 #define MAX_LINE 256
 #define MAX_ARGS 16
+#define HISTORY_SIZE 32
+#define COMPLETION_MAX 64
 #ifndef O_DIRECTORY
 #define O_DIRECTORY 0x10000
 #endif
@@ -42,8 +44,17 @@ static char g_env_pwd[320] = "PWD=/";
 static char g_env_home[] = "HOME=/";
 static char* g_initial_envp[] = { g_env_path, g_env_pwd, g_env_home, NULL };
 static pid_t g_shell_pgrp = 0;
+static char g_history[HISTORY_SIZE][MAX_LINE];
+static int g_history_count = 0;
+static int g_history_next = 0;
 
 #define USB_READ_RETRIES 3
+
+static const char* g_builtin_names[] = {
+    "pwd", "cd", "ls", "cat", "stat", "sync", "touch", "history",
+    "mount", "muslcheck", "writecheck", "dircheck", "scandircheck",
+    "globcheck", "usb", "exit", NULL
+};
 
 static void shell_restore_foreground(void);
 static int run_pipeline_or_redirect(int argc, char** args);
@@ -52,6 +63,7 @@ static void run_dir_check(const char* path);
 static void run_scandir_check(const char* path);
 static void run_glob_check(const char* pattern);
 static void run_musl_check(void);
+static void resolve_shell_path(const char* path, char* out, size_t out_size);
 
 static int usb_read_blocks_safe(uint32_t lba, void* buf, uint32_t count) {
     uint8_t* dst = (uint8_t*)buf;
@@ -99,28 +111,407 @@ struct fat_lfn_state {
     int valid;
 };
 
-static void get_line(char* buf, int size) {
-    int i = 0;
-    while (i < size - 1) {
+static void shell_write_str(const char* s) {
+    if (!s) return;
+    write(1, s, strlen(s));
+}
+
+static void render_line(const char* prompt, const char* buf, int len, int cursor, int* rendered_len) {
+    char seq[32];
+    int total_len = len;
+    if (!prompt) prompt = "";
+    write(1, "\r", 1);
+    shell_write_str(prompt);
+    if (len > 0) write(1, buf, len);
+    if (rendered_len && *rendered_len > total_len) {
+        int extra = *rendered_len - total_len;
+        for (int i = 0; i < extra; i++) write(1, " ", 1);
+    }
+    shell_write_str("\x1b[K");
+    if (len > cursor) {
+        snprintf(seq, sizeof(seq), "\x1b[%dD", len - cursor);
+        shell_write_str(seq);
+    }
+    if (rendered_len) *rendered_len = total_len;
+}
+
+static void history_store(const char* line) {
+    if (!line || !line[0]) return;
+    if (g_history_count > 0) {
+        int last = (g_history_next + HISTORY_SIZE - 1) % HISTORY_SIZE;
+        if (strcmp(g_history[last], line) == 0) return;
+    }
+    strncpy(g_history[g_history_next], line, MAX_LINE - 1);
+    g_history[g_history_next][MAX_LINE - 1] = '\0';
+    g_history_next = (g_history_next + 1) % HISTORY_SIZE;
+    if (g_history_count < HISTORY_SIZE) g_history_count++;
+}
+
+static int history_to_absolute_index(int rel_index) {
+    if (rel_index < 0 || rel_index >= g_history_count) return -1;
+    return (g_history_next - g_history_count + rel_index + HISTORY_SIZE) % HISTORY_SIZE;
+}
+
+static void history_print(void) {
+    for (int i = 0; i < g_history_count; i++) {
+        int idx = history_to_absolute_index(i);
+        if (idx < 0) continue;
+        printf("%2d  %s\n", i + 1, g_history[idx]);
+    }
+}
+
+static const char* history_get_entry_1based(int n) {
+    int idx;
+    if (n <= 0 || n > g_history_count) return 0;
+    idx = history_to_absolute_index(n - 1);
+    if (idx < 0) return 0;
+    return g_history[idx];
+}
+
+static const char* history_get_last(void) {
+    if (g_history_count <= 0) return 0;
+    return history_get_entry_1based(g_history_count);
+}
+
+static int history_expand(const char* line, char* out, size_t out_size) {
+    const char* src = line;
+    const char* replacement = 0;
+    char* endptr;
+    long n;
+
+    if (!line || !out || out_size == 0) return -1;
+    if (line[0] != '!') {
+        strncpy(out, line, out_size - 1);
+        out[out_size - 1] = '\0';
+        return 0;
+    }
+
+    if (strcmp(line, "!!") == 0) {
+        replacement = history_get_last();
+    } else {
+        n = strtol(line + 1, &endptr, 10);
+        if (endptr && *endptr == '\0' && n > 0) {
+            replacement = history_get_entry_1based((int)n);
+        }
+    }
+
+    if (!replacement) return -1;
+    strncpy(out, replacement, out_size - 1);
+    out[out_size - 1] = '\0';
+    printf("%s\n", out);
+    return 0;
+}
+
+static int completion_append(char matches[][MAX_LINE], int count, const char* candidate) {
+    if (!candidate || !candidate[0] || count >= COMPLETION_MAX) return count;
+    for (int i = 0; i < count; i++) {
+        if (strcmp(matches[i], candidate) == 0) return count;
+    }
+    strncpy(matches[count], candidate, MAX_LINE - 1);
+    matches[count][MAX_LINE - 1] = '\0';
+    return count + 1;
+}
+
+static void completion_sort(char matches[][MAX_LINE], int count) {
+    for (int i = 0; i < count; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (strcmp(matches[i], matches[j]) > 0) {
+                char tmp[MAX_LINE];
+                memcpy(tmp, matches[i], sizeof(tmp));
+                memcpy(matches[i], matches[j], MAX_LINE);
+                memcpy(matches[j], tmp, MAX_LINE);
+            }
+        }
+    }
+}
+
+static int path_join_for_completion(const char* dir, const char* name, char* out, size_t out_size) {
+    if (!dir || !name || !out || out_size == 0) return -1;
+    if (strcmp(dir, "/") == 0) snprintf(out, out_size, "/%s", name);
+    else if (strcmp(dir, ".") == 0) snprintf(out, out_size, "%s", name);
+    else snprintf(out, out_size, "%s/%s", dir, name);
+    return 0;
+}
+
+static int completion_collect_commands(const char* prefix, char matches[][MAX_LINE]) {
+    int count = 0;
+    DIR* dir;
+    struct dirent* ent;
+    size_t prefix_len = prefix ? strlen(prefix) : 0;
+
+    for (int i = 0; g_builtin_names[i]; i++) {
+        if (prefix_len == 0 || strncmp(g_builtin_names[i], prefix, prefix_len) == 0) {
+            count = completion_append(matches, count, g_builtin_names[i]);
+        }
+    }
+
+    dir = opendir("/bin");
+    if (!dir) return count;
+    while ((ent = readdir(dir)) != NULL) {
+        if (!ent->d_name[0] || strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (prefix_len == 0 || strncmp(ent->d_name, prefix, prefix_len) == 0) {
+            count = completion_append(matches, count, ent->d_name);
+        }
+    }
+    closedir(dir);
+    return count;
+}
+
+static int completion_collect_paths(const char* prefix, char matches[][MAX_LINE]) {
+    char resolved_dir[256];
+    char dir_part[256];
+    char name_part[256];
+    char display_prefix[256];
+    const char* slash;
+    DIR* dir;
+    struct dirent* ent;
+    int count = 0;
+    size_t name_len;
+
+    if (!prefix) prefix = "";
+    slash = strrchr(prefix, '/');
+    if (slash) {
+        size_t dir_len = (size_t)(slash - prefix);
+        if (dir_len == 0) {
+            strcpy(dir_part, "/");
+            strcpy(display_prefix, "/");
+        } else {
+            if (dir_len >= sizeof(dir_part)) dir_len = sizeof(dir_part) - 1;
+            memcpy(dir_part, prefix, dir_len);
+            dir_part[dir_len] = '\0';
+            strncpy(display_prefix, dir_part, sizeof(display_prefix) - 1);
+            display_prefix[sizeof(display_prefix) - 1] = '\0';
+        }
+        strncpy(name_part, slash + 1, sizeof(name_part) - 1);
+        name_part[sizeof(name_part) - 1] = '\0';
+    } else {
+        strcpy(dir_part, ".");
+        display_prefix[0] = '\0';
+        strncpy(name_part, prefix, sizeof(name_part) - 1);
+        name_part[sizeof(name_part) - 1] = '\0';
+    }
+
+    resolve_shell_path(dir_part, resolved_dir, sizeof(resolved_dir));
+    dir = opendir(resolved_dir);
+    if (!dir) return 0;
+    name_len = strlen(name_part);
+    while ((ent = readdir(dir)) != NULL) {
+        char candidate[MAX_LINE];
+        char stat_path[256];
+        struct stat st;
+        if (!ent->d_name[0] || strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (name_len && strncmp(ent->d_name, name_part, name_len) != 0) continue;
+        if (display_prefix[0]) {
+            if (strcmp(display_prefix, "/") == 0) snprintf(candidate, sizeof(candidate), "/%s", ent->d_name);
+            else snprintf(candidate, sizeof(candidate), "%s/%s", display_prefix, ent->d_name);
+        } else {
+            snprintf(candidate, sizeof(candidate), "%s", ent->d_name);
+        }
+        path_join_for_completion(resolved_dir, ent->d_name, stat_path, sizeof(stat_path));
+        if (stat(stat_path, &st) == 0 && (st.st_mode & 0170000) == 0040000) {
+            size_t len = strlen(candidate);
+            if (len + 1 < sizeof(candidate)) {
+                candidate[len] = '/';
+                candidate[len + 1] = '\0';
+            }
+        }
+        count = completion_append(matches, count, candidate);
+    }
+    closedir(dir);
+    return count;
+}
+
+static int completion_longest_prefix(char matches[][MAX_LINE], int count) {
+    int prefix_len;
+    if (count <= 0) return 0;
+    prefix_len = (int)strlen(matches[0]);
+    for (int i = 1; i < count; i++) {
+        int j = 0;
+        while (j < prefix_len && matches[0][j] && matches[i][j] && matches[0][j] == matches[i][j]) j++;
+        prefix_len = j;
+    }
+    return prefix_len;
+}
+
+static void apply_completion(const char* prompt, char* buf, int size, int* len, int* cursor, int* rendered_len) {
+    int token_start = *cursor;
+    int token_end = *cursor;
+    char token[MAX_LINE];
+    char matches[COMPLETION_MAX][MAX_LINE];
+    int match_count;
+    int completion_len;
+    int is_command = 0;
+
+    while (token_start > 0 && buf[token_start - 1] != ' ') token_start--;
+    while (buf[token_end] && buf[token_end] != ' ') token_end++;
+    if (token_end - token_start >= (int)sizeof(token)) return;
+    memcpy(token, &buf[token_start], (size_t)(token_end - token_start));
+    token[token_end - token_start] = '\0';
+    is_command = (token_start == 0);
+
+    if (is_command && strchr(token, '/') == NULL) {
+        match_count = completion_collect_commands(token, matches);
+    } else {
+        match_count = completion_collect_paths(token, matches);
+    }
+    if (match_count <= 0) return;
+    completion_sort(matches, match_count);
+
+    if (match_count == 1) {
+        completion_len = (int)strlen(matches[0]);
+        if (token_start + completion_len + (token_end - *cursor) + 2 >= size) return;
+        memmove(&buf[token_start + completion_len], &buf[token_end], (size_t)(*len - token_end + 1));
+        memcpy(&buf[token_start], matches[0], (size_t)completion_len);
+        *len = *len - (token_end - token_start) + completion_len;
+        *cursor = token_start + completion_len;
+        if ((*cursor == *len || buf[*cursor] == '\0') && matches[0][completion_len - 1] != '/' && *len + 1 < size) {
+            memmove(&buf[*cursor + 1], &buf[*cursor], (size_t)(*len - *cursor + 1));
+            buf[*cursor] = ' ';
+            (*len)++;
+            (*cursor)++;
+        }
+        render_line(prompt, buf, *len, *cursor, rendered_len);
+        return;
+    }
+
+    completion_len = completion_longest_prefix(matches, match_count);
+    if (completion_len > token_end - token_start) {
+        int old_len = token_end - token_start;
+        if (token_start + completion_len + (*len - token_end) + 1 < size) {
+            memmove(&buf[token_start + completion_len], &buf[token_end], (size_t)(*len - token_end + 1));
+            memcpy(&buf[token_start], matches[0], (size_t)completion_len);
+            *len = *len - old_len + completion_len;
+            *cursor = token_start + completion_len;
+        }
+        render_line(prompt, buf, *len, *cursor, rendered_len);
+        return;
+    }
+
+    write(1, "\r\n", 2);
+    for (int i = 0; i < match_count; i++) {
+        char line[320];
+        int width = 18;
+        int len = snprintf(line, sizeof(line), "%-*s", width, matches[i]);
+        write(1, line, len);
+        if ((i % 4) == 3 || i == match_count - 1) {
+            write(1, "\r\n", 2);
+        }
+    }
+    render_line(prompt, buf, *len, *cursor, rendered_len);
+}
+
+static void get_line(const char* prompt, char* buf, int size) {
+    int len = 0;
+    int cursor = 0;
+    int rendered_len = 0;
+    int history_view = -1;
+    char history_saved[MAX_LINE];
+
+    buf[0] = '\0';
+    history_saved[0] = '\0';
+    while (len < size - 1) {
         char c;
         if (read(0, &c, 1) <= 0) break;
-        
-        // Echo back is handled by the kernel
-        // write(1, &c, 1);
-        
+
         if (c == '\n' || c == '\r') {
-            buf[i] = '\0';
+            buf[len] = '\0';
+            write(1, "\r\n", 2);
             break;
         }
+        if (c == '\t') {
+            apply_completion(prompt, buf, size, &len, &cursor, &rendered_len);
+            continue;
+        }
+        if (c == 12) {
+            shell_write_str("\x1b[2J\x1b[H");
+            render_line(prompt, buf, len, cursor, &rendered_len);
+            continue;
+        }
+        if (c == 1) {
+            cursor = 0;
+            render_line(prompt, buf, len, cursor, &rendered_len);
+            continue;
+        }
+        if (c == 5) {
+            cursor = len;
+            render_line(prompt, buf, len, cursor, &rendered_len);
+            continue;
+        }
         if (c == '\b' || c == 0x7F) {
-            if (i > 0) {
-                i--;
+            if (cursor > 0) {
+                memmove(&buf[cursor - 1], &buf[cursor], (size_t)(len - cursor + 1));
+                cursor--;
+                len--;
+                render_line(prompt, buf, len, cursor, &rendered_len);
             }
             continue;
         }
-        buf[i++] = c;
+        if ((unsigned char)c == 0x1b) {
+            char seq[3];
+            if (read(0, &seq[0], 1) <= 0) continue;
+            if (read(0, &seq[1], 1) <= 0) continue;
+            if (seq[0] != '[') continue;
+            if (seq[1] == 'D') {
+                if (cursor > 0) cursor--;
+                render_line(prompt, buf, len, cursor, &rendered_len);
+            } else if (seq[1] == 'C') {
+                if (cursor < len) cursor++;
+                render_line(prompt, buf, len, cursor, &rendered_len);
+            } else if (seq[1] == 'H') {
+                cursor = 0;
+                render_line(prompt, buf, len, cursor, &rendered_len);
+            } else if (seq[1] == 'F') {
+                cursor = len;
+                render_line(prompt, buf, len, cursor, &rendered_len);
+            } else if (seq[1] == 'A') {
+                if (g_history_count > 0) {
+                    if (history_view < 0) {
+                        strncpy(history_saved, buf, sizeof(history_saved) - 1);
+                        history_saved[sizeof(history_saved) - 1] = '\0';
+                        history_view = g_history_count - 1;
+                    } else if (history_view > 0) {
+                        history_view--;
+                    }
+                    strncpy(buf, g_history[history_to_absolute_index(history_view)], size - 1);
+                    buf[size - 1] = '\0';
+                    len = (int)strlen(buf);
+                    cursor = len;
+                    render_line(prompt, buf, len, cursor, &rendered_len);
+                }
+            } else if (seq[1] == 'B') {
+                if (history_view >= 0) {
+                    if (history_view < g_history_count - 1) {
+                        history_view++;
+                        strncpy(buf, g_history[history_to_absolute_index(history_view)], size - 1);
+                    } else {
+                        history_view = -1;
+                        strncpy(buf, history_saved, size - 1);
+                    }
+                    buf[size - 1] = '\0';
+                    len = (int)strlen(buf);
+                    cursor = len;
+                    render_line(prompt, buf, len, cursor, &rendered_len);
+                }
+            } else if (seq[1] == '3') {
+                if (read(0, &seq[2], 1) <= 0) continue;
+                if (seq[2] == '~' && cursor < len) {
+                    memmove(&buf[cursor], &buf[cursor + 1], (size_t)(len - cursor));
+                    len--;
+                    render_line(prompt, buf, len, cursor, &rendered_len);
+                }
+            }
+            continue;
+        }
+        if ((unsigned char)c < 0x20) continue;
+        if (len >= size - 1) continue;
+        memmove(&buf[cursor + 1], &buf[cursor], (size_t)(len - cursor + 1));
+        buf[cursor] = c;
+        cursor++;
+        len++;
+        render_line(prompt, buf, len, cursor, &rendered_len);
     }
-    buf[i] = '\0';
+    buf[len] = '\0';
+    history_store(buf);
 }
 
 static void normalize_path_inplace(char* path) {
@@ -576,6 +967,11 @@ static int run_builtin(int argc, char** args) {
         printf("size: %ld\n", (long)st.st_size);
         return 0;
     }
+    if (strcmp(args[0], "sync") == 0) {
+        sync();
+        printf("sync: flushed filesystem state\n");
+        return 0;
+    }
     if (strcmp(args[0], "touch") == 0 && argc > 2) {
         int fd;
         resolve_shell_path(args[1], path_buf, sizeof(path_buf));
@@ -586,7 +982,11 @@ static int run_builtin(int argc, char** args) {
         }
         write(fd, args[2], strlen(args[2]));
         close(fd);
-        printf("File '%s' created in Ramfs.\n", path_buf);
+        printf("File '%s' updated.\n", path_buf);
+        return 0;
+    }
+    if (strcmp(args[0], "history") == 0) {
+        history_print();
         return 0;
     }
     return -1;
@@ -608,8 +1008,16 @@ static int run_command_child(int argc, char** args) {
 }
 
 static void run_shell_line(char* line) {
+    char expanded[MAX_LINE];
     if (!line || strlen(line) == 0) return;
     if (strcmp(line, "exit") == 0) return;
+    if (line[0] == '!') {
+        if (history_expand(line, expanded, sizeof(expanded)) < 0) {
+            printf("history: event not found: %s\n", line);
+            return;
+        }
+        line = expanded;
+    }
 
     char *args[MAX_ARGS];
     int argc = 0;
@@ -1197,12 +1605,14 @@ int main() {
     // try_autostart_saba();
 
     while (1) {
+        char prompt[MAX_LINE + 8];
         sync_shell_cwd();
-        printf("%s$ ", g_cwd);
+        snprintf(prompt, sizeof(prompt), "%s$ ", g_cwd);
+        printf("%s", prompt);
         fflush(stdout);
 
         char line[MAX_LINE];
-        get_line(line, sizeof(line));
+        get_line(prompt, line, sizeof(line));
 
         if (strlen(line) == 0) continue;
         run_shell_line(line);
