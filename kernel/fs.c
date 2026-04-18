@@ -66,54 +66,149 @@ static void pipe_clear_waiter(struct task** waiter, struct task* task) {
 
 static int fs_fd_has_private_copy(const file_descriptor_t* fd) {
     if (!fd) return 0;
-    return fd->type == FT_DIR || fd->type == FT_RETROFS;
+    return fd->file == 0 && (fd->type == FT_DIR || fd->type == FT_RETROFS);
+}
+
+static fs_file_t* fs_alloc_file(void) {
+    void* phys = pmm_alloc(1);
+    fs_file_t* file;
+    if (!phys) return 0;
+    file = (fs_file_t*)PHYS_TO_VIRT(phys);
+    memset(file, 0, sizeof(*file));
+    file->ref_count = 1;
+    return file;
+}
+
+static void fs_file_get(fs_file_t* file) {
+    if (!file) return;
+    file->ref_count++;
+}
+
+static void fs_file_put(fs_file_t* file) {
+    if (!file) return;
+    file->ref_count--;
+    if (file->ref_count > 0) return;
+    if (file->ops && file->ops->release) {
+        file->ops->release(file);
+    }
+    pmm_free((void*)VIRT_TO_PHYS((uint64_t)file), 1);
+}
+
+static void fs_release_dir_file(fs_file_t* file) {
+    if (!file) return;
+    if (file->private_data && file->aux0) {
+        pmm_free((void*)VIRT_TO_PHYS((uint64_t)file->private_data), (int)file->aux0);
+    }
+}
+
+static void fs_release_retrofs_file(fs_file_t* file) {
+    if (!file) return;
+    if (file->private_data && file->aux0) {
+        pmm_free((void*)VIRT_TO_PHYS((uint64_t)file->private_data), (int)file->aux0);
+    }
+}
+
+static const fs_file_ops_t g_dir_file_ops = {
+    .release = fs_release_dir_file,
+};
+
+static const fs_file_ops_t g_retrofs_file_ops = {
+    .release = fs_release_retrofs_file,
+};
+
+file_type_t fs_fd_type(const file_descriptor_t* fd) {
+    if (!fd) return FT_UNUSED;
+    return fd->file ? fd->file->type : fd->type;
+}
+
+void* fs_fd_data(const file_descriptor_t* fd) {
+    if (!fd) return 0;
+    return fd->file ? fd->file->private_data : fd->data;
+}
+
+size_t fs_fd_size(const file_descriptor_t* fd) {
+    if (!fd) return 0;
+    return fd->file ? fd->file->size : fd->size;
+}
+
+size_t fs_fd_offset(const file_descriptor_t* fd) {
+    if (!fd) return 0;
+    return fd->file ? fd->file->offset : fd->offset;
+}
+
+void fs_fd_set_offset(file_descriptor_t* fd, size_t offset) {
+    if (!fd) return;
+    if (fd->file) {
+        fd->file->offset = offset;
+    } else {
+        fd->offset = offset;
+    }
+}
+
+void fs_fd_set_size(file_descriptor_t* fd, size_t size) {
+    if (!fd) return;
+    if (fd->file) {
+        fd->file->size = size;
+    } else {
+        fd->size = size;
+    }
+}
+
+const char* fs_fd_name(const file_descriptor_t* fd) {
+    if (!fd) return "";
+    if (fd->file && fd->file->path[0]) return fd->file->path;
+    return fd->name;
 }
 
 void fs_release_fd(file_descriptor_t* fd) {
     if (!fd || !fd->in_use) return;
 
-    switch (fd->type) {
-        case FT_PIPE: {
-            pipe_t* pipe = (pipe_t*)fd->data;
-            struct task* reader_to_wake;
-            struct task* writer_to_wake;
-            int free_pipe = 0;
-            uint64_t flags = spin_lock_irqsave(&pipe->lock);
-            pipe->ref_count--;
-            reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
-            writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
-            if (pipe->ref_count == 0) {
-                free_pipe = 1;
+    if (fd->file) {
+        fs_file_put(fd->file);
+        fd->file = 0;
+    } else {
+        switch (fd->type) {
+            case FT_PIPE: {
+                pipe_t* pipe = (pipe_t*)fd->data;
+                struct task* reader_to_wake;
+                struct task* writer_to_wake;
+                int free_pipe = 0;
+                uint64_t flags = spin_lock_irqsave(&pipe->lock);
+                pipe->ref_count--;
+                reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
+                writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
+                if (pipe->ref_count == 0) {
+                    free_pipe = 1;
+                }
+                spin_unlock_irqrestore(&pipe->lock, flags);
+                pipe_wake_task(reader_to_wake);
+                pipe_wake_task(writer_to_wake);
+                if (free_pipe) {
+                    pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
+                }
+                break;
             }
-            spin_unlock_irqrestore(&pipe->lock, flags);
-            pipe_wake_task(reader_to_wake);
-            pipe_wake_task(writer_to_wake);
-            if (free_pipe) {
-                pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
-            }
-            break;
+            case FT_SOCKET:
+                (void)net_socket_close_fd(fd);
+                break;
+            case FT_DIR:
+            case FT_RETROFS:
+                if (fd->data && fd->aux0) {
+                    pmm_free((void*)VIRT_TO_PHYS((uint64_t)fd->data), (int)fd->aux0);
+                }
+                break;
+            case FT_UNUSED:
+            case FT_CONSOLE:
+            case FT_MODULE:
+            case FT_RAMFS:
+            case FT_USB:
+            default:
+                break;
         }
-        case FT_SOCKET:
-            (void)net_socket_close_fd(fd);
-            break;
-        case FT_DIR:
-        case FT_RETROFS:
-            if (fd->data && fd->aux0) {
-                pmm_free((void*)VIRT_TO_PHYS((uint64_t)fd->data), (int)fd->aux0);
-            }
-            break;
-        case FT_UNUSED:
-        case FT_CONSOLE:
-        case FT_MODULE:
-        case FT_TAR:
-        case FT_RAMFS:
-        case FT_USB:
-        case FT_USBROOT:
-        default:
-            break;
     }
 
     fd->in_use = 0;
+    fd->type = FT_UNUSED;
     fd->data = NULL;
     fd->size = 0;
     fd->offset = 0;
@@ -131,6 +226,11 @@ int fs_clone_fd(file_descriptor_t* dst, const file_descriptor_t* src) {
     if (!dst || !src) return -1;
     *dst = *src;
     if (!src->in_use) return 0;
+
+    if (src->file) {
+        fs_file_get(src->file);
+        return 0;
+    }
 
     if (src->type == FT_PIPE) {
         pipe_t* pipe = (pipe_t*)src->data;
@@ -246,23 +346,6 @@ static void canonicalize_path_inplace(char* path) {
     path[i] = '\0';
 }
 
-static int path_like_equal(const char* a, const char* b) {
-    int ai = 0;
-    int bi = 0;
-    while (a[ai] && b[bi]) {
-        if (a[ai] != b[bi]) return 0;
-        ai++;
-        bi++;
-    }
-    while (a[ai] == '/') ai++;
-    while (b[bi] == '/') bi++;
-    return a[ai] == '\0' && b[bi] == '\0';
-}
-
-static int tar_name_matches(const char* tar_name, const char* path) {
-    return path_like_equal(normalize_fs_path(tar_name), normalize_fs_path(path));
-}
-
 static int starts_with(const char* s, const char* prefix) {
     while (*prefix) {
         if (*s != *prefix) return 0;
@@ -325,10 +408,10 @@ static int resolve_dirfd_path(int dirfd, const char* path, char* out, size_t siz
     if (!current || dirfd < 0 || dirfd >= MAX_FDS || !current->fds[dirfd].in_use) {
         return -1;
     }
-    if (current->fds[dirfd].type != FT_DIR || current->fds[dirfd].name[0] == '\0') {
+    if (fs_fd_type(&current->fds[dirfd]) != FT_DIR || fs_fd_name(&current->fds[dirfd])[0] == '\0') {
         return -1;
     }
-    base = current->fds[dirfd].name;
+    base = fs_fd_name(&current->fds[dirfd]);
     while (base[j] && i + 1 < size) out[i++] = base[j++];
     if (i > 0 && out[i - 1] != '/' && i + 1 < size) out[i++] = '/';
     j = 0;
@@ -336,16 +419,6 @@ static int resolve_dirfd_path(int dirfd, const char* path, char* out, size_t siz
     out[i] = '\0';
     canonicalize_path_inplace(out);
     return 0;
-}
-
-// 8進数文字列を数値に変換 (TARヘッダ用)
-static uint64_t oct2int(const char* s, int size) {
-    uint64_t res = 0;
-    for (int i = 0; i < size; i++) {
-        if (s[i] < '0' || s[i] > '7') break;
-        res = res * 8 + (s[i] - '0');
-    }
-    return res;
 }
 
 struct fat_boot_info {
@@ -609,33 +682,13 @@ static struct ramfs_file ramfs_table[MAX_RAMFS_FILES];
 
 enum root_source_type {
     ROOT_SOURCE_MODULE = 0,
-    ROOT_SOURCE_USB = 1,
-    ROOT_SOURCE_RETROFS = 2,
+    ROOT_SOURCE_RETROFS = 1,
 };
 
 #define DIR_BUF_PAGES 64
 #define DIR_BUF_BYTES (DIR_BUF_PAGES * PAGE_SIZE)
 
-#define USB_ROOT_CACHE_SLOTS 4
-
-struct usb_root_cache_entry {
-    int valid;
-    uint32_t mode;
-    size_t size;
-    uint64_t pages;
-    void* data;
-    char path[128];
-};
-
 static enum root_source_type g_root_source = ROOT_SOURCE_MODULE;
-static uint8_t* g_usb_root_tar = 0;
-static size_t g_usb_root_tar_size = 0;
-static uint64_t g_usb_root_tar_pages = 0;
-static char g_usb_root_tar_path[128];
-static struct fat_dir_entry_info g_usb_root_tar_ent;
-static int g_usb_root_tar_file_ready = 0;
-static struct usb_root_cache_entry g_usb_root_cache[USB_ROOT_CACHE_SLOTS];
-static uint32_t g_usb_root_cache_next = 0;
 
 static uint64_t fs_now_sec(void) {
     return lapic_get_ticks_ms() / 1000U;
@@ -646,10 +699,9 @@ enum {
     FS_DEV_PIPE = 2,
     FS_DEV_RAMFS = 3,
     FS_DEV_ROOT_ARCHIVE = 4,
-    FS_DEV_USB_ROOT_ARCHIVE = 5,
-    FS_DEV_MODULE = 6,
-    FS_DEV_USB_FAT = 7,
-    FS_DEV_SYNTH = 8,
+    FS_DEV_MODULE = 5,
+    FS_DEV_USB_FAT = 6,
+    FS_DEV_SYNTH = 7,
 };
 
 static uint64_t fs_hash_name(const char* s) {
@@ -716,84 +768,8 @@ static void kstat_from_ramfs(struct kstat* st, const struct ramfs_file* rf) {
     st->unused[2] = 0;
 }
 
-static uint32_t tar_mode_from_header(const struct tar_header* h) {
-    uint32_t type_bits = (h && h->typeflag == '5') ? KSTAT_MODE_DIR : KSTAT_MODE_FILE;
-    uint32_t perms = h ? (uint32_t)(oct2int(h->mode, 8) & 07777U) : 0;
-    return type_bits | perms;
-}
-
-static void kstat_from_tar_header(struct kstat* st, const struct tar_header* h, uint64_t size) {
-    int64_t mtime = h ? (int64_t)oct2int(h->mtime, 12) : 0;
-    if (!st) return;
-    st->dev = FS_DEV_ROOT_ARCHIVE;
-    st->ino = h ? fs_hash_name(h->name) : 0;
-    st->mode = tar_mode_from_header(h);
-    st->uid = h ? (uint32_t)oct2int(h->uid, 8) : 0;
-    st->gid = h ? (uint32_t)oct2int(h->gid, 8) : 0;
-    st->nlink = (h && h->typeflag == '5') ? 2U : 1U;
-    st->pad0 = 0;
-    st->rdev = 0;
-    st->size = (int64_t)size;
-    st->blksize = 512;
-    st->blocks = (size + 511U) / 512U;
-    st->atime_sec = mtime;
-    st->atime_nsec = 0;
-    st->mtime_sec = mtime;
-    st->mtime_nsec = 0;
-    st->ctime_sec = mtime;
-    st->ctime_nsec = 0;
-    st->unused[0] = 0;
-    st->unused[1] = 0;
-    st->unused[2] = 0;
-}
-
-static int usb_read_file_range(const struct fat_dir_entry_info* ent, uint64_t offset, void* out_buf, size_t size);
 static int fs_try_active_root_lookup(const char* path, void** data, size_t* size, uint32_t* mode);
 static int fs_try_active_root_stat(const char* path, struct kstat* st);
-
-static void usb_root_cache_reset(void) {
-    for (int i = 0; i < USB_ROOT_CACHE_SLOTS; i++) {
-        if (g_usb_root_cache[i].valid && g_usb_root_cache[i].data) {
-            pmm_free((void*)VIRT_TO_PHYS((uint64_t)g_usb_root_cache[i].data), (int)g_usb_root_cache[i].pages);
-        }
-        g_usb_root_cache[i].valid = 0;
-        g_usb_root_cache[i].mode = 0;
-        g_usb_root_cache[i].size = 0;
-        g_usb_root_cache[i].pages = 0;
-        g_usb_root_cache[i].data = 0;
-        g_usb_root_cache[i].path[0] = '\0';
-    }
-    g_usb_root_cache_next = 0;
-}
-
-static struct usb_root_cache_entry* usb_root_cache_find(const char* path) {
-    const char* norm = normalize_fs_path(path);
-    for (int i = 0; i < USB_ROOT_CACHE_SLOTS; i++) {
-        if (g_usb_root_cache[i].valid && strcmp_exact(g_usb_root_cache[i].path, norm)) {
-            return &g_usb_root_cache[i];
-        }
-    }
-    return 0;
-}
-
-static void usb_root_cache_store(const char* path, uint32_t mode, void* data, size_t size, uint64_t pages) {
-    struct usb_root_cache_entry* slot = &g_usb_root_cache[g_usb_root_cache_next % USB_ROOT_CACHE_SLOTS];
-    const char* norm = normalize_fs_path(path);
-    if (slot->valid && slot->data) {
-        pmm_free((void*)VIRT_TO_PHYS((uint64_t)slot->data), (int)slot->pages);
-    }
-    slot->valid = 1;
-    slot->mode = mode;
-    slot->size = size;
-    slot->pages = pages;
-    slot->data = data;
-    for (int i = 0; i < (int)sizeof(slot->path) - 1; i++) {
-        slot->path[i] = norm[i];
-        if (norm[i] == '\0') break;
-    }
-    slot->path[sizeof(slot->path) - 1] = '\0';
-    g_usb_root_cache_next++;
-}
 
 static int fs_is_mount_dir(const char* path) {
     const char* subpath = 0;
@@ -872,14 +848,14 @@ next_entry:
     return (found_dir || found_child) ? 0 : -1;
 }
 
-static void tar_split_child(const char* tar_name, const char* dir_path,
-                            char* child, uint32_t* mode, uint32_t file_size, char typeflag) {
+static void split_child_path(const char* full_path, const char* dir_path,
+                             char* child, uint32_t* mode, uint32_t file_mode) {
     const char* norm;
     const char* rest;
     int i = 0;
     if (!child || !mode) return;
     child[0] = '\0';
-    norm = normalize_fs_path(tar_name);
+    norm = normalize_fs_path(full_path);
     rest = norm;
     if (dir_path && dir_path[0] != '\0') {
         const char* dir = normalize_fs_path(dir_path);
@@ -895,54 +871,43 @@ static void tar_split_child(const char* tar_name, const char* dir_path,
     while (*rest && *rest != '/' && i < 247) child[i++] = *rest++;
     child[i] = '\0';
     if (child[0] == '\0') return;
-    *mode = (*rest == '/' || typeflag == '5') ? KSTAT_MODE_DIR : KSTAT_MODE_FILE;
-    (void)file_size;
+    *mode = (*rest == '/' || (file_mode & 0170000U) == KSTAT_MODE_DIR) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE;
 }
 
-static int build_tar_dirents_from_archive(uint8_t* archive, size_t archive_size, const char* dir_path,
-                                          struct orth_dirent* dirents, size_t max_entries, size_t* out_count) {
-    uint8_t* ptr = archive;
-    uint8_t* end = archive + archive_size;
+static int build_module_dirents(const char* dir_path, struct orth_dirent* dirents,
+                                size_t max_entries, size_t* out_count) {
     size_t count = out_count ? *out_count : 0;
-    while (ptr < end) {
-        struct tar_header* h = (struct tar_header*)ptr;
-        uint64_t file_size;
-        uint32_t mode = KSTAT_MODE_FILE;
+    int found = 0;
+
+    if (!module_request.response) return -1;
+
+    for (uint64_t i = 0; i < module_request.response->module_count; i++) {
+        struct limine_file* m = module_request.response->modules[i];
         char child[248];
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        tar_split_child(h->name, dir_path, child, &mode, (uint32_t)file_size, h->typeflag);
-        if (child[0] != '\0' && dirent_append(dirents, max_entries, &count, child, mode, (uint32_t)file_size) < 0) return -1;
-        ptr += 512 + ((file_size + 511) & ~511);
+        uint32_t mode = KSTAT_MODE_FILE;
+
+        split_child_path(m->path, dir_path, child, &mode, KSTAT_MODE_FILE);
+        if (child[0] == '\0') continue;
+        if (dirent_append(dirents, max_entries, &count, child, mode, (uint32_t)m->size) < 0) return -1;
+        found = 1;
     }
-    *out_count = count;
-    return 0;
+
+    if (out_count) *out_count = count;
+    return found ? 0 : -1;
 }
 
-static int build_tar_dirents_from_usb_root(const char* dir_path,
-                                           struct orth_dirent* dirents, size_t max_entries, size_t* out_count) {
-    uint64_t offset = 0;
-    uint8_t header[512];
-    size_t count = out_count ? *out_count : 0;
-    while (offset + 512U <= g_usb_root_tar_ent.size) {
-        struct tar_header* h = (struct tar_header*)header;
-        uint64_t file_size;
-        uint64_t padded_size;
-        uint32_t mode = KSTAT_MODE_FILE;
+static int module_dir_exists(const char* dir_path) {
+    if (!module_request.response) return 0;
+
+    for (uint64_t i = 0; i < module_request.response->module_count; i++) {
+        struct limine_file* m = module_request.response->modules[i];
         char child[248];
-        if (usb_read_file_range(&g_usb_root_tar_ent, offset, header, sizeof(header)) < 0) return -1;
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        if (h->typeflag == '0' || h->typeflag == '\0') {
-            padded_size = (file_size + 511U) & ~511U;
-        } else {
-            padded_size = 0;
-        }
-        tar_split_child(h->name, dir_path, child, &mode, (uint32_t)file_size, h->typeflag);
-        if (child[0] != '\0' && dirent_append(dirents, max_entries, &count, child, mode, (uint32_t)file_size) < 0) return -1;
-        offset += 512U + padded_size;
+        uint32_t mode = KSTAT_MODE_FILE;
+
+        split_child_path(m->path, dir_path, child, &mode, KSTAT_MODE_FILE);
+        if (child[0] != '\0') return 1;
     }
-    *out_count = count;
+
     return 0;
 }
 
@@ -955,18 +920,8 @@ static int build_root_dirents(struct orth_dirent* dirents, size_t max_entries, s
     }
     if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
         if (retrofs_list_dir("", dirents, max_entries, &count) < 0) return -1;
-    } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
-        if (build_tar_dirents_from_archive(g_usb_root_tar, g_usb_root_tar_size, "", dirents, max_entries, &count) < 0) return -1;
-    } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
-        if (build_tar_dirents_from_usb_root("", dirents, max_entries, &count) < 0) return -1;
     } else if (module_request.response) {
-        for (uint64_t i = 0; i < module_request.response->module_count; i++) {
-            struct limine_file* m = module_request.response->modules[i];
-            if (strcmp_suffix_fs(m->path, ".tar")) {
-                if (build_tar_dirents_from_archive((uint8_t*)m->address, m->size, "", dirents, max_entries, &count) < 0) return -1;
-                break;
-            }
-        }
+        if (build_module_dirents("", dirents, max_entries, &count) < 0 && count == 0) return -1;
     }
     if (usb_block_device_ready()) {
         const struct vfs_mountpoint* mounts[VFS_MAX_MOUNTPOINTS];
@@ -1057,28 +1012,9 @@ static int build_active_root_dirents(const char* path, struct orth_dirent* diren
         if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
             if (retrofs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
             found = 1;
-        } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
-            if (build_tar_dirents_from_archive(g_usb_root_tar, g_usb_root_tar_size, norm, dirents, max_entries, &count) < 0) {
-                return -1;
-            }
-            found = 1;
-        }
-        else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
-            if (build_tar_dirents_from_usb_root(norm, dirents, max_entries, &count) < 0) {
-                return -1;
-            }
-            found = 1;
         }
         else if (module_request.response) {
-            for (uint64_t i = 0; i < module_request.response->module_count; i++) {
-                struct limine_file* m = module_request.response->modules[i];
-                if (!strcmp_suffix_fs(m->path, ".tar")) continue;
-                if (build_tar_dirents_from_archive((uint8_t*)m->address, m->size, norm, dirents, max_entries, &count) < 0) {
-                    return -1;
-                }
-                found = 1;
-                break;
-            }
+            if (build_module_dirents(norm, dirents, max_entries, &count) == 0) found = 1;
         }
     }
     if (!found && !explicit_dir) {
@@ -1086,31 +1022,9 @@ static int build_active_root_dirents(const char* path, struct orth_dirent* diren
             size_t before = count;
             if (retrofs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
             if (count > before) found = 1;
-        } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
-            size_t before = count;
-            if (build_tar_dirents_from_archive(g_usb_root_tar, g_usb_root_tar_size, norm, dirents, max_entries, &count) < 0) {
-                return -1;
-            }
-            if (count > before) found = 1;
-        } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
-            size_t before = count;
-            if (build_tar_dirents_from_usb_root(norm, dirents, max_entries, &count) < 0) {
-                return -1;
-            }
-            if (count > before) found = 1;
         } else if (module_request.response) {
-            for (uint64_t i = 0; i < module_request.response->module_count; i++) {
-                struct limine_file* m = module_request.response->modules[i];
-                size_t before = count;
-                if (!strcmp_suffix_fs(m->path, ".tar")) continue;
-                if (build_tar_dirents_from_archive((uint8_t*)m->address, m->size, norm, dirents, max_entries, &count) < 0) {
-                    return -1;
-                }
-                if (count > before) {
-                    found = 1;
-                    break;
-                }
-            }
+            size_t before = count;
+            if (build_module_dirents(norm, dirents, max_entries, &count) == 0 && count > before) found = 1;
         }
     }
     if (out_count) *out_count = count;
@@ -1193,208 +1107,6 @@ static struct ramfs_file* create_ramfs_dir(const char* name, uint32_t mode) {
     return NULL;
 }
 
-static int fs_try_archive_lookup(uint8_t* archive, size_t archive_size, const char* path, void** data, size_t* size, uint32_t* mode) {
-    uint8_t* ptr = archive;
-    uint8_t* end = archive + archive_size;
-    while (ptr < end) {
-        struct tar_header* h = (struct tar_header*)ptr;
-        uint64_t file_size;
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        if (tar_name_matches(h->name, path)) {
-            if (data) *data = ptr + 512;
-            if (size) *size = file_size;
-            if (mode) *mode = tar_mode_from_header(h);
-            return 0;
-        }
-        ptr += 512 + ((file_size + 511) & ~511);
-    }
-    return -1;
-}
-
-static int fs_try_archive_stat_lookup(uint8_t* archive, size_t archive_size, const char* path, struct kstat* st) {
-    uint8_t* ptr = archive;
-    uint8_t* end = archive + archive_size;
-    while (ptr < end) {
-        struct tar_header* h = (struct tar_header*)ptr;
-        uint64_t file_size;
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        if (tar_name_matches(h->name, path)) {
-            kstat_from_tar_header(st, h, file_size);
-            return 0;
-        }
-        ptr += 512 + ((file_size + 511) & ~511);
-    }
-    return -1;
-}
-
-static int usb_read_file_range(const struct fat_dir_entry_info* ent, uint64_t offset, void* out_buf, size_t size) {
-    struct fat_boot_info info;
-    uint32_t cluster;
-    uint32_t cluster_size;
-    uint64_t skip;
-    size_t done = 0;
-    uint8_t sector[4096];
-
-    static uint32_t cache_first_cluster = 0;
-    static uint64_t cache_base_offset = 0;
-    static uint32_t cache_current_cluster = 0;
-
-    if (!ent || !out_buf) return -1;
-    if (offset + size > ent->size) return -1;
-    if (usb_load_fat_boot(&info) < 0) return -1;
-
-    cluster_size = (uint32_t)info.bytes_per_sector * info.sectors_per_cluster;
-    if (cluster_size > sizeof(sector)) return -1;
-
-    if (cache_first_cluster == ent->first_cluster && offset >= cache_base_offset) {
-        cluster = cache_current_cluster;
-        skip = offset - cache_base_offset;
-    } else {
-        cluster = ent->first_cluster;
-        skip = offset;
-    }
-
-    while (skip >= cluster_size && cluster >= 2 && cluster < 0x0FFFFFF8U) {
-        cluster = fat_read_next_cluster(&info, cluster);
-        skip -= cluster_size;
-    }
-
-    cache_first_cluster = ent->first_cluster;
-    cache_base_offset = offset & ~((uint64_t)cluster_size - 1);
-    cache_current_cluster = cluster;
-
-    while (done < size && cluster >= 2 && cluster < 0x0FFFFFF8U) {
-        uint32_t lba = fat_cluster_to_lba(&info, cluster);
-        uint32_t sector_index = (uint32_t)(skip / info.bytes_per_sector);
-        uint32_t sector_off = (uint32_t)(skip % info.bytes_per_sector);
-        uint32_t sectors_left = info.sectors_per_cluster - sector_index;
-        size_t chunk = cluster_size - (size_t)skip;
-        uint32_t sectors_needed;
-        size_t max_chunk;
-        if (chunk > size - done) chunk = size - done;
-        sectors_needed = (uint32_t)((sector_off + chunk + info.bytes_per_sector - 1U) / info.bytes_per_sector);
-        if (sectors_needed > sectors_left) sectors_needed = sectors_left;
-        if (sectors_needed > 2U) sectors_needed = 2U;
-        max_chunk = (size_t)sectors_needed * info.bytes_per_sector - sector_off;
-        if (chunk > max_chunk) chunk = max_chunk;
-        if (usb_read_blocks_safe(lba + sector_index, sector, sectors_needed) < 0) {
-            return -1;
-        }
-        for (size_t i = 0; i < chunk; i++) ((uint8_t*)out_buf)[done + i] = sector[sector_off + i];
-        done += chunk;
-        skip += chunk;
-        if (done >= size) break;
-        if (skip >= cluster_size) {
-            skip = 0;
-            cluster = fat_read_next_cluster(&info, cluster);
-            cache_base_offset += cluster_size;
-            cache_current_cluster = cluster;
-        }
-    }
-    return (done == size) ? 0 : -1;
-}
-
-static int fs_try_usb_root_tar_lookup(const char* path, void** data, size_t* size, uint32_t* mode) {
-    uint64_t offset = 0;
-    uint8_t header[512];
-    struct usb_root_cache_entry* cache;
-    if (!g_usb_root_tar_file_ready) return -1;
-    cache = usb_root_cache_find(path);
-    if (cache) {
-        if (mode) *mode = cache->mode;
-        if (size) *size = cache->size;
-        if (data) *data = cache->data;
-        return 0;
-    }
-    while (offset + 512U <= g_usb_root_tar_ent.size) {
-        struct tar_header* h = (struct tar_header*)header;
-        uint64_t file_size;
-        uint64_t padded_size;
-        if (usb_read_file_range(&g_usb_root_tar_ent, offset, header, sizeof(header)) < 0) return -1;
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        if (h->typeflag == '0' || h->typeflag == '\0') {
-            padded_size = (file_size + 511U) & ~511U;
-        } else {
-            padded_size = 0;
-        }
-        if (tar_name_matches(h->name, path)) {
-            if (mode) *mode = (h->typeflag == '5') ? KSTAT_MODE_DIR : KSTAT_MODE_FILE;
-            if (size) *size = file_size;
-            if (data) {
-                uint64_t pages = (file_size + PAGE_SIZE - 1U) / PAGE_SIZE;
-                uint8_t* buf;
-                if (h->typeflag == '5' || file_size == 0) {
-                    *data = 0;
-                    return 0;
-                }
-                if (pages == 0) pages = 1;
-                buf = (uint8_t*)PHYS_TO_VIRT(pmm_alloc((int)pages));
-                if (!buf) return -1;
-                if (usb_read_file_range(&g_usb_root_tar_ent, offset + 512U, buf, (size_t)file_size) < 0) {
-                    pmm_free((void*)VIRT_TO_PHYS((uint64_t)buf), (int)pages);
-                    return -1;
-                }
-                usb_root_cache_store(path, (h->typeflag == '5') ? KSTAT_MODE_DIR : KSTAT_MODE_FILE,
-                                     buf, (size_t)file_size, pages);
-                *data = buf;
-            }
-            return 0;
-        }
-        offset += 512U + padded_size;
-    }
-    return -1;
-}
-
-static int fs_try_usb_root_tar_stat_lookup(const char* path, struct kstat* st) {
-    uint64_t offset = 0;
-    uint8_t header[512];
-    if (!g_usb_root_tar_file_ready) return -1;
-    while (offset + 512U <= g_usb_root_tar_ent.size) {
-        struct tar_header* h = (struct tar_header*)header;
-        uint64_t file_size;
-        uint64_t padded_size;
-        if (usb_read_file_range(&g_usb_root_tar_ent, offset, header, sizeof(header)) < 0) return -1;
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        if (h->typeflag == '0' || h->typeflag == '\0') {
-            padded_size = (file_size + 511U) & ~511U;
-        } else {
-            padded_size = 0;
-        }
-        if (tar_name_matches(h->name, path)) {
-            kstat_from_tar_header(st, h, file_size);
-            st->dev = FS_DEV_USB_ROOT_ARCHIVE;
-            return 0;
-        }
-        offset += 512U + padded_size;
-    }
-    return -1;
-}
-
-static int fs_usb_root_tar_header_valid(void) {
-    uint8_t header[512];
-    struct tar_header* h = (struct tar_header*)header;
-    if (!g_usb_root_tar_file_ready || g_usb_root_tar_ent.size < 512U) return -1;
-    if (usb_read_file_range(&g_usb_root_tar_ent, 0, header, sizeof(header)) < 0) return -1;
-    if (h->name[0] == '\0') return -1;
-    if (h->magic[0] != 'u' || h->magic[1] != 's' || h->magic[2] != 't' ||
-        h->magic[3] != 'a' || h->magic[4] != 'r') {
-        return -1;
-    }
-    return 0;
-}
-
-static void fs_prefetch_usb_root_shell(void) {
-    void* data = 0;
-    size_t size = 0;
-    uint32_t mode = 0;
-    if (usb_root_cache_find("bin/sh")) return;
-    (void)fs_try_usb_root_tar_lookup("bin/sh", &data, &size, &mode);
-}
-
 static int fs_try_active_root_lookup(const char* path, void** data, size_t* size, uint32_t* mode) {
     if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
         uint64_t retro_size = 0;
@@ -1422,21 +1134,6 @@ static int fs_try_active_root_lookup(const char* path, void** data, size_t* size
         }
         return 0;
     }
-    if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
-        return fs_try_archive_lookup(g_usb_root_tar, g_usb_root_tar_size, path, data, size, mode);
-    }
-    if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
-        return fs_try_usb_root_tar_lookup(path, data, size, mode);
-    }
-    if (module_request.response) {
-        for (uint64_t i = 0; i < module_request.response->module_count; i++) {
-            struct limine_file* m = module_request.response->modules[i];
-            if (strcmp_suffix_fs(m->path, ".tar") &&
-                fs_try_archive_lookup((uint8_t*)m->address, m->size, path, data, size, mode) == 0) {
-                return 0;
-            }
-        }
-    }
     return -1;
 }
 
@@ -1454,117 +1151,21 @@ static int fs_try_active_root_stat(const char* path, struct kstat* st) {
         st->atime_sec = mtime;
         return 0;
     }
-    if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
-        if (fs_try_archive_stat_lookup(g_usb_root_tar, g_usb_root_tar_size, path, st) == 0) {
-            st->dev = FS_DEV_USB_ROOT_ARCHIVE;
-            return 0;
-        }
-        return -1;
-    }
-    if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
-        return fs_try_usb_root_tar_stat_lookup(path, st);
-    }
-    if (module_request.response) {
-        for (uint64_t i = 0; i < module_request.response->module_count; i++) {
-            struct limine_file* m = module_request.response->modules[i];
-            if (strcmp_suffix_fs(m->path, ".tar") &&
-                fs_try_archive_stat_lookup((uint8_t*)m->address, m->size, path, st) == 0) {
-                return 0;
-            }
-        }
-    }
     return -1;
 }
 
 static int fs_root_is_usb_only(void) {
-    return g_root_source == ROOT_SOURCE_USB &&
-           ((g_usb_root_tar && g_usb_root_tar_size > 0) || g_usb_root_tar_file_ready);
-}
-
-static void fs_list_archive_entries(uint8_t* archive, size_t archive_size, const char* label) {
-    uint8_t* ptr = archive;
-    uint8_t* end = archive + archive_size;
-    if (!archive || archive_size == 0) return;
-    puts(label);
-    while (ptr < end) {
-        struct tar_header* h = (struct tar_header*)ptr;
-        uint64_t file_size;
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        puts(h->name);
-        puts(" (TAR, size: 0x"); puthex(file_size); puts(")\n");
-        ptr += 512 + ((file_size + 511) & ~511);
-    }
-}
-
-static void fs_list_usb_root_tar_entries(const char* label) {
-    uint64_t offset = 0;
-    uint8_t header[512];
-    if (!g_usb_root_tar_file_ready) return;
-    puts(label);
-    while (offset + 512U <= g_usb_root_tar_ent.size) {
-        struct tar_header* h = (struct tar_header*)header;
-        uint64_t file_size;
-        uint64_t padded_size;
-        if (usb_read_file_range(&g_usb_root_tar_ent, offset, header, sizeof(header)) < 0) {
-            puts("(usb root listing failed)\n");
-            return;
-        }
-        if (h->name[0] == '\0') break;
-        file_size = oct2int(h->size, 12);
-        if (h->typeflag == '0' || h->typeflag == '\0') {
-            padded_size = (file_size + 511U) & ~511U;
-        } else {
-            padded_size = 0;
-        }
-        puts(h->name);
-        puts(" (TAR, size: 0x"); puthex(file_size); puts(")\n");
-        offset += 512U + padded_size;
-    }
-}
-
-int fs_mount_usb_root_tar(const char* path) {
-    const char* normalized = normalize_fs_path(path ? path : "usb/rootfs.img");
-    struct fat_dir_entry_info ent;
-    if (!starts_with(normalized, "usb/")) return -1;
-    if (fat_resolve_path(normalized, &ent) < 0) return -1;
-    if (ent.attr & 0x10U) return -1;
-    if (ent.size < 512) return -1;
-    if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar) {
-        pmm_free((void*)VIRT_TO_PHYS((uint64_t)g_usb_root_tar), (int)g_usb_root_tar_pages);
-    }
-    g_usb_root_tar = 0;
-    g_usb_root_tar_size = 0;
-    g_usb_root_tar_pages = 0;
-    usb_root_cache_reset();
-    fat_copy_entry(&g_usb_root_tar_ent, &ent);
-    g_usb_root_tar_file_ready = 1;
-    if (fs_usb_root_tar_header_valid() < 0) {
-        g_usb_root_tar_file_ready = 0;
-        return -1;
-    }
-    fs_prefetch_usb_root_shell();
-    g_root_source = ROOT_SOURCE_USB;
-    for (int i = 0; i < (int)sizeof(g_usb_root_tar_path) - 1; i++) {
-        g_usb_root_tar_path[i] = normalized[i];
-        if (normalized[i] == '\0') break;
-    }
-    g_usb_root_tar_path[sizeof(g_usb_root_tar_path) - 1] = '\0';
     return 0;
 }
 
 int fs_mount_module_root(void) {
     g_root_source = ROOT_SOURCE_MODULE;
-    g_usb_root_tar_file_ready = 0;
-    usb_root_cache_reset();
     return 0;
 }
 
 int fs_mount_retrofs_root(void) {
     if (!retrofs_is_mounted()) return -1;
     g_root_source = ROOT_SOURCE_RETROFS;
-    g_usb_root_tar_file_ready = 0;
-    usb_root_cache_reset();
     return 0;
 }
 
@@ -1572,10 +1173,8 @@ int fs_get_mount_status(char* buf, size_t size) {
     const char* module_root = "root=module:boot/rootfs.img\n/usb -> usb-fat";
     const char* retrofs_root_vblk = "root=retrofs:vblk0";
     const char* retrofs_root_boot = "root=retrofs:bootimg0";
-    const char* usb_prefix = "root=usb:/";
     const char* retrofs_root = storage_find_device("vblk0") ? retrofs_root_vblk : retrofs_root_boot;
     size_t i = 0;
-    size_t j = 0;
     if (!buf || size == 0) return -1;
     if (g_root_source == ROOT_SOURCE_MODULE) {
         while (module_root[i] && i + 1 < size) {
@@ -1586,16 +1185,6 @@ int fs_get_mount_status(char* buf, size_t size) {
         while (retrofs_root[i] && i + 1 < size) {
             buf[i] = retrofs_root[i];
             i++;
-        }
-    } else {
-        while (usb_prefix[j] && i + 1 < size) buf[i++] = usb_prefix[j++];
-        for (j = 0; g_usb_root_tar_path[j] && i + 1 < size; j++) {
-            buf[i++] = g_usb_root_tar_path[j];
-        }
-        if (i + 1 < size) buf[i++] = '\n';
-        {
-            const char* mp = "/usb -> usb-fat";
-            for (j = 0; mp[j] && i + 1 < size; j++) buf[i++] = mp[j];
         }
     }
     buf[(i < size) ? i : (size - 1)] = '\0';
@@ -1628,6 +1217,7 @@ int sys_open(const char* path, int flags, int mode) {
     if (want_dir) {
         struct orth_dirent* dirents;
         size_t entry_count = 0;
+        fs_file_t* file;
         void* phys = pmm_alloc(DIR_BUF_PAGES);
         if (!phys) return -1;
         dirents = (struct orth_dirent*)PHYS_TO_VIRT(phys);
@@ -1647,22 +1237,38 @@ int sys_open(const char* path, int flags, int mode) {
                 return -1;
             }
         }
+        file = fs_alloc_file();
+        if (!file) {
+            pmm_free(phys, DIR_BUF_PAGES);
+            return -1;
+        }
+        file->type = FT_DIR;
+        file->size = entry_count * sizeof(struct orth_dirent);
+        file->offset = 0;
+        file->ops = &g_dir_file_ops;
+        file->private_data = dirents;
+        file->aux0 = DIR_BUF_PAGES;
         current->fds[fd].type = FT_DIR;
-        current->fds[fd].data = dirents;
-        current->fds[fd].size = entry_count * sizeof(struct orth_dirent);
+        current->fds[fd].file = file;
+        current->fds[fd].data = 0;
+        current->fds[fd].size = 0;
         current->fds[fd].offset = 0;
         current->fds[fd].in_use = 1;
         current->fds[fd].flags = flags;
-        current->fds[fd].aux0 = DIR_BUF_PAGES;
+        current->fds[fd].aux0 = 0;
         current->fds[fd].aux1 = 0;
         if (*path == '\0') {
+            file->path[0] = '/';
+            file->path[1] = '\0';
             current->fds[fd].name[0] = '/';
             current->fds[fd].name[1] = '\0';
         } else {
             for (int j = 0; j < 63; j++) {
+                file->path[j] = resolved_path[j];
                 current->fds[fd].name[j] = resolved_path[j];
                 if (resolved_path[j] == '\0') break;
             }
+            file->path[63] = '\0';
             current->fds[fd].name[63] = '\0';
         }
         return fd;
@@ -1728,20 +1334,41 @@ int sys_open(const char* path, int flags, int mode) {
     }
 
     {
-        void* tar_data = 0;
-        size_t tar_size = 0;
-        uint32_t tar_mode = 0;
-        if (fs_try_active_root_lookup(path, &tar_data, &tar_size, &tar_mode) == 0) {
-            if ((tar_mode & 0170000U) == KSTAT_MODE_DIR) {
+        void* root_data = 0;
+        size_t root_size = 0;
+        uint32_t root_mode = 0;
+        if (fs_try_active_root_lookup(path, &root_data, &root_size, &root_mode) == 0) {
+            fs_file_t* file;
+            if ((root_mode & 0170000U) == KSTAT_MODE_DIR) {
                 return -1;
             }
-            current->fds[fd].type = (g_root_source == ROOT_SOURCE_RETROFS) ? FT_RETROFS : FT_TAR;
-            current->fds[fd].data = tar_data;
-            current->fds[fd].size = tar_size;
+            file = fs_alloc_file();
+            if (!file) {
+                if (root_data && root_size) {
+                    pmm_free((void*)VIRT_TO_PHYS((uint64_t)root_data),
+                             (int)((root_size + PAGE_SIZE - 1U) / PAGE_SIZE));
+                }
+                return -1;
+            }
+            file->type = FT_RETROFS;
+            file->size = root_size;
+            file->offset = 0;
+            file->ops = &g_retrofs_file_ops;
+            file->private_data = root_data;
+            file->aux0 = (uint32_t)((root_size + PAGE_SIZE - 1U) / PAGE_SIZE);
+            for (int j = 0; j < 63; j++) {
+                file->path[j] = path[j];
+                if (path[j] == '\0') break;
+            }
+            file->path[63] = '\0';
+            current->fds[fd].type = FT_RETROFS;
+            current->fds[fd].file = file;
+            current->fds[fd].data = 0;
+            current->fds[fd].size = 0;
             current->fds[fd].offset = 0;
             current->fds[fd].in_use = 1;
             current->fds[fd].flags = flags;
-            current->fds[fd].aux0 = (uint32_t)((tar_size + PAGE_SIZE - 1U) / PAGE_SIZE);
+            current->fds[fd].aux0 = 0;
             for (int j = 0; j < 63; j++) {
                 current->fds[fd].name[j] = path[j];
                 if (path[j] == '\0') break;
@@ -1770,30 +1397,6 @@ int sys_open(const char* path, int flags, int mode) {
             }
             current->fds[fd].name[63] = '\0';
             return fd;
-        }
-        if (strcmp_suffix_fs(m->path, ".tar")) {
-            uint8_t* ptr = (uint8_t*)m->address;
-            uint8_t* end = ptr + m->size;
-            while (ptr < end) {
-                struct tar_header* h = (struct tar_header*)ptr;
-                if (h->name[0] == '\0') break;
-                uint64_t file_size = oct2int(h->size, 12);
-                if (tar_name_matches(h->name, path)) {
-                    current->fds[fd].type = FT_TAR;
-                    current->fds[fd].data = ptr + 512;
-                    current->fds[fd].size = file_size;
-                    current->fds[fd].offset = 0;
-                    current->fds[fd].in_use = 1;
-                    current->fds[fd].flags = flags;
-                    for (int j = 0; j < 63; j++) {
-                        current->fds[fd].name[j] = path[j];
-                        if (path[j] == '\0') break;
-                    }
-                    current->fds[fd].name[63] = '\0';
-                    return fd;
-                }
-                ptr += 512 + ((file_size + 511) & ~511);
-            }
         }
     }
     return -1;
@@ -1845,15 +1448,16 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         return (int64_t)written;
     }
 
-    if (f->type == FT_SOCKET) {
+    if (fs_fd_type(f) == FT_SOCKET) {
         return net_socket_write_fd(f, buf, count);
     }
 
-    if (f->type == FT_RETROFS) {
-        if (retrofs_write_file(f->name, f->offset, buf, count) == 0) {
-            f->offset += count;
-            if (f->offset > f->size) {
-                f->size = f->offset;
+    if (fs_fd_type(f) == FT_RETROFS) {
+        size_t offset_now = fs_fd_offset(f);
+        if (retrofs_write_file(fs_fd_name(f), offset_now, buf, count) == 0) {
+            fs_fd_set_offset(f, offset_now + count);
+            if (fs_fd_offset(f) > fs_fd_size(f)) {
+                fs_fd_set_size(f, fs_fd_offset(f));
             }
             return (int64_t)count;
         }
@@ -1947,54 +1551,57 @@ int64_t sys_read(int fd, void* buf, size_t count) {
         }
     }
 
-    if (f->type == FT_SOCKET) {
+    if (fs_fd_type(f) == FT_SOCKET) {
         return net_socket_read_fd(f, buf, count);
     }
 
-    if (f->type == FT_USB) {
+    if (fs_fd_type(f) == FT_USB) {
         struct fat_boot_info info;
         uint8_t sector[4096];
         size_t done = 0;
         uint32_t cluster;
         uint32_t cluster_size;
         size_t skip;
+        size_t offset_now = fs_fd_offset(f);
+        size_t size_now = fs_fd_size(f);
         if (usb_load_fat_boot(&info) < 0) return -1;
         cluster = f->aux0;
         cluster_size = (uint32_t)info.bytes_per_sector * info.sectors_per_cluster;
         if (cluster_size > sizeof(sector)) return -1;
-        skip = f->offset;
+        skip = offset_now;
         while (skip >= cluster_size && cluster >= 2 && cluster < 0x0FFFFFF8U) {
             cluster = fat_read_next_cluster(&info, cluster);
             skip -= cluster_size;
         }
-        while (done < count && f->offset < f->size && cluster >= 2 && cluster < 0x0FFFFFF8U) {
+        while (done < count && offset_now < size_now && cluster >= 2 && cluster < 0x0FFFFFF8U) {
             size_t chunk;
             uint32_t lba = fat_cluster_to_lba(&info, cluster);
             if (usb_read_blocks_safe(lba, sector, info.sectors_per_cluster) < 0) return (done > 0) ? (int64_t)done : -1;
             chunk = cluster_size - skip;
             if (chunk > count - done) chunk = count - done;
-            if (chunk > f->size - f->offset) chunk = f->size - f->offset;
+            if (chunk > size_now - offset_now) chunk = size_now - offset_now;
             for (size_t i = 0; i < chunk; i++) ((uint8_t*)buf)[done + i] = sector[skip + i];
             done += chunk;
-            f->offset += chunk;
+            offset_now += chunk;
             skip = 0;
-            if (done >= count || f->offset >= f->size) break;
+            if (done >= count || offset_now >= size_now) break;
             cluster = fat_read_next_cluster(&info, cluster);
         }
+        fs_fd_set_offset(f, offset_now);
         return (int64_t)done;
     }
 
-    if (f->type == FT_DIR) return -1;
+    if (fs_fd_type(f) == FT_DIR) return -1;
 
-    if (f->offset >= f->size) return 0;
-    size_t remaining = f->size - f->offset;
+    if (fs_fd_offset(f) >= fs_fd_size(f)) return 0;
+    size_t remaining = fs_fd_size(f) - fs_fd_offset(f);
     size_t to_read = (count > remaining) ? remaining : count;
     char* dest = (char*)buf;
-    char* src = (char*)f->data + f->offset;
+    char* src = (char*)fs_fd_data(f) + fs_fd_offset(f);
     for (size_t i = 0; i < to_read; i++) dest[i] = src[i];
-    f->offset += to_read;
-    if (f->type == FT_RAMFS) {
-        struct ramfs_file* rf = find_ramfs(f->name);
+    fs_fd_set_offset(f, fs_fd_offset(f) + to_read);
+    if (fs_fd_type(f) == FT_RAMFS) {
+        struct ramfs_file* rf = find_ramfs(fs_fd_name(f));
         if (rf) rf->atime_sec = fs_now_sec();
     }
     return (int64_t)to_read;
@@ -2134,45 +1741,45 @@ int sys_fstat(int fd, struct kstat* st) {
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     
     file_descriptor_t* f = &current->fds[fd];
-    if (f->type == FT_CONSOLE) {
+    if (fs_fd_type(f) == FT_CONSOLE) {
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_CHR), 0);
         st->dev = FS_DEV_CONSOLE;
         st->ino = (uint64_t)fd + 1U;
         st->rdev = FS_DEV_CONSOLE;
         return 0;
     }
-    if (f->type == FT_PIPE) {
+    if (fs_fd_type(f) == FT_PIPE) {
         kstat_set_defaults(st, KSTAT_MODE_FILE | 0600U, 0);
         st->dev = FS_DEV_PIPE;
         st->ino = ((uint64_t)(uintptr_t)f->data) >> 4;
         return 0;
     }
-    if (f->type == FT_SOCKET) {
+    if (fs_fd_type(f) == FT_SOCKET) {
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_CHR), 0);
         st->dev = FS_DEV_PIPE;
         st->ino = ((uint64_t)(uintptr_t)f->data) >> 4;
         return 0;
     }
-    if (f->type == FT_DIR) {
-        if (f->name[0]) return sys_stat(f->name, st);
-        kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_DIR), (int64_t)f->size);
+    if (fs_fd_type(f) == FT_DIR) {
+        if (fs_fd_name(f)[0]) return sys_stat(fs_fd_name(f), st);
+        kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_DIR), (int64_t)fs_fd_size(f));
         st->dev = FS_DEV_SYNTH;
         st->ino = (uint64_t)fd + 1U;
         return 0;
     }
-    if (f->type == FT_USB) {
-        if (f->name[0]) return sys_stat(f->name, st);
+    if (fs_fd_type(f) == FT_USB) {
+        if (fs_fd_name(f)[0]) return sys_stat(fs_fd_name(f), st);
         kstat_set_defaults(st,
                            fs_default_mode_for_type((f->aux1 & 0x10U) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE),
-                           (int64_t)f->size);
+                           (int64_t)fs_fd_size(f));
         st->dev = FS_DEV_USB_FAT;
-        st->ino = f->name[0] ? fs_hash_name(f->name) : ((uint64_t)f->aux0 + 1U);
+        st->ino = fs_fd_name(f)[0] ? fs_hash_name(fs_fd_name(f)) : ((uint64_t)f->aux0 + 1U);
         return 0;
     }
-    if ((f->type == FT_RAMFS || f->type == FT_TAR || f->type == FT_MODULE || f->type == FT_USBROOT || f->type == FT_RETROFS) && f->name[0]) {
-        return sys_stat(f->name, st);
+    if ((fs_fd_type(f) == FT_RAMFS || fs_fd_type(f) == FT_MODULE || fs_fd_type(f) == FT_RETROFS) && fs_fd_name(f)[0]) {
+        return sys_stat(fs_fd_name(f), st);
     }
-    kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_FILE), (int64_t)f->size);
+    kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_FILE), (int64_t)fs_fd_size(f));
     return 0;
 }
 
@@ -2184,14 +1791,14 @@ int sys_getdents(int fd, struct orth_dirent* dirp, size_t count) {
     if (!current || !dirp) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     f = &current->fds[fd];
-    if (f->type != FT_DIR) return -1;
-    if (f->offset >= f->size) return 0;
-    remaining = f->size - f->offset;
+    if (fs_fd_type(f) != FT_DIR) return -1;
+    if (fs_fd_offset(f) >= fs_fd_size(f)) return 0;
+    remaining = fs_fd_size(f) - fs_fd_offset(f);
     to_copy = (count > remaining) ? remaining : count;
     for (size_t i = 0; i < to_copy; i++) {
-        ((uint8_t*)dirp)[i] = ((uint8_t*)f->data)[f->offset + i];
+        ((uint8_t*)dirp)[i] = ((uint8_t*)fs_fd_data(f))[fs_fd_offset(f) + i];
     }
-    f->offset += to_copy;
+    fs_fd_set_offset(f, fs_fd_offset(f) + to_copy);
     return (int)to_copy;
 }
 
@@ -2221,13 +1828,13 @@ int sys_getdents64(int fd, void* dirp, size_t count) {
     if (!current || !dirp) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     f = &current->fds[fd];
-    if (f->type != FT_DIR) return -1;
-    if (f->offset >= f->size) return 0;
+    if (fs_fd_type(f) != FT_DIR) return -1;
+    if (fs_fd_offset(f) >= fs_fd_size(f)) return 0;
 
-    src = (struct orth_dirent*)f->data;
-    index = f->offset / sizeof(struct orth_dirent);
+    src = (struct orth_dirent*)fs_fd_data(f);
+    index = fs_fd_offset(f) / sizeof(struct orth_dirent);
 
-    while ((index + 1) * sizeof(struct orth_dirent) <= f->size) {
+    while ((index + 1) * sizeof(struct orth_dirent) <= fs_fd_size(f)) {
         struct linux_dirent_compat ent;
         size_t name_len = 0;
         size_t reclen;
@@ -2257,7 +1864,7 @@ int sys_getdents64(int fd, void* dirp, size_t count) {
         index++;
     }
 
-    f->offset = index * sizeof(struct orth_dirent);
+    fs_fd_set_offset(f, index * sizeof(struct orth_dirent));
     return (int)out_used;
 }
 
@@ -2307,6 +1914,13 @@ int sys_stat(const char* path, struct kstat* st) {
         }
         if (fs_root_is_usb_only()) return -ENOENT;
     }
+
+    if (module_dir_exists(path)) {
+        kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_DIR), 0);
+        st->dev = FS_DEV_MODULE;
+        st->ino = fs_hash_name(path);
+        return 0;
+    }
     
     if (module_request.response) {
         for (uint64_t i = 0; i < module_request.response->module_count; i++) {
@@ -2316,20 +1930,6 @@ int sys_stat(const char* path, struct kstat* st) {
                 st->dev = FS_DEV_MODULE;
                 st->ino = fs_hash_name(path);
                 return 0;
-            }
-            if (strcmp_suffix_fs(m->path, ".tar")) {
-                uint8_t* ptr = (uint8_t*)m->address;
-                uint8_t* end = ptr + m->size;
-                while (ptr < end) {
-                    struct tar_header* h = (struct tar_header*)ptr;
-                    if (h->name[0] == '\0') break;
-                    uint64_t file_size = oct2int(h->size, 12);
-                    if (tar_name_matches(h->name, path)) {
-                        kstat_from_tar_header(st, h, file_size);
-                        return 0;
-                    }
-                    ptr += 512 + ((file_size + 511) & ~511);
-                }
             }
         }
     }
@@ -2455,15 +2055,15 @@ int64_t sys_lseek(int fd, int64_t offset, int whence) {
     if (whence == 0) { // SEEK_SET
         new_offset = offset;
     } else if (whence == 1) { // SEEK_CUR
-        new_offset = f->offset + offset;
+        new_offset = (int64_t)fs_fd_offset(f) + offset;
     } else if (whence == 2) { // SEEK_END
-        new_offset = f->size + offset;
+        new_offset = (int64_t)fs_fd_size(f) + offset;
     } else {
         return -1;
     }
     
     if (new_offset < 0) return -1;
-    f->offset = new_offset;
+    fs_fd_set_offset(f, (size_t)new_offset);
     return new_offset;
 }
 
@@ -2636,9 +2236,9 @@ int sys_fchdir(int fd) {
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     f = &current->fds[fd];
-    if (f->type != FT_DIR) return -1;
-    if (f->name[0] == '\0') return -1;
-    return sys_chdir(f->name);
+    if (fs_fd_type(f) != FT_DIR) return -1;
+    if (fs_fd_name(f)[0] == '\0') return -1;
+    return sys_chdir(fs_fd_name(f));
 }
 
 int sys_getcwd(char* buf, size_t size) {
@@ -2679,21 +2279,6 @@ int fs_get_file_data(const char* path, void** data, size_t* size) {
                 *size = m->size;
                 return 0;
             }
-            if (strcmp_suffix_fs(m->path, ".tar")) {
-                uint8_t* ptr = (uint8_t*)m->address;
-                uint8_t* end = ptr + m->size;
-                while (ptr < end) {
-                    struct tar_header* h = (struct tar_header*)ptr;
-                    if (h->name[0] == '\0') break;
-                    uint64_t file_size = oct2int(h->size, 12);
-                    if (tar_name_matches(h->name, path)) {
-                        *data = ptr + 512;
-                        *size = file_size;
-                        return 0;
-                    }
-                    ptr += 512 + ((file_size + 511) & ~511);
-                }
-            }
         }
     }
     return -1;
@@ -2707,28 +2292,11 @@ void sys_ls(void) {
             puts(" (Ramfs, size: 0x"); puthex(ramfs_table[i].size); puts(")\n");
         }
     }
-    if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar && g_usb_root_tar_size > 0) {
-        fs_list_archive_entries(g_usb_root_tar, g_usb_root_tar_size, "--- Files in Active Root ---\n");
-    } else if (g_root_source == ROOT_SOURCE_USB && g_usb_root_tar_file_ready) {
-        fs_list_usb_root_tar_entries("--- Files in Active Root ---\n");
-    } else if (module_request.response) {
-        puts("--- Files in TAR/Modules ---\n");
+    if (module_request.response) {
+        puts("--- Files in Modules ---\n");
         for (uint64_t i = 0; i < module_request.response->module_count; i++) {
             struct limine_file* m = module_request.response->modules[i];
-            if (strcmp_suffix_fs(m->path, ".tar")) {
-                uint8_t* ptr = (uint8_t*)m->address;
-                uint8_t* end = ptr + m->size;
-                while (ptr < end) {
-                    struct tar_header* h = (struct tar_header*)ptr;
-                    if (h->name[0] == '\0') break;
-                    uint64_t file_size = oct2int(h->size, 12);
-                    puts(h->name);
-                    puts(" (TAR, size: 0x"); puthex(file_size); puts(")\n");
-                    ptr += 512 + ((file_size + 511) & ~511);
-                }
-            } else {
-                puts(m->path); puts(" (Module)\n");
-            }
+            puts(m->path); puts(" (Module)\n");
         }
     }
     if (usb_block_device_ready()) {

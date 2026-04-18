@@ -9,39 +9,35 @@
 
 struct task;
 
-// USTAR TAR ヘッダ構造
-struct tar_header {
-    char name[100];     // ファイル名
-    char mode[8];       // モード
-    char uid[8];        // ユーザーID
-    char gid[8];        // グループID
-    char size[12];      // サイズ (8進数文字列)
-    char mtime[12];     // 更新日時
-    char chksum[8];     // チェックサム
-    char typeflag;      // タイプ (0: 通常ファイル, 5: ディレクトリ)
-    char linkname[100];
-    char magic[6];      // "ustar"
-    char version[2];
-    char uname[32];
-    char gname[32];
-    char devmajor[8];
-    char devminor[8];
-    char prefix[155];
-};
-
 typedef enum {
     FT_UNUSED,
     FT_CONSOLE, // stdin/stdout/stderr
     FT_MODULE,  // Limine 直接ロード
-    FT_TAR,     // TAR内ファイル
     FT_RAMFS,   // メモリ上の書き込み可能ファイル
     FT_PIPE,    // パイプ
     FT_SOCKET,  // lwIP-backed socket
     FT_USB,     // USB FAT file
-    FT_USBROOT, // file inside mounted USB TAR root
     FT_RETROFS, // file inside RetroFS root image
     FT_DIR      // synthesized directory listing
 } file_type_t;
+
+struct fs_file;
+
+typedef struct fs_file_ops {
+    void (*release)(struct fs_file* file);
+} fs_file_ops_t;
+
+typedef struct fs_file {
+    int ref_count;
+    file_type_t type;
+    size_t size;
+    size_t offset;
+    const fs_file_ops_t* ops;
+    void* private_data;
+    uint32_t aux0;
+    uint32_t aux1;
+    char path[64];
+} fs_file_t;
 
 #define O_RDONLY    0
 #define O_WRONLY    1
@@ -67,6 +63,7 @@ typedef struct {
 
 typedef struct {
     file_type_t type;
+    fs_file_t* file; // shared open-file object for backends migrated in Phase 2
     void* data;      // ファイルデータへのポインタ (FT_RAMFS の場合は malloc 領域, FT_PIPE の場合は pipe_t)
     size_t size;     // ファイルサイズ
     size_t offset;   // 現在の読み取り/書き込みオフセット
@@ -144,7 +141,13 @@ int fs_clone_fd(file_descriptor_t* dst, const file_descriptor_t* src);
 int fs_dup_fd(file_descriptor_t* dst, const file_descriptor_t* src);
 void fs_release_fd(file_descriptor_t* fd);
 void fs_close_cloexec_descriptors(struct task* task);
-int fs_mount_usb_root_tar(const char* path);
+file_type_t fs_fd_type(const file_descriptor_t* fd);
+void* fs_fd_data(const file_descriptor_t* fd);
+size_t fs_fd_size(const file_descriptor_t* fd);
+size_t fs_fd_offset(const file_descriptor_t* fd);
+void fs_fd_set_offset(file_descriptor_t* fd, size_t offset);
+void fs_fd_set_size(file_descriptor_t* fd, size_t size);
+const char* fs_fd_name(const file_descriptor_t* fd);
 int fs_mount_module_root(void);
 int fs_mount_retrofs_root(void);
 int fs_get_mount_status(char* buf, size_t size);

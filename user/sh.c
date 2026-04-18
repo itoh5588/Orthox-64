@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -9,6 +10,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <glob.h>
+#ifdef sa_handler
+#undef sa_handler
+#endif
 #include "syscall.h"
 
 extern int scandir(const char*, struct dirent***,
@@ -47,10 +51,7 @@ static void run_write_check(const char* path);
 static void run_dir_check(const char* path);
 static void run_scandir_check(const char* path);
 static void run_glob_check(const char* pattern);
-static void run_usb_root_check(void);
-static void run_usb_ash_check(void);
 static void run_musl_check(void);
-static void run_usb_musl_check(void);
 
 static int usb_read_blocks_safe(uint32_t lba, void* buf, uint32_t count) {
     uint8_t* dst = (uint8_t*)buf;
@@ -643,36 +644,16 @@ static void run_shell_line(char* line) {
             }
             return;
         }
-        if (argc >= 2 && strcmp(args[1], "usbroot") == 0) {
-            const char* path = (argc >= 3) ? args[2] : "/usb/usbroot.tar";
-            if (mount_usb_root(path) == 0) {
-                sync_shell_cwd();
-                printf("mount: root switched to %s\n", path);
-            } else {
-                printf("mount: failed to mount %s\n", path);
-            }
-            return;
-        }
         if (argc >= 2 && strcmp(args[1], "module") == 0) {
             if (mount_module_root() == 0) {
                 sync_shell_cwd();
-                printf("mount: root switched to module rootfs.tar\n");
+                printf("mount: root switched to boot module image\n");
             } else {
                 printf("mount: failed to switch root to module\n");
             }
             return;
         }
-        printf("mount: usage: mount [usbroot [/usb/usbroot.tar]|module]\n");
-        return;
-    }
-
-    if (strcmp(args[0], "usbrootcheck") == 0) {
-        run_usb_root_check();
-        return;
-    }
-
-    if (strcmp(args[0], "usbashcheck") == 0) {
-        run_usb_ash_check();
+        printf("mount: usage: mount [module]\n");
         return;
     }
 
@@ -680,12 +661,6 @@ static void run_shell_line(char* line) {
         run_musl_check();
         return;
     }
-
-    if (strcmp(args[0], "usbmuslcheck") == 0) {
-        run_usb_musl_check();
-        return;
-    }
-
     if (strcmp(args[0], "writecheck") == 0) {
         run_write_check((argc >= 2) ? args[1] : "scratch.txt");
         return;
@@ -1160,102 +1135,6 @@ static void run_glob_check(const char* pattern) {
     globfree(&g);
 }
 
-static void run_usb_root_check(void) {
-    struct stat st;
-    char buf[256];
-    int n;
-
-    if (get_mount_status(buf, sizeof(buf)) == 0) {
-        if (strcmp(buf, "root=usb:/usb/rootfs.tar\n/usb -> usb-fat") != 0) {
-            printf("usbrootcheck: mounting /usb/rootfs.tar\n");
-            if (mount_usb_root("/usb/rootfs.tar") < 0) {
-                printf("usbrootcheck: FAIL mount\n");
-                return;
-            }
-            if (get_mount_status(buf, sizeof(buf)) != 0) {
-                printf("usbrootcheck: FAIL mount status\n");
-                return;
-            }
-        }
-        printf("%s\n", buf);
-    }
-
-    n = read_file_exact("hello.txt", buf, sizeof(buf));
-    if (n < 0) {
-        printf("usbrootcheck: FAIL read hello.txt\n");
-        return;
-    }
-    if (strcmp(buf, "Hello from OrthOS TAR File System!\n") != 0) {
-        printf("usbrootcheck: FAIL hello.txt content\n");
-        printf("usbrootcheck: got: %s\n", buf);
-        return;
-    }
-
-    if (stat("/bin/sh", &st) < 0) {
-        printf("usbrootcheck: FAIL stat /bin/sh\n");
-        return;
-    }
-    if ((st.st_mode & 0170000) != 0100000 || st.st_size <= 0) {
-        printf("usbrootcheck: FAIL /bin/sh metadata mode=%o size=%ld\n", st.st_mode, (long)st.st_size);
-        return;
-    }
-
-    n = read_file_exact("/usb/README.TXT", buf, sizeof(buf));
-    if (n < 0) {
-        printf("usbrootcheck: FAIL read /usb/README.TXT\n");
-        return;
-    }
-
-    n = read_file_exact("/usb/VeryLongDirectory/InsideLongDir.txt", buf, sizeof(buf));
-    if (n < 0) {
-        printf("usbrootcheck: FAIL read LFN path\n");
-        return;
-    }
-
-    printf("usbrootcheck: PASS\n");
-}
-
-static void run_usb_ash_check(void) {
-    char buf[256];
-    int pid;
-    int status = 0;
-    char* argv[] = {
-        "sh",
-        "-c",
-        "pwd && cd /bin && pwd && test -f /hello.txt && echo ok",
-        NULL
-    };
-
-    if (get_mount_status(buf, sizeof(buf)) != 0 ||
-        strcmp(buf, "root=usb:/usb/rootfs.tar\n/usb -> usb-fat") != 0) {
-        printf("usbashcheck: mounting /usb/rootfs.tar\n");
-        if (mount_usb_root("/usb/rootfs.tar") < 0) {
-            printf("usbashcheck: FAIL mount\n");
-            return;
-        }
-    }
-
-    pid = fork();
-    if (pid < 0) {
-        printf("usbashcheck: FAIL fork\n");
-        return;
-    }
-    if (pid == 0) {
-        execve("/bin/sh", argv, environ);
-        perror("execve");
-        _exit(127);
-    }
-    if (waitpid(pid, &status, 0) < 0) {
-        printf("usbashcheck: FAIL waitpid\n");
-        return;
-    }
-    if ((status & 0x7F) != 0 || ((status >> 8) & 0xFF) != 0) {
-        printf("usbashcheck: FAIL status=%d\n", status);
-        return;
-    }
-    printf("usbashcheck: PASS\n");
-}
-
 static void run_musl_check(void) {
     int pid;
     int status = 0;
@@ -1287,47 +1166,6 @@ static void run_musl_check(void) {
     printf("muslcheck: PASS\n");
 }
 
-static void run_usb_musl_check(void) {
-    char buf[256];
-    int pid;
-    int status = 0;
-    char* argv[] = {
-        "ash",
-        "-c",
-        "pwd && cd /bin && pwd && ls /bin && cat /hello.txt && touch /usbmusl.tmp && rm /usbmusl.tmp",
-        NULL
-    };
-
-    if (get_mount_status(buf, sizeof(buf)) != 0 ||
-        strcmp(buf, "root=usb:/usb/rootfs.tar\n/usb -> usb-fat") != 0) {
-        printf("usbmuslcheck: mounting /usb/rootfs.tar\n");
-        if (mount_usb_root("/usb/rootfs.tar") < 0) {
-            printf("usbmuslcheck: FAIL mount\n");
-            return;
-        }
-    }
-
-    pid = fork();
-    if (pid < 0) {
-        printf("usbmuslcheck: FAIL fork\n");
-        return;
-    }
-    if (pid == 0) {
-        execve("/bin/ash", argv, environ);
-        perror("execve");
-        _exit(127);
-    }
-    if (waitpid(pid, &status, 0) < 0) {
-        printf("usbmuslcheck: FAIL waitpid\n");
-        return;
-    }
-    if ((status & 0x7F) != 0 || ((status >> 8) & 0xFF) != 0) {
-        printf("usbmuslcheck: FAIL status=%d\n", status);
-        return;
-    }
-    printf("usbmuslcheck: PASS\n");
-}
-
 static void try_autostart_saba(void) {
     struct stat st;
     struct stat marker;
@@ -1349,11 +1187,11 @@ int main() {
     run_musl_check();
     
     // 初期シェルとして環境変数をセットアップ
-    if (environ == NULL || environ[0] == NULL) {
-        environ = g_initial_envp;
-    }
+    setenv("PATH", "/bin:/:/usr/bin:/boot", 1);
+    setenv("HOME", "/", 1);
     sync_shell_cwd();
     sync_shell_env();
+    setenv("PWD", g_cwd, 1);
     shell_init_job_control();
     try_run_bootcmd();
     // try_autostart_saba();

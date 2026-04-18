@@ -31,6 +31,7 @@ void puthex(uint64_t v);
 
 extern void syscall_entry(void);
 extern struct task* task_list;
+extern volatile struct limine_memmap_request memmap_request;
 extern int64_t sys_write(int fd, const void* buf, size_t count);
 extern int64_t sys_read(int fd, void* buf, size_t count);
 extern int sys_close(int fd);
@@ -432,10 +433,12 @@ static void rollback_mmap(uint64_t* pml4, uint64_t base, uint64_t mapped_size) {
 
 static void copy_mmap_file_page(uint8_t* dest, file_descriptor_t* f, uint64_t file_off) {
     if (!f || !dest) return;
-    if (file_off >= f->size) return;
-    uint64_t remain = f->size - file_off;
+    size_t size = fs_fd_size(f);
+    void* data = fs_fd_data(f);
+    if (file_off >= size || !data) return;
+    uint64_t remain = size - file_off;
     if (remain > PAGE_SIZE) remain = PAGE_SIZE;
-    uint8_t* src = (uint8_t*)f->data + file_off;
+    uint8_t* src = (uint8_t*)data + file_off;
     for (uint64_t i = 0; i < remain; i++) {
         dest[i] = src[i];
     }
@@ -582,6 +585,48 @@ static int sys_get_fork_spread(void) {
     return task_get_fork_spread();
 }
 
+struct linux_sysinfo_k {
+    unsigned long uptime;
+    unsigned long loads[3];
+    unsigned long totalram;
+    unsigned long freeram;
+    unsigned long sharedram;
+    unsigned long bufferram;
+    unsigned long totalswap;
+    unsigned long freeswap;
+    unsigned short procs;
+    unsigned short pad;
+    unsigned long totalhigh;
+    unsigned long freehigh;
+    unsigned int mem_unit;
+    char __reserved[256];
+};
+
+static int sys_sysinfo(struct linux_sysinfo_k* info) {
+    struct limine_memmap_response* memmap;
+    uint64_t totalram = 0;
+
+    if (!info) return -1;
+
+    memmap = memmap_request.response;
+    if (memmap) {
+        for (uint64_t i = 0; i < memmap->entry_count; i++) {
+            struct limine_memmap_entry* entry = memmap->entries[i];
+            if (entry->type == LIMINE_MEMMAP_USABLE) {
+                totalram += entry->length;
+            }
+        }
+    }
+
+    *info = (struct linux_sysinfo_k){0};
+    info->uptime = lapic_get_ticks_ms() / 1000ULL;
+    info->totalram = (unsigned long)totalram;
+    info->freeram = (unsigned long)totalram;
+    info->procs = 1;
+    info->mem_unit = 1;
+    return 0;
+}
+
 static int sys_sleep_ms(uint64_t ms) {
     struct task* current = get_current_task();
     if (!current) return -1;
@@ -629,6 +674,27 @@ void syscall_init(void) {
 
 static uint64_t sys_getpid(void) {
     return (uint64_t)get_current_task()->pid;
+}
+
+static uint64_t sys_getppid(void) {
+    struct task* current = get_current_task();
+    return (uint64_t)(current ? current->ppid : 0);
+}
+
+static uint64_t sys_getuid(void) {
+    return 0;
+}
+
+static uint64_t sys_getgid(void) {
+    return 0;
+}
+
+static uint64_t sys_geteuid(void) {
+    return 0;
+}
+
+static uint64_t sys_getegid(void) {
+    return 0;
 }
 
 static int g_tty_pgrp = 0;
@@ -952,7 +1018,6 @@ extern int64_t sys_sendto(int fd, const void* buf, size_t len, int flags, const 
 extern int64_t sys_recvfrom(int fd, void* buf, size_t len, int flags, void* src_addr, uint32_t* addrlen);
 extern int sys_mkdirat(int dirfd, const char* path, int mode);
 extern int sys_utimensat(int dirfd, const char* path, const void* times, int flags);
-extern int fs_mount_usb_root_tar(const char* path);
 extern int fs_mount_module_root(void);
 extern int fs_get_mount_status(char* buf, size_t size);
 
@@ -1081,6 +1146,21 @@ void syscall_dispatch(struct syscall_frame* frame) {
         case SYS_GETPID:
             frame->rax = sys_getpid();
             break;
+        case SYS_GETPPID:
+            frame->rax = sys_getppid();
+            break;
+        case SYS_GETUID:
+            frame->rax = sys_getuid();
+            break;
+        case SYS_GETGID:
+            frame->rax = sys_getgid();
+            break;
+        case SYS_GETEUID:
+            frame->rax = sys_geteuid();
+            break;
+        case SYS_GETEGID:
+            frame->rax = sys_getegid();
+            break;
         case SYS_SOCKET:
             frame->rax = (uint64_t)sys_socket((int)frame->rdi, (int)frame->rsi, (int)frame->rdx);
             break;
@@ -1125,6 +1205,9 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case SYS_WAIT4:
             frame->rax = (uint64_t)sys_wait4((int)frame->rdi, (int*)frame->rsi, (int)frame->rdx);
+            break;
+        case SYS_SYSINFO:
+            frame->rax = (uint64_t)sys_sysinfo((struct linux_sysinfo_k*)frame->rdi);
             break;
         case SYS_GETCWD:
             frame->rax = (uint64_t)sys_getcwd((char*)frame->rdi, (size_t)frame->rsi);
@@ -1230,7 +1313,7 @@ void syscall_dispatch(struct syscall_frame* frame) {
             frame->rax = (uint64_t)sys_usb_read_block((uint32_t)frame->rdi, (void*)frame->rsi, (uint32_t)frame->rdx);
             break;
         case ORTH_SYS_MOUNT_USB_ROOT:
-            frame->rax = (uint64_t)fs_mount_usb_root_tar((const char*)frame->rdi);
+            frame->rax = (uint64_t)-1;
             break;
         case ORTH_SYS_MOUNT_MODULE_ROOT:
             frame->rax = (uint64_t)fs_mount_module_root();
