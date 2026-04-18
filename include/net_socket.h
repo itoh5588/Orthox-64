@@ -18,7 +18,5 @@ int64_t sys_sendto(int fd, const void* buf, size_t len, int flags, const void* d
 int64_t sys_recvfrom(int fd, void* buf, size_t len, int flags, void* src_addr, uint32_t* addrlen);
 int64_t net_socket_read_fd(file_descriptor_t* f, void* buf, size_t count);
 int64_t net_socket_write_fd(file_descriptor_t* f, const void* buf, size_t count);
-int net_socket_close_fd(file_descriptor_t* f);
-void net_socket_dup_fd(file_descriptor_t* f);
 
 #endif

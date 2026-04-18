@@ -108,6 +108,33 @@ static void fs_release_retrofs_file(fs_file_t* file) {
     }
 }
 
+static void fs_release_pipe_file(fs_file_t* file) {
+    pipe_t* pipe;
+    struct task* reader_to_wake;
+    struct task* writer_to_wake;
+    int free_pipe = 0;
+    uint64_t flags;
+
+    if (!file) return;
+    pipe = (pipe_t*)file->private_data;
+    if (!pipe) return;
+
+    flags = spin_lock_irqsave(&pipe->lock);
+    pipe->ref_count--;
+    reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
+    writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
+    if (pipe->ref_count == 0) {
+        free_pipe = 1;
+    }
+    spin_unlock_irqrestore(&pipe->lock, flags);
+
+    pipe_wake_task(reader_to_wake);
+    pipe_wake_task(writer_to_wake);
+    if (free_pipe) {
+        pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
+    }
+}
+
 static const fs_file_ops_t g_dir_file_ops = {
     .release = fs_release_dir_file,
 };
@@ -122,6 +149,14 @@ static const fs_file_ops_t g_console_file_ops = {
 
 static const fs_file_ops_t g_module_file_ops = {
     .release = 0,
+};
+
+static const fs_file_ops_t g_ramfs_file_ops = {
+    .release = 0,
+};
+
+static const fs_file_ops_t g_pipe_file_ops = {
+    .release = fs_release_pipe_file,
 };
 
 static const fs_file_ops_t g_usb_file_ops = {
@@ -207,29 +242,6 @@ void fs_release_fd(file_descriptor_t* fd) {
         fd->file = 0;
     } else {
         switch (fd->type) {
-            case FT_PIPE: {
-                pipe_t* pipe = (pipe_t*)fd->data;
-                struct task* reader_to_wake;
-                struct task* writer_to_wake;
-                int free_pipe = 0;
-                uint64_t flags = spin_lock_irqsave(&pipe->lock);
-                pipe->ref_count--;
-                reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
-                writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
-                if (pipe->ref_count == 0) {
-                    free_pipe = 1;
-                }
-                spin_unlock_irqrestore(&pipe->lock, flags);
-                pipe_wake_task(reader_to_wake);
-                pipe_wake_task(writer_to_wake);
-                if (free_pipe) {
-                    pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
-                }
-                break;
-            }
-            case FT_SOCKET:
-                (void)net_socket_close_fd(fd);
-                break;
             case FT_DIR:
             case FT_RETROFS:
                 if (fd->data && fd->aux0) {
@@ -240,6 +252,8 @@ void fs_release_fd(file_descriptor_t* fd) {
             case FT_CONSOLE:
             case FT_MODULE:
             case FT_RAMFS:
+            case FT_PIPE:
+            case FT_SOCKET:
             case FT_USB:
             default:
                 break;
@@ -268,21 +282,6 @@ int fs_clone_fd(file_descriptor_t* dst, const file_descriptor_t* src) {
 
     if (src->file) {
         fs_file_get(src->file);
-        return 0;
-    }
-
-    if (src->type == FT_PIPE) {
-        pipe_t* pipe = (pipe_t*)src->data;
-        if (pipe) {
-            uint64_t flags = spin_lock_irqsave(&pipe->lock);
-            pipe->ref_count++;
-            spin_unlock_irqrestore(&pipe->lock, flags);
-        }
-        return 0;
-    }
-
-    if (src->type == FT_SOCKET) {
-        net_socket_dup_fd(dst);
         return 0;
     }
 
@@ -1352,15 +1351,29 @@ int sys_open(const char* path, int flags, int mode) {
 
     struct ramfs_file* rf = find_ramfs(path);
     if (rf) {
+        fs_file_t* file;
         if ((rf->mode & 0170000U) == KSTAT_MODE_DIR) return -1;
         if (want_trunc) {
             rf->size = 0;
             rf->mtime_sec = fs_now_sec();
             rf->ctime_sec = rf->mtime_sec;
         }
+        file = fs_alloc_file();
+        if (!file) return -1;
+        file->type = FT_RAMFS;
+        file->size = rf->size;
+        file->offset = 0;
+        file->ops = &g_ramfs_file_ops;
+        file->private_data = rf->data;
+        for (int j = 0; j < 63; j++) {
+            file->path[j] = rf->name[j];
+            if (rf->name[j] == '\0') break;
+        }
+        file->path[63] = '\0';
         current->fds[fd].type = FT_RAMFS;
-        current->fds[fd].data = rf->data;
-        current->fds[fd].size = rf->size;
+        current->fds[fd].file = file;
+        current->fds[fd].data = 0;
+        current->fds[fd].size = 0;
         current->fds[fd].offset = 0;
         current->fds[fd].in_use = 1;
         current->fds[fd].flags = flags;
@@ -1374,8 +1387,21 @@ int sys_open(const char* path, int flags, int mode) {
     if (want_creat) {
         rf = create_ramfs(path, (uint32_t)mode);
         if (rf) {
+            fs_file_t* file = fs_alloc_file();
+            if (!file) return -1;
+            file->type = FT_RAMFS;
+            file->size = 0;
+            file->offset = 0;
+            file->ops = &g_ramfs_file_ops;
+            file->private_data = rf->data;
+            for (int j = 0; j < 63; j++) {
+                file->path[j] = rf->name[j];
+                if (rf->name[j] == '\0') break;
+            }
+            file->path[63] = '\0';
             current->fds[fd].type = FT_RAMFS;
-            current->fds[fd].data = rf->data;
+            current->fds[fd].file = file;
+            current->fds[fd].data = 0;
             current->fds[fd].size = 0;
             current->fds[fd].offset = 0;
             current->fds[fd].in_use = 1;
@@ -1487,8 +1513,8 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     file_descriptor_t* f = &current->fds[fd];
 
-    if (f->type == FT_PIPE) {
-        pipe_t* pipe = (pipe_t*)f->data;
+    if (fs_fd_type(f) == FT_PIPE) {
+        pipe_t* pipe = (pipe_t*)fs_fd_data(f);
         size_t written = 0;
         const char* src = (const char*)buf;
         while (written < count) {
@@ -1533,17 +1559,17 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         return -1;
     }
 
-    if (f->type != FT_RAMFS) return -1;
-    if (f->offset + count > RAMFS_FILE_SIZE) count = RAMFS_FILE_SIZE - f->offset;
-    uint8_t* dest = (uint8_t*)f->data + f->offset;
+    if (fs_fd_type(f) != FT_RAMFS) return -1;
+    if (fs_fd_offset(f) + count > RAMFS_FILE_SIZE) count = RAMFS_FILE_SIZE - fs_fd_offset(f);
+    uint8_t* dest = (uint8_t*)fs_fd_data(f) + fs_fd_offset(f);
     const uint8_t* src = (const uint8_t*)buf;
     for (size_t i = 0; i < count; i++) dest[i] = src[i];
-    f->offset += count;
-    if (f->offset > f->size) {
-        f->size = f->offset;
-        struct ramfs_file* rf = find_ramfs(f->name);
+    fs_fd_set_offset(f, fs_fd_offset(f) + count);
+    if (fs_fd_offset(f) > fs_fd_size(f)) {
+        fs_fd_set_size(f, fs_fd_offset(f));
+        struct ramfs_file* rf = find_ramfs(fs_fd_name(f));
         if (rf) {
-            rf->size = f->size;
+            rf->size = fs_fd_size(f);
             rf->mtime_sec = fs_now_sec();
             rf->ctime_sec = rf->mtime_sec;
         }
@@ -1587,8 +1613,8 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     file_descriptor_t* f = &current->fds[fd];
 
-    if (f->type == FT_PIPE) {
-        pipe_t* pipe = (pipe_t*)f->data;
+    if (fs_fd_type(f) == FT_PIPE) {
+        pipe_t* pipe = (pipe_t*)fs_fd_data(f);
         while (1) {
             size_t to_read;
             struct task* writer_to_wake = 0;
@@ -1764,14 +1790,31 @@ int sys_pipe(int pipefd[2]) {
     pipe->write_waiter = 0;
     spinlock_init(&pipe->lock);
 
+    fs_file_t* read_file = fs_alloc_file();
+    fs_file_t* write_file = fs_alloc_file();
+    if (!read_file || !write_file) {
+        if (read_file) fs_file_put(read_file);
+        if (write_file) fs_file_put(write_file);
+        pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
+        return -1;
+    }
+    read_file->type = FT_PIPE;
+    read_file->ops = &g_pipe_file_ops;
+    read_file->private_data = pipe;
+    write_file->type = FT_PIPE;
+    write_file->ops = &g_pipe_file_ops;
+    write_file->private_data = pipe;
+
     current->fds[fd1].type = FT_PIPE;
-    current->fds[fd1].data = pipe;
+    current->fds[fd1].file = read_file;
+    current->fds[fd1].data = 0;
     current->fds[fd1].in_use = 1;
     current->fds[fd1].flags = O_RDONLY;
     current->fds[fd1].name[0] = '\0';
 
     current->fds[fd2].type = FT_PIPE;
-    current->fds[fd2].data = pipe;
+    current->fds[fd2].file = write_file;
+    current->fds[fd2].data = 0;
     current->fds[fd2].in_use = 1;
     current->fds[fd2].flags = O_WRONLY;
     current->fds[fd2].name[0] = '\0';
@@ -1821,13 +1864,13 @@ int sys_fstat(int fd, struct kstat* st) {
     if (fs_fd_type(f) == FT_PIPE) {
         kstat_set_defaults(st, KSTAT_MODE_FILE | 0600U, 0);
         st->dev = FS_DEV_PIPE;
-        st->ino = ((uint64_t)(uintptr_t)f->data) >> 4;
+        st->ino = ((uint64_t)(uintptr_t)fs_fd_data(f)) >> 4;
         return 0;
     }
     if (fs_fd_type(f) == FT_SOCKET) {
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_CHR), 0);
         st->dev = FS_DEV_PIPE;
-        st->ino = ((uint64_t)(uintptr_t)f->data) >> 4;
+        st->ino = ((uint64_t)(uintptr_t)fs_fd_data(f)) >> 4;
         return 0;
     }
     if (fs_fd_type(f) == FT_DIR) {
@@ -2074,9 +2117,9 @@ int sys_utimensat(int dirfd, const char* path, const void* times, int flags) {
         if (!current) return -EINVAL;
         if (dirfd < 0 || dirfd >= MAX_FDS || !current->fds[dirfd].in_use) return -EINVAL;
         f = &current->fds[dirfd];
-        if (!f->name[0]) return -EINVAL;
-        if (sys_stat(f->name, &st) < 0) return -ENOENT;
-        rf = find_ramfs(f->name);
+        if (!fs_fd_name(f)[0]) return -EINVAL;
+        if (sys_stat(fs_fd_name(f), &st) < 0) return -ENOENT;
+        rf = find_ramfs(fs_fd_name(f));
         if (rf) {
             now = fs_now_sec();
             rf->atime_sec = now;

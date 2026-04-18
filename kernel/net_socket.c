@@ -87,6 +87,9 @@ typedef struct net_socket_backend {
     struct net_socket_backend* accept_next;
 } net_socket_backend_t;
 
+static void free_accept_queue(net_socket_backend_t* sock);
+static void destroy_socket_backend(net_socket_backend_t* sock);
+
 static int socket_errno_from_lwip(err_t err) {
     switch (err) {
         case ERR_OK:
@@ -149,9 +152,38 @@ static int alloc_fd_slot(struct task* current) {
     return -1;
 }
 
+static void release_socket_file(struct fs_file* file) {
+    net_socket_backend_t* sock;
+    if (!file) return;
+    sock = (net_socket_backend_t*)file->private_data;
+    if (!sock) return;
+    sock->ref_count--;
+    if (sock->ref_count > 0) return;
+    destroy_socket_backend(sock);
+}
+
+static const fs_file_ops_t g_socket_file_ops = {
+    .release = release_socket_file,
+};
+
+static fs_file_t* alloc_socket_file(net_socket_backend_t* sock) {
+    void* page;
+    fs_file_t* file;
+    if (!sock) return 0;
+    page = pmm_alloc(1);
+    if (!page) return 0;
+    file = (fs_file_t*)PHYS_TO_VIRT(page);
+    for (size_t i = 0; i < sizeof(*file); i++) ((uint8_t*)file)[i] = 0;
+    file->ref_count = 1;
+    file->type = FT_SOCKET;
+    file->ops = &g_socket_file_ops;
+    file->private_data = sock;
+    return file;
+}
+
 static net_socket_backend_t* socket_backend_from_fd(file_descriptor_t* f) {
-    if (!f || !f->in_use || f->type != FT_SOCKET) return 0;
-    return (net_socket_backend_t*)f->data;
+    if (!f || !f->in_use || fs_fd_type(f) != FT_SOCKET) return 0;
+    return (net_socket_backend_t*)fs_fd_data(f);
 }
 
 static net_socket_backend_t* alloc_socket_backend(void) {
@@ -214,9 +246,6 @@ static void free_rx_queue(net_socket_backend_t* sock) {
     sock->rx_head = 0;
     sock->rx_tail = 0;
 }
-
-static void free_accept_queue(net_socket_backend_t* sock);
-static void destroy_socket_backend(net_socket_backend_t* sock);
 
 static void free_accept_queue(net_socket_backend_t* sock) {
     if (!sock) return;
@@ -517,8 +546,14 @@ int sys_socket(int domain, int type, int protocol) {
         }
     }
 
+    fs_file_t* file = alloc_socket_file(sock);
+    if (!file) {
+        destroy_socket_backend(sock);
+        return -1;
+    }
     current->fds[fd].type = FT_SOCKET;
-    current->fds[fd].data = sock;
+    current->fds[fd].file = file;
+    current->fds[fd].data = 0;
     current->fds[fd].size = 0;
     current->fds[fd].offset = 0;
     current->fds[fd].in_use = 1;
@@ -659,8 +694,14 @@ int sys_accept(int fd, void* addr, uint32_t* addrlen) {
     if (!listener->accept_head) listener->accept_tail = 0;
     child->accept_next = 0;
 
+    fs_file_t* file = alloc_socket_file(child);
+    if (!file) {
+        destroy_socket_backend(child);
+        return -1;
+    }
     current->fds[newfd].type = FT_SOCKET;
-    current->fds[newfd].data = child;
+    current->fds[newfd].file = file;
+    current->fds[newfd].data = 0;
     current->fds[newfd].size = 0;
     current->fds[newfd].offset = 0;
     current->fds[newfd].in_use = 1;
@@ -819,18 +860,4 @@ int64_t net_socket_write_fd(file_descriptor_t* f, const void* buf, size_t count)
     pbuf_free(p);
     if (err != ERR_OK) return -1;
     return (int64_t)count;
-}
-
-int net_socket_close_fd(file_descriptor_t* f) {
-    net_socket_backend_t* sock = socket_backend_from_fd(f);
-    if (!sock) return -1;
-    sock->ref_count--;
-    if (sock->ref_count > 0) return 0;
-    destroy_socket_backend(sock);
-    return 0;
-}
-
-void net_socket_dup_fd(file_descriptor_t* f) {
-    net_socket_backend_t* sock = socket_backend_from_fd(f);
-    if (sock) sock->ref_count++;
 }

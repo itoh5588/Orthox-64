@@ -463,7 +463,7 @@ static void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, in
     } else {
         if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return (void*)-1;
         backing_fd = &current->fds[fd];
-        if (backing_fd->type == FT_PIPE) return (void*)-1;
+        if (fs_fd_type(backing_fd) == FT_PIPE) return (void*)-1;
     }
 
     uint64_t base = align_up_page((uint64_t)addr);
