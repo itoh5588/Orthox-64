@@ -83,6 +83,7 @@ MUSL_ENVSHOW_ELF = user/muslenvshow.elf
 RETROFS_BASIC_ELF = user/retrofsbasic.elf
 RETROFS_EDGE_ELF = user/retrofsedge.elf
 VBLK_TEST_ELF = user/vblk_test.elf
+KILO_ELF = user/kilo.elf
 RUST_HELLO_STD_ELF = ports/rust/hello_std
 CC1_MUSL_ELF = user/cc1.elf
 AS_MUSL_ELF = user/as.elf
@@ -206,7 +207,7 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF)
+$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF) $(KILO_ELF)
 	@if [ "$(ROOTFS_REBUILD)" = "0" ] && [ -f "$(ROOTFS_IMG)" ]; then \
 		echo "Keeping existing $(ROOTFS_IMG) (ROOTFS_REBUILD=0)"; \
 	else \
@@ -240,6 +241,8 @@ $(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/
 		cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test; \
 		cp $(SOUND_TEST_ELF) rootfs/bin/testsound; \
 		cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf; \
+		rm -f rootfs/bin/edit; \
+		cp $(KILO_ELF) rootfs/bin/kilo; \
 		python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG); \
 	fi
 

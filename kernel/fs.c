@@ -38,6 +38,12 @@ extern void puthex(uint64_t v);
 #ifndef EINVAL
 #define EINVAL 22
 #endif
+#ifndef EISDIR
+#define EISDIR 21
+#endif
+#ifndef EROFS
+#define EROFS 30
+#endif
 
 static void pipe_wake_task(struct task* waiter) {
     if (!waiter) return;
@@ -1315,7 +1321,7 @@ int sys_open(const char* path, int flags, int mode) {
     if (mount && mount->kind == VFS_MOUNT_USB_FAT) {
         struct fat_dir_entry_info ent;
         fs_file_t* file;
-        if ((flags & O_WRONLY) || (flags & O_RDWR) || want_creat) return -1;
+        if ((flags & O_WRONLY) || (flags & O_RDWR) || want_creat) return -EROFS;
         if (fat_resolve_path(path, &ent) < 0) return -1;
         if (ent.attr & 0x10U) return -1;
         file = fs_alloc_file();
@@ -1352,7 +1358,7 @@ int sys_open(const char* path, int flags, int mode) {
     struct ramfs_file* rf = find_ramfs(path);
     if (rf) {
         fs_file_t* file;
-        if ((rf->mode & 0170000U) == KSTAT_MODE_DIR) return -1;
+        if ((rf->mode & 0170000U) == KSTAT_MODE_DIR) return -EISDIR;
         if (want_trunc) {
             rf->size = 0;
             rf->mtime_sec = fs_now_sec();
@@ -1421,7 +1427,7 @@ int sys_open(const char* path, int flags, int mode) {
         if (fs_try_active_root_lookup(path, &root_data, &root_size, &root_mode) == 0) {
             fs_file_t* file;
             if ((root_mode & 0170000U) == KSTAT_MODE_DIR) {
-                return -1;
+                return -EISDIR;
             }
             file = fs_alloc_file();
             if (!file) {
@@ -1459,9 +1465,9 @@ int sys_open(const char* path, int flags, int mode) {
         }
     }
 
-    if (fs_root_is_usb_only()) return -1;
+    if (fs_root_is_usb_only()) return -ENOENT;
 
-    if (!module_request.response) return -1;
+    if (!module_request.response) return -ENOENT;
 
     for (uint64_t i = 0; i < module_request.response->module_count; i++) {
         struct limine_file* m = module_request.response->modules[i];
@@ -1493,12 +1499,12 @@ int sys_open(const char* path, int flags, int mode) {
             return fd;
         }
     }
-    return -1;
+    return -ENOENT;
 }
 
 int sys_openat(int dirfd, const char* path, int flags, int mode) {
     char resolved_path[256];
-    if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -1;
+    if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -ENOENT;
     return sys_open(resolved_path, flags, mode);
 }
 
