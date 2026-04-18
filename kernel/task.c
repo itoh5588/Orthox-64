@@ -25,9 +25,9 @@ static int g_fork_spread_enabled = 1;
 #define USER_STACK_TOP_VADDR   0x7FFFFFFFF000ULL
 #define USER_STACK_PAGES       64
 #define USER_STACK_GUARD_PAGES 1
-#define EXEC_COPY_PAGES        10
+#define EXEC_COPY_PAGES        64
 #define EXEC_MAX_PATH_LEN      1024
-#define EXEC_MAX_VEC_STRINGS   32
+#define EXEC_MAX_VEC_STRINGS   128
 #define EXEC_MAX_VEC_STR_LEN   512
 
 extern volatile struct limine_module_request module_request;
@@ -719,8 +719,9 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const s
 
     int argc = 0; if (argv) while (argv[argc]) argc++;
     int envc = 0; if (envp) while (envp[envc]) envc++;
-    uint64_t env_ptrs[32]; uint64_t arg_ptrs[32];
-    if (argc > 32) argc = 32; if (envc > 32) envc = 32;
+    uint64_t env_ptrs[EXEC_MAX_VEC_STRINGS]; uint64_t arg_ptrs[EXEC_MAX_VEC_STRINGS];
+    if (argc > EXEC_MAX_VEC_STRINGS) argc = EXEC_MAX_VEC_STRINGS;
+    if (envc > EXEC_MAX_VEC_STRINGS) envc = EXEC_MAX_VEC_STRINGS;
     uint64_t current_str_addr = t->user_stack_top;
     current_str_addr -= 16;
     uint64_t random_base = current_str_addr;
@@ -819,7 +820,6 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     uint64_t old_cr3 = 0;
     struct task* t = get_current_task_raw();
     extern int fs_get_file_data(const char* path, void** data, size_t* size);
-    extern int sys_close(int fd);
     if (t && t->deferred_cr3 && t->deferred_cr3 != t->ctx.cr3 &&
         t->deferred_cr3 != vmm_get_kernel_pml4_phys()) {
         vmm_free_user_pml4(t->deferred_cr3);
@@ -887,11 +887,7 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     t->ctx.fxsave_area[1] = 0x03;
     t->ctx.fxsave_area[24] = 0x80;
     t->ctx.fxsave_area[25] = 0x1f;
-    for (int i = 3; i < MAX_FDS; i++) {
-        if (t->fds[i].in_use && (t->fds[i].fd_flags & 1)) {
-            sys_close(i);
-        }
-    }
+    fs_close_cloexec_descriptors(t);
     frame->r15 = 0;
     frame->r14 = 0;
     frame->r13 = 0;
@@ -1154,16 +1150,17 @@ int task_fork(struct syscall_frame* frame) {
     child->ctx.ss = 0x10;
     for (int i = 0; i < 512; i++) child->ctx.fxsave_area[i] = parent->ctx.fxsave_area[i];
     for (int i = 0; i < MAX_FDS; i++) {
-        child->fds[i] = parent->fds[i];
-        if (child->fds[i].in_use && child->fds[i].type == FT_PIPE) {
-            pipe_t* pipe = (pipe_t*)child->fds[i].data;
-            if (pipe) {
-                uint64_t pipe_flags = spin_lock_irqsave(&pipe->lock);
-                pipe->ref_count++;
-                spin_unlock_irqrestore(&pipe->lock, pipe_flags);
+        if (fs_clone_fd(&child->fds[i], &parent->fds[i]) < 0) {
+            for (int j = 0; j < i; j++) {
+                fs_release_fd(&child->fds[j]);
             }
-        } else if (child->fds[i].in_use && child->fds[i].type == FT_SOCKET) {
-            net_socket_dup_fd(&child->fds[i]);
+            if (child->ctx.cr3 && child->ctx.cr3 != vmm_get_kernel_pml4_phys()) {
+                vmm_free_user_pml4(child->ctx.cr3);
+            }
+            pmm_free((void*)VIRT_TO_PHYS(child->kstack_top - 4 * PAGE_SIZE), 4);
+            free_task_struct(child);
+            spin_unlock_irqrestore(&g_task_lock, flags);
+            return -1;
         }
     }
     child->next = task_list;

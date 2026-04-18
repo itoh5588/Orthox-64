@@ -50,6 +50,7 @@ typedef enum {
 #define O_CREAT     0x0200
 #define O_TRUNC     0x0400
 #define O_DIRECTORY 0x10000
+#define FD_CLOEXEC  1
 
 #define PIPE_BUF_SIZE 4000
 
@@ -139,6 +140,10 @@ int sys_getdents(int fd, struct orth_dirent* dirp, size_t count);
 int sys_getdents64(int fd, void* dirp, size_t count);
 int sys_fcntl(int fd, int cmd, uint64_t arg);
 int sys_pipe2(int pipefd[2], int flags);
+int fs_clone_fd(file_descriptor_t* dst, const file_descriptor_t* src);
+int fs_dup_fd(file_descriptor_t* dst, const file_descriptor_t* src);
+void fs_release_fd(file_descriptor_t* fd);
+void fs_close_cloexec_descriptors(struct task* task);
 int fs_mount_usb_root_tar(const char* path);
 int fs_mount_module_root(void);
 int fs_mount_retrofs_root(void);

@@ -10,6 +10,7 @@
 #include "storage.h"
 #include "vfs.h"
 #include "retrofs.h"
+#include "string.h"
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -17,7 +18,6 @@
 #define F_GETFL 3
 #define F_SETFL 4
 #define F_DUPFD_CLOEXEC 14
-#define FD_CLOEXEC 1
 #define ORTH_O_ACCMODE 3
 #define ORTH_AT_FDCWD (-100)
 #define ORTH_AT_REMOVEDIR 0x200
@@ -62,6 +62,118 @@ static void pipe_set_waiter(struct task** waiter, struct task* task) {
 static void pipe_clear_waiter(struct task** waiter, struct task* task) {
     if (!waiter) return;
     if (*waiter == task) *waiter = 0;
+}
+
+static int fs_fd_has_private_copy(const file_descriptor_t* fd) {
+    if (!fd) return 0;
+    return fd->type == FT_DIR || fd->type == FT_RETROFS;
+}
+
+void fs_release_fd(file_descriptor_t* fd) {
+    if (!fd || !fd->in_use) return;
+
+    switch (fd->type) {
+        case FT_PIPE: {
+            pipe_t* pipe = (pipe_t*)fd->data;
+            struct task* reader_to_wake;
+            struct task* writer_to_wake;
+            int free_pipe = 0;
+            uint64_t flags = spin_lock_irqsave(&pipe->lock);
+            pipe->ref_count--;
+            reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
+            writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
+            if (pipe->ref_count == 0) {
+                free_pipe = 1;
+            }
+            spin_unlock_irqrestore(&pipe->lock, flags);
+            pipe_wake_task(reader_to_wake);
+            pipe_wake_task(writer_to_wake);
+            if (free_pipe) {
+                pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
+            }
+            break;
+        }
+        case FT_SOCKET:
+            (void)net_socket_close_fd(fd);
+            break;
+        case FT_DIR:
+        case FT_RETROFS:
+            if (fd->data && fd->aux0) {
+                pmm_free((void*)VIRT_TO_PHYS((uint64_t)fd->data), (int)fd->aux0);
+            }
+            break;
+        case FT_UNUSED:
+        case FT_CONSOLE:
+        case FT_MODULE:
+        case FT_TAR:
+        case FT_RAMFS:
+        case FT_USB:
+        case FT_USBROOT:
+        default:
+            break;
+    }
+
+    fd->in_use = 0;
+    fd->data = NULL;
+    fd->size = 0;
+    fd->offset = 0;
+    fd->flags = 0;
+    fd->fd_flags = 0;
+    fd->aux0 = 0;
+    fd->aux1 = 0;
+    fd->name[0] = '\0';
+}
+
+int fs_clone_fd(file_descriptor_t* dst, const file_descriptor_t* src) {
+    void* phys;
+    size_t pages;
+
+    if (!dst || !src) return -1;
+    *dst = *src;
+    if (!src->in_use) return 0;
+
+    if (src->type == FT_PIPE) {
+        pipe_t* pipe = (pipe_t*)src->data;
+        if (pipe) {
+            uint64_t flags = spin_lock_irqsave(&pipe->lock);
+            pipe->ref_count++;
+            spin_unlock_irqrestore(&pipe->lock, flags);
+        }
+        return 0;
+    }
+
+    if (src->type == FT_SOCKET) {
+        net_socket_dup_fd(dst);
+        return 0;
+    }
+
+    if (fs_fd_has_private_copy(src) && src->data && src->aux0) {
+        pages = src->aux0;
+        phys = pmm_alloc((int)pages);
+        if (!phys) {
+            memset(dst, 0, sizeof(*dst));
+            return -1;
+        }
+        dst->data = PHYS_TO_VIRT(phys);
+        memcpy(dst->data, src->data, pages * PAGE_SIZE);
+    }
+
+    return 0;
+}
+
+int fs_dup_fd(file_descriptor_t* dst, const file_descriptor_t* src) {
+    if (fs_clone_fd(dst, src) < 0) return -1;
+    dst->fd_flags = 0;
+    return 0;
+}
+
+void fs_close_cloexec_descriptors(struct task* task) {
+    if (!task) return;
+    for (int i = 3; i < MAX_FDS; i++) {
+        if (task->fds[i].in_use && (task->fds[i].fd_flags & FD_CLOEXEC)) {
+            fs_release_fd(&task->fds[i]);
+        }
+    }
 }
 
 static int strcmp_exact(const char* s1, const char* s2) {
@@ -1412,7 +1524,7 @@ static void fs_list_usb_root_tar_entries(const char* label) {
 }
 
 int fs_mount_usb_root_tar(const char* path) {
-    const char* normalized = normalize_fs_path(path ? path : "usb/rootfs.tar");
+    const char* normalized = normalize_fs_path(path ? path : "usb/rootfs.img");
     struct fat_dir_entry_info ent;
     if (!starts_with(normalized, "usb/")) return -1;
     if (fat_resolve_path(normalized, &ent) < 0) return -1;
@@ -1457,7 +1569,7 @@ int fs_mount_retrofs_root(void) {
 }
 
 int fs_get_mount_status(char* buf, size_t size) {
-    const char* module_root = "root=module:boot/rootfs.tar\n/usb -> usb-fat";
+    const char* module_root = "root=module:boot/rootfs.img\n/usb -> usb-fat";
     const char* retrofs_root_vblk = "root=retrofs:vblk0";
     const char* retrofs_root_boot = "root=retrofs:bootimg0";
     const char* usb_prefix = "root=usb:/";
@@ -1599,28 +1711,6 @@ int sys_open(const char* path, int flags, int mode) {
     }
 
     if (want_creat) {
-        if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-            if (retrofs_create_file(path, (uint32_t)mode) == 0) {
-                void* tar_data = 0;
-                size_t tar_size = 0;
-                uint32_t tar_mode = 0;
-                if (fs_try_active_root_lookup(path, &tar_data, &tar_size, &tar_mode) == 0) {
-                    current->fds[fd].type = FT_RETROFS;
-                    current->fds[fd].data = tar_data;
-                    current->fds[fd].size = tar_size;
-                    current->fds[fd].offset = 0;
-                    current->fds[fd].in_use = 1;
-                    current->fds[fd].flags = flags;
-                    current->fds[fd].aux0 = (uint32_t)((tar_size + PAGE_SIZE - 1U) / PAGE_SIZE);
-                    for (int j = 0; j < 63; j++) {
-                        current->fds[fd].name[j] = path[j];
-                        if (path[j] == '\0') break;
-                    }
-                    current->fds[fd].name[63] = '\0';
-                    return fd;
-                }
-            }
-        }
         rf = create_ramfs(path, (uint32_t)mode);
         if (rf) {
             current->fds[fd].type = FT_RAMFS;
@@ -1914,42 +2004,8 @@ int sys_close(int fd) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
-    
-    if (current->fds[fd].type == FT_PIPE) {
-        pipe_t* pipe = (pipe_t*)current->fds[fd].data;
-        struct task* reader_to_wake;
-        struct task* writer_to_wake;
-        int free_pipe = 0;
-        uint64_t flags = spin_lock_irqsave(&pipe->lock);
-        pipe->ref_count--;
-        reader_to_wake = pipe_take_waiter_locked(&pipe->read_waiter);
-        writer_to_wake = pipe_take_waiter_locked(&pipe->write_waiter);
-        if (pipe->ref_count == 0) {
-            free_pipe = 1;
-        }
-        spin_unlock_irqrestore(&pipe->lock, flags);
-        pipe_wake_task(reader_to_wake);
-        pipe_wake_task(writer_to_wake);
-        if (free_pipe) {
-            pmm_free((void*)VIRT_TO_PHYS((uint64_t)pipe), 1);
-        }
-    } else if (current->fds[fd].type == FT_SOCKET) {
-        (void)net_socket_close_fd(&current->fds[fd]);
-    } else if (current->fds[fd].type == FT_DIR) {
-        if (current->fds[fd].data) {
-            pmm_free((void*)VIRT_TO_PHYS((uint64_t)current->fds[fd].data), (int)current->fds[fd].aux0);
-        }
-    } else if (current->fds[fd].type == FT_RETROFS) {
-        if (current->fds[fd].data && current->fds[fd].aux0) {
-            pmm_free((void*)VIRT_TO_PHYS((uint64_t)current->fds[fd].data), (int)current->fds[fd].aux0);
-        }
-    }
 
-    current->fds[fd].in_use = 0;
-    current->fds[fd].data = NULL;
-    current->fds[fd].size = 0;
-    current->fds[fd].offset = 0;
-    current->fds[fd].name[0] = '\0';
+    fs_release_fd(&current->fds[fd]);
     return 0;
 }
 
@@ -1964,15 +2020,7 @@ int sys_dup2(int oldfd, int newfd) {
         sys_close(newfd);
     }
 
-    current->fds[newfd] = current->fds[oldfd];
-    if (current->fds[newfd].type == FT_PIPE) {
-        pipe_t* pipe = (pipe_t*)current->fds[newfd].data;
-        uint64_t flags = spin_lock_irqsave(&pipe->lock);
-        pipe->ref_count++;
-        spin_unlock_irqrestore(&pipe->lock, flags);
-    } else if (current->fds[newfd].type == FT_SOCKET) {
-        net_socket_dup_fd(&current->fds[newfd]);
-    }
+    if (fs_dup_fd(&current->fds[newfd], &current->fds[oldfd]) < 0) return -1;
     return newfd;
 }
 
@@ -2333,12 +2381,11 @@ int sys_faccessat(int dirfd, const char* path, int mode, int flags) {
     }
     if (mode == F_OK) return 0;
     perm_bits = st.mode & 0777U;
-    if ((mode & R_OK) && (perm_bits & 0444U) == 0) return -1;
-    if ((mode & W_OK) && (perm_bits & 0222U) == 0) return -1;
-    if ((mode & X_OK) && (perm_bits & 0111U) == 0) {
-        return -1;
-    }
-    return 0;
+    /* The kernel currently exposes only uid/gid 0, so match root access rules. */
+    if ((mode & X_OK) == 0) return 0;
+    if ((st.mode & 0170000U) == KSTAT_MODE_DIR) return 0;
+    if (perm_bits & 0111U) return 0;
+    return -1;
 }
 
 int sys_utimensat(int dirfd, const char* path, const void* times, int flags) {
@@ -2502,15 +2549,10 @@ int sys_chmod(const char* path, uint32_t mode) {
 int sys_mkdir(const char* path, int mode) {
     char resolved_path[256];
     const char* norm;
-    (void)mode;
     if (!path || path[0] == '\0') return -1;
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     norm = normalize_fs_path(resolved_path);
     if (*norm == '\0') return -1;
-
-    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-        if (retrofs_mkdir(norm, (uint32_t)mode) == 0) return 0;
-    }
 
     if (contains_char(norm, '/')) return -1;
     if (find_ramfs(norm)) return -1;
@@ -2609,7 +2651,7 @@ int sys_getcwd(char* buf, size_t size) {
     }
     if (current->cwd[i] != '\0' && i + 1 >= size) return -1;
     buf[i] = '\0';
-    return 0;
+    return (int)(i + 1);
 }
 
 int fs_get_file_data(const char* path, void** data, size_t* size) {
