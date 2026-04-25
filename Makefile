@@ -31,16 +31,7 @@ USER_CFLAGS = -target $(TARGET) -std=c11 -ffreestanding -fno-PIE -O2 \
 USER_LDFLAGS = -m elf_x86_64 -nostdlib -static -Ttext 0x400000
 
 # x86_64-elf-gcc が無い環境では host clang/gcc の libgcc を使う
-LIBGCC = $(shell \
-	if command -v x86_64-elf-gcc >/dev/null 2>&1; then \
-		x86_64-elf-gcc -print-libgcc-file-name; \
-	elif command -v clang >/dev/null 2>&1; then \
-		clang --print-libgcc-file-name; \
-	elif command -v gcc >/dev/null 2>&1; then \
-		gcc -print-libgcc-file-name; \
-	else \
-		printf libgcc.a; \
-	fi)
+LIBGCC = 
 
 # 出力ファイル名
 KERNEL_ELF = kernel.elf
@@ -84,10 +75,15 @@ RETROFS_BASIC_ELF = user/retrofsbasic.elf
 RETROFS_EDGE_ELF = user/retrofsedge.elf
 VBLK_TEST_ELF = user/vblk_test.elf
 KILO_ELF = user/kilo.elf
+FILE_ELF = user/file.elf
+VMERRNO_TEST_ELF = user/vmerrno_test.elf
+FTRUNCSAVE_TEST_ELF = user/ftruncsave_test.elf
 RUST_HELLO_STD_ELF = ports/rust/hello_std
+GCC_MUSL_ELF = user/gcc.elf
 CC1_MUSL_ELF = user/cc1.elf
 AS_MUSL_ELF = user/as.elf
 LD_MUSL_ELF = user/ld.elf
+MAKE_MUSL_ELF = user/make.elf
 DOOM_MUSL_ELF = user/doomgeneric.elf
 BUSYBOX_ASH_MUSL_ELF = user/busybox-ash.elf
 BUSYBOX_ASH_APPLETS = ash sh busybox cat chmod cp echo env false head httpd ls mkdir mv printenv printf pwd rm rmdir stat tail test touch true wc
@@ -151,9 +147,10 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/sigmasktest.d $(USER_BUILD_DIR)/sigactiontest.d \
        $(USER_BUILD_DIR)/fchdirtest.d $(USER_BUILD_DIR)/ttylinktest.d \
        $(USER_BUILD_DIR)/mkdirtest.d $(USER_BUILD_DIR)/wadheadtest.d \
+       $(USER_BUILD_DIR)/vmerrno_test.d $(USER_BUILD_DIR)/ftruncsave_test.d \
        $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d
 
-.PHONY: all clean run ac97run ac97smoke doomac97smoke muslforkprobesmoke muslexecprobesmoke muslforkexecwaitsmoke muslbusyboxsmoke muslbusyboxenvshowsmoke smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
+.PHONY: all clean run ac97run ac97smoke doomac97smoke musltoolchainsmoke muslforkprobesmoke muslexecprobesmoke muslforkexecwaitsmoke muslbusyboxsmoke muslbusyboxenvshowsmoke vmsyscallsmoke ftruncsavesmoke smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
 
 all: $(ISO)
 
@@ -207,15 +204,38 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(SOUND_TEST_ELF) $(DOOM_MUSL_ELF) $(KILO_ELF)
+$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(SOUND_TEST_ELF) $(GCC_MUSL_ELF) $(CC1_MUSL_ELF) $(AS_MUSL_ELF) $(LD_MUSL_ELF) $(MAKE_MUSL_ELF) $(DOOM_MUSL_ELF) $(KILO_ELF) $(FILE_ELF) $(VMERRNO_TEST_ELF) $(FTRUNCSAVE_TEST_ELF)
 	@if [ "$(ROOTFS_REBUILD)" = "0" ] && [ -f "$(ROOTFS_IMG)" ]; then \
 		echo "Keeping existing $(ROOTFS_IMG) (ROOTFS_REBUILD=0)"; \
 	else \
 		mkdir -p rootfs/bin; \
 		mkdir -p rootfs/work rootfs/src rootfs/tmp rootfs/home; \
+		bash scripts/populate_c_env_musl.sh; \
+		rm -f rootfs/bin/ash.orthos rootfs/bin/busybox.orthos; \
+		rm -f rootfs/bin/cc1.orthos rootfs/bin/cc1.orthos.elf rootfs/bin/gcc.orthos.elf; \
+		rm -f rootfs/bin/as.orthos rootfs/bin/ld.orthos; \
+		rm -f rootfs/bin/gcc.elf rootfs/bin/cc1.elf rootfs/bin/as.elf rootfs/bin/ld.elf rootfs/bin/make.elf; \
+		rm -f rootfs/crt0.orthos.o rootfs/syscalls.orthos.o rootfs/libc.orthos.a; \
+		cp $(GCC_MUSL_ELF) rootfs/usr/bin/gcc; \
+		cp $(GCC_MUSL_ELF) rootfs/usr/bin/cc; \
+		cp $(CC1_MUSL_ELF) rootfs/usr/bin/cc1; \
+		cp $(AS_MUSL_ELF) rootfs/usr/bin/as; \
+		cp $(LD_MUSL_ELF) rootfs/usr/bin/ld; \
+		cp $(MAKE_MUSL_ELF) rootfs/usr/bin/make; \
+		cp $(SH_ELF) rootfs/usr/bin/sh; \
+		cp $(GCC_MUSL_ELF) rootfs/bin/gcc; \
+		cp $(GCC_MUSL_ELF) rootfs/bin/cc; \
+		cp $(CC1_MUSL_ELF) rootfs/bin/cc1; \
+		cp $(AS_MUSL_ELF) rootfs/bin/as; \
+		cp $(LD_MUSL_ELF) rootfs/bin/ld; \
+		cp $(MAKE_MUSL_ELF) rootfs/bin/make; \
+		cp $(SH_ELF) rootfs/bin/sh; \
+		chmod +x rootfs/usr/bin/gcc rootfs/usr/bin/cc rootfs/usr/bin/cc1 rootfs/usr/bin/as rootfs/usr/bin/ld rootfs/usr/bin/make; \
+		chmod +x rootfs/usr/bin/sh; \
+		chmod +x rootfs/bin/gcc rootfs/bin/cc rootfs/bin/cc1 rootfs/bin/as rootfs/bin/ld rootfs/bin/make; \
+		chmod +x rootfs/bin/sh; \
 		cp $(USER_BUILD_DIR)/crt0.o rootfs/crt0.o; \
 		cp $(USER_BUILD_DIR)/syscalls.o rootfs/syscalls.o; \
-		cp $(MUSL_SYSROOT)/lib/libc.a rootfs/libc.a; \
 		cp $(UDP_ECHO_TEST_ELF) rootfs/bin/udpecho.elf; \
 		cp $(UDP_NB_TEST_ELF) rootfs/bin/udpnb.elf; \
 		cp $(HTTPS_FETCH_ELF) rootfs/bin/httpsfetch.elf; \
@@ -243,6 +263,9 @@ $(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/
 		cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf; \
 		rm -f rootfs/bin/edit; \
 		cp $(KILO_ELF) rootfs/bin/kilo; \
+		cp $(FILE_ELF) rootfs/bin/file; \
+		cp $(VMERRNO_TEST_ELF) rootfs/bin/vmerrno_test.elf; \
+		cp $(FTRUNCSAVE_TEST_ELF) rootfs/bin/ftruncsave_test.elf; \
 		python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG); \
 	fi
 
@@ -303,6 +326,9 @@ ac97smoke: $(RETROFS_ISO)
 doomac97smoke: $(RETROFS_ISO)
 	bash ./tests/doom_ac97_smoke.sh $(RETROFS_ISO)
 
+musltoolchainsmoke: $(ISO)
+	bash ./tests/musl_toolchain_smoke.sh
+
 muslforkprobesmoke: $(ISO)
 	bash ./tests/musl_forkprobe_smoke.sh $(ISO)
 
@@ -317,6 +343,12 @@ muslbusyboxsmoke: $(ISO)
 
 muslbusyboxenvshowsmoke: $(ISO)
 	bash ./tests/musl_busybox_envshow_smoke.sh $(ISO)
+
+vmsyscallsmoke: $(ISO)
+	bash ./tests/vm_syscall_smoke.sh $(ISO)
+
+ftruncsavesmoke: $(ISO)
+	bash ./tests/ftruncate_save_smoke.sh $(ISO)
 
 smprun: $(ISO)
 	bash ./run_qemu_stdio.sh \

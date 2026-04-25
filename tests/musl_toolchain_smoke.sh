@@ -1,99 +1,112 @@
 #!/bin/bash
 set -euo pipefail
 
-QEMU_SOCK=/tmp/orthos-qemu-toolchain.sock
-rm -f "$QEMU_SOCK" serial_toolchain.log
-
-qemu-system-x86_64 -M pc -m 2G -cdrom orthos.iso -boot d -display none \
-    -serial file:serial_toolchain.log -monitor unix:"$QEMU_SOCK",server,nowait -k en-us &
-QEMU_PID=$!
+ISO="${1:-orthos.iso}"
+SERIAL_LOG="${SERIAL_LOG:-musl-toolchain-serial.log}"
+QEMU_OUT="${QEMU_OUT:-/tmp/musl-toolchain-qemu.out}"
+BOOTCMD_PATH="rootfs/etc/bootcmd"
+SCRIPT_PATH="rootfs/etc/musl_toolchain_smoke.ash"
+BOOTCMD_BACKUP="$(mktemp)"
+SCRIPT_BACKUP="$(mktemp)"
+QEMU_PID=""
 
 cleanup() {
-    kill "$QEMU_PID" 2>/dev/null || true
-    wait "$QEMU_PID" 2>/dev/null || true
-    rm -f "$QEMU_SOCK"
+    if [ -n "${QEMU_PID}" ] && kill -0 "${QEMU_PID}" 2>/dev/null; then
+        kill "${QEMU_PID}" 2>/dev/null || true
+        wait "${QEMU_PID}" 2>/dev/null || true
+    fi
+    if [ -f "${BOOTCMD_BACKUP}" ]; then
+        cp "${BOOTCMD_BACKUP}" "${BOOTCMD_PATH}"
+        rm -f "${BOOTCMD_BACKUP}"
+    fi
+    if [ -f "${SCRIPT_BACKUP}" ]; then
+        if [ -s "${SCRIPT_BACKUP}" ]; then
+            cp "${SCRIPT_BACKUP}" "${SCRIPT_PATH}"
+        else
+            rm -f "${SCRIPT_PATH}"
+        fi
+        rm -f "${SCRIPT_BACKUP}"
+    fi
 }
 trap cleanup EXIT
 
-echo "Waiting for Orthox-64 Shell..."
-for i in {1..40}; do
-    if grep -q "Welcome to Orthox-64 Shell!" serial_toolchain.log 2>/dev/null; then
-        echo "Shell started"
+cp "${BOOTCMD_PATH}" "${BOOTCMD_BACKUP}"
+if [ -f "${SCRIPT_PATH}" ]; then
+    cp "${SCRIPT_PATH}" "${SCRIPT_BACKUP}"
+else
+    : > "${SCRIPT_BACKUP}"
+fi
+
+cat > "${SCRIPT_PATH}" <<'EOF'
+export PATH=/bin:/usr/bin:/
+echo musl-toolchain-smoke-start
+rm -f /tmp/hello_run /tmp/hello_gen.s /tmp/hello_gen.o
+if /bin/gcc -S hello.c -o /tmp/hello_gen.s; then
+    echo musl-toolchain-step-s-ok
+else
+    echo musl-toolchain-step-s-fail
+fi
+if /bin/gcc -c hello.c -o /tmp/hello_gen.o; then
+    echo musl-toolchain-step-c-ok
+else
+    echo musl-toolchain-step-c-fail
+fi
+if /bin/gcc hello.c -o /tmp/hello_run; then
+    echo musl-toolchain-step-link-ok
+else
+    echo musl-toolchain-step-link-fail
+fi
+if [ -f /tmp/hello_run ]; then
+    echo musl-toolchain-output-present
+    /tmp/hello_run
+else
+    echo musl-toolchain-output-missing
+fi
+echo musl-toolchain-smoke-end
+EOF
+
+cat > "${BOOTCMD_PATH}" <<'EOF'
+/bin/ash /etc/musl_toolchain_smoke.ash
+EOF
+
+make orthos.iso >/tmp/musl-toolchain-build.out
+
+rm -f "${SERIAL_LOG}" "${QEMU_OUT}"
+
+qemu-system-x86_64 \
+    -machine pc \
+    -cpu qemu64 \
+    -m 2G \
+    -cdrom "${ISO}" \
+    -boot d \
+    -display none \
+    -serial "file:${SERIAL_LOG}" \
+    -k en-us >"${QEMU_OUT}" 2>&1 &
+QEMU_PID=$!
+
+echo "Waiting for musl toolchain smoke..."
+for _ in $(seq 1 120); do
+    if grep -q 'musl-toolchain-smoke-end' "${SERIAL_LOG}" 2>/dev/null; then
         break
     fi
     sleep 1
 done
 
-python3 <<'PY'
-import socket
-import time
+kill "${QEMU_PID}" 2>/dev/null || true
+wait "${QEMU_PID}" 2>/dev/null || true
+QEMU_PID=""
 
-def connect_monitor():
-    for _ in range(50):
-        try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.connect("/tmp/orthos-qemu-toolchain.sock")
-            s.settimeout(0.2)
-            break
-        except OSError:
-            time.sleep(0.1)
-    else:
-        raise SystemExit("monitor connect failed")
-    try:
-        s.recv(1024)
-    except Exception:
-        pass
-    return s
+grep -q 'Welcome to Orthox-64 Shell!' "${SERIAL_LOG}"
+grep -q -- '--- OrthOS GCC Pipeline Started ---' "${SERIAL_LOG}"
+grep -q -- '\[gcc\] Executing /bin/cc1' "${SERIAL_LOG}"
+grep -q -- '\[gcc\] Executing /bin/as' "${SERIAL_LOG}"
+grep -q -- '\[gcc\] Executing /bin/ld' "${SERIAL_LOG}"
+grep -q -- 'musl-toolchain-step-s-ok' "${SERIAL_LOG}"
+grep -q -- 'musl-toolchain-step-c-ok' "${SERIAL_LOG}"
+grep -q -- 'musl-toolchain-step-link-ok' "${SERIAL_LOG}"
+grep -q -- 'musl-toolchain-output-present' "${SERIAL_LOG}"
+grep -q -- 'Hello, world' "${SERIAL_LOG}"
+grep -q -- 'musl-toolchain-smoke-end' "${SERIAL_LOG}"
 
-def send_qemu(sock, cmd):
-    sock.sendall(cmd.encode("utf-8") + b"\n")
-    try:
-        sock.recv(1024)
-    except Exception:
-        pass
-
-def send_key(sock, ch):
-    mapping = {
-        " ": "spc",
-        ".": "dot",
-        "/": "slash",
-        "-": "minus",
-        "_": "shift-minus",
-        ":": "shift-semicolon",
-        "\n": "ret",
-    }
-    send_qemu(sock, f"sendkey {mapping.get(ch, ch)}")
-    time.sleep(0.08)
-
-def send_text(sock, text):
-    for ch in text:
-        send_key(sock, ch)
-    send_key(sock, "\n")
-
-time.sleep(2)
-monitor = connect_monitor()
-try:
-    for cmd, delay in [
-        ("gcc.elf hello.c", 25.0),
-        ("ls /", 2.0),
-        ("exit", 1.0),
-    ]:
-        send_text(monitor, cmd)
-        time.sleep(delay)
-finally:
-    monitor.close()
-PY
-
-echo "--- Serial Output ---"
-cat serial_toolchain.log
-echo "---------------------"
-
-grep -q -- "--- OrthOS GCC Pipeline Started ---" serial_toolchain.log
-grep -q -- "\\[gcc\\] Executing /bin/cc1" serial_toolchain.log
-grep -q -- "\\[gcc\\] Executing /bin/as" serial_toolchain.log
-grep -q -- "\\[gcc\\] Executing /bin/ld" serial_toolchain.log
-grep -q -- "--- OrthOS GCC Pipeline Finished! Output: a.out ---" serial_toolchain.log
-grep -q -- "Hello, world" serial_toolchain.log
-grep -q -- "\\[gcc\\] a.out returned: 0" serial_toolchain.log
-
-echo "musl toolchain smoke test: PASS"
+echo "musl toolchain smoke PASS"
+tail -n 200 "${SERIAL_LOG}"
