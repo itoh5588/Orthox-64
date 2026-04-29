@@ -18,6 +18,13 @@ static int strcmp_exact_retrofs(const char* a, const char* b) {
     return *a == *b;
 }
 
+static int retrofs_dirent_name_exists(const struct orth_dirent* dirents, size_t count, const char* name) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp_exact_retrofs(dirents[i].name, name)) return 1;
+    }
+    return 0;
+}
+
 static int path_component_len(const char* s) {
     int len = 0;
     while (s[len] && s[len] != '/') len++;
@@ -196,16 +203,11 @@ static int retrofs_walk_path(const char* path, struct retrofs_directory_entry_in
         char component[RETROFS_MAX_NAME];
         int len = path_component_len(norm);
         if (len <= 0 || len >= RETROFS_MAX_NAME) {
-            extern void puts(const char*);
-            puts("walk_path: bad len\r\n");
             return -1;
         }
         for (int i = 0; i < len; i++) component[i] = norm[i];
         component[len] = '\0';
-        extern void puts(const char*);
-        puts("walk_path: finding component\r\n");
         if (retrofs_find_in_directory(current_dir, component, &current) < 0) {
-            puts("walk_path: not found\r\n");
             return -1;
         }
         next += len;
@@ -492,9 +494,10 @@ int retrofs_list_dir(const char* path, struct orth_dirent* dirents, size_t max_e
     struct retrofs_directory_entry_inner entry;
     uint64_t dir_sector = g_retrofs.desc.root_directory;
     uint64_t current;
-    size_t count = 0;
+    size_t count;
     int is_root = 0;
     if (!g_retrofs.mounted || !dirents || !out_count) return -1;
+    count = *out_count;
     if (retrofs_walk_path(path, &entry, &is_root, 0) < 0) return -1;
     if (!is_root) {
         if ((entry.flags & RETROFS_FLAG_DIRECTORY) == 0) return -1;
@@ -513,6 +516,7 @@ int retrofs_list_dir(const char* path, struct orth_dirent* dirents, size_t max_e
             struct retrofs_directory_entry_inner* e = &entries[i].entry;
             int j = 0;
             if (e->filename[0] == '\0') break;
+            if (retrofs_dirent_name_exists(dirents, count, e->filename)) continue;
             if (count >= max_entries) {
                 pmm_free((void*)VIRT_TO_PHYS((uint64_t)block), (int)pages);
                 return -1;
@@ -612,7 +616,6 @@ int retrofs_rmdir(const char* path) {
         return -1;
     }
     if (retrofs_walk_path(path, &entry, &is_root, &parent_sector) < 0) {
-        puts("rmdir: walk_path failed\r\n");
         return -1;
     }
     if (is_root || !(entry.flags & RETROFS_FLAG_DIRECTORY)) {

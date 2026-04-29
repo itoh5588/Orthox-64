@@ -6,11 +6,13 @@
 
 struct elf_info;
 struct orth_runq_stat;
+struct wait_queue;
 
 typedef enum {
     TASK_RUNNING,
     TASK_READY,
     TASK_SLEEPING,
+    TASK_IO_WAIT,
     TASK_ZOMBIE,
     TASK_DEAD
 } task_state_t;
@@ -75,12 +77,37 @@ struct task {
     uint64_t tls_memsz;
     uint64_t tls_align;
     uint64_t sleep_until_ms;
+    uint64_t trace_started_ms;
+    uint64_t trace_last_ms;
+    uint64_t trace_syscalls;
+    uint64_t trace_brk_calls;
+    uint64_t trace_mmap_calls;
+    uint64_t trace_munmap_calls;
+    uint64_t trace_mremap_calls;
+    uint64_t trace_read_calls;
+    uint64_t trace_write_calls;
+    uint64_t trace_read_bytes;
+    uint64_t trace_write_bytes;
+    uint64_t trace_write_max;
+    uint64_t trace_open_calls;
+    uint64_t trace_close_calls;
+    uint64_t trace_stat_calls;
+    uint64_t trace_fstat_calls;
+    uint64_t trace_lseek_calls;
+    uint64_t trace_ioctl_calls;
+    uint64_t trace_clock_calls;
+    uint64_t trace_gettimeofday_calls;
+    uint64_t trace_cow_faults;
     int timeslice_ticks;
+    int trace_progress;
+    char comm[64];
     char cwd[256];
     file_descriptor_t fds[MAX_FDS];
     struct task* next;
     struct task* runq_prev;
     struct task* runq_next;
+    struct task* wait_next;
+    struct wait_queue* wait_queue;
     uint8_t on_runq;
 };
 
@@ -98,6 +125,7 @@ struct task* task_create_idle(uint32_t cpu_id);
 int task_set_affinity(struct task* t, uint32_t cpu_id);
 int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id);
 int task_mark_sleeping(struct task* t);
+int task_mark_io_wait(struct task* t);
 int task_mark_zombie(struct task* t, int exit_status);
 int task_wake(struct task* t);
 int task_reap(struct task* t);

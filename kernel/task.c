@@ -1,12 +1,11 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "task.h"
+#include "task_internal.h"
 #include "syscall.h"
 #include "pmm.h"
 #include "vmm.h"
-#include "gdt.h"
 #include "limine.h"
-#include "elf64.h"
 #include "net_socket.h"
 #include "net.h"
 #include "smp.h"
@@ -18,23 +17,8 @@ struct task* task_list = NULL;
 static int next_pid = 1;
 static uint32_t g_cpu_count = 1;
 static spinlock_t g_task_lock;
-static int g_fork_spread_enabled = 1;
-
-#define TASK_TIMESLICE_TICKS 5
-
-#define USER_STACK_TOP_VADDR   0x7FFFFFFFF000ULL
-#define USER_STACK_PAGES       64
-#define USER_STACK_GUARD_PAGES 1
-#define EXEC_COPY_PAGES        64
-#define EXEC_MAX_PATH_LEN      1024
-#define EXEC_MAX_VEC_STRINGS   128
-#define EXEC_MAX_VEC_STR_LEN   512
 
 extern volatile struct limine_module_request module_request;
-
-#define MSR_FS_BASE        0xC0000100
-#define MSR_GS_BASE        0xC0000101
-#define MSR_KERNEL_GS_BASE 0xC0000102
 
 static inline void wrmsr(uint32_t msr, uint64_t val) {
     uint32_t low = val & 0xFFFFFFFF;
@@ -48,15 +32,82 @@ static inline uint64_t rdmsr(uint32_t msr) {
     return ((uint64_t)high << 32) | low;
 }
 
-extern void switch_context(struct task_context* next_ctx, struct task_context* prev_ctx);
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
-extern void fork_child_entry(void);
+
+#ifndef ORTHOX_MEM_TRACE
+#define ORTHOX_MEM_TRACE 0
+#endif
+
+#ifndef ORTHOX_MEM_PROGRESS
+#define ORTHOX_MEM_PROGRESS 0
+#endif
+
 static int free_task_struct(struct task* t);
 static int task_is_idle_task(struct task* t);
 static int task_can_migrate_locked(struct task* t);
 static int normalize_cpu_affinity(uint32_t cpu_id);
 static void task_runq_push_locked(struct task* t, uint32_t cpu_id);
+
+void task_set_comm_from_path(struct task* t, const char* path) {
+    const char* base = path;
+    if (!t) return;
+    if (!base) base = "";
+    for (const char* p = path; p && *p; p++) {
+        if (*p == '/') base = p + 1;
+    }
+    for (int i = 0; i < 63; i++) {
+        t->comm[i] = base[i];
+        if (base[i] == '\0') return;
+    }
+    t->comm[63] = '\0';
+}
+uint64_t task_lock_irqsave(void) {
+    return spin_lock_irqsave(&g_task_lock);
+}
+
+void task_unlock_irqrestore(uint64_t flags) {
+    spin_unlock_irqrestore(&g_task_lock, flags);
+}
+
+int task_next_pid_locked(void) {
+    return next_pid++;
+}
+
+#if ORTHOX_MEM_PROGRESS
+void task_trace_progress_tick_internal(struct task* t, uint64_t now) {
+    if (!t || !t->trace_progress) return;
+    if (t->trace_last_ms != 0 && now - t->trace_last_ms < 5000) return;
+    t->trace_last_ms = now;
+
+    puts("[memprogress] pid=0x"); puthex((uint64_t)t->pid);
+    puts(" ms=0x"); puthex(now - t->trace_started_ms);
+    puts(" sys=0x"); puthex(t->trace_syscalls);
+    puts(" brk=0x"); puthex(t->trace_brk_calls);
+    puts(" mmap=0x"); puthex(t->trace_mmap_calls);
+    puts(" munmap=0x"); puthex(t->trace_munmap_calls);
+    puts(" mremap=0x"); puthex(t->trace_mremap_calls);
+    puts(" rd=0x"); puthex(t->trace_read_calls);
+    puts(" wr=0x"); puthex(t->trace_write_calls);
+    puts(" rdb=0x"); puthex(t->trace_read_bytes);
+    puts(" wrb=0x"); puthex(t->trace_write_bytes);
+    puts(" wrmax=0x"); puthex(t->trace_write_max);
+    puts(" op=0x"); puthex(t->trace_open_calls);
+    puts(" cl=0x"); puthex(t->trace_close_calls);
+    puts(" st=0x"); puthex(t->trace_stat_calls);
+    puts(" fst=0x"); puthex(t->trace_fstat_calls);
+    puts(" seek=0x"); puthex(t->trace_lseek_calls);
+    puts(" ioctl=0x"); puthex(t->trace_ioctl_calls);
+    puts(" clk=0x"); puthex(t->trace_clock_calls);
+    puts(" gtod=0x"); puthex(t->trace_gettimeofday_calls);
+    puts(" cow=0x"); puthex(t->trace_cow_faults);
+    puts(" heap=0x"); puthex(t->heap_break);
+    puts(" mmap_end=0x"); puthex(t->mmap_end);
+    puts(" pmm_alloc=0x"); puthex(pmm_get_allocated_pages());
+    puts(" pmm_free=0x"); puthex(pmm_get_free_pages());
+    puts("\r\n");
+}
+#endif
 
 enum task_migration_reason {
     TASK_MIGRATE_OK = 0,
@@ -91,52 +142,14 @@ static void task_init_idle_context(struct task* t) {
     t->ctx.rflags = 0;
 }
 
-struct exec_copy_buf {
-    char path[EXEC_MAX_PATH_LEN];
-    char argv_storage[EXEC_MAX_VEC_STRINGS][EXEC_MAX_VEC_STR_LEN];
-    char envp_storage[EXEC_MAX_VEC_STRINGS][EXEC_MAX_VEC_STR_LEN];
-    char* argv[EXEC_MAX_VEC_STRINGS + 1];
-    char* envp[EXEC_MAX_VEC_STRINGS + 1];
-};
-
-static int copy_user_cstring(const char* src, char* dst, int size) {
-    if (!src || !dst || size <= 0) return -1;
-    if ((uint64_t)src < 0x1000ULL) return -1;
-    int i = 0;
-    for (; i + 1 < size; i++) {
-        char ch = src[i];
-        dst[i] = ch;
-        if (!ch) return 0;
-    }
-    dst[size - 1] = '\0';
-    return -1;
-}
-
-static int copy_user_string_vector(char* const user_vec[], char** kernel_vec,
-                                   char storage[][EXEC_MAX_VEC_STR_LEN]) {
-    int count = 0;
-    if (!kernel_vec) return -1;
-    if (!user_vec) {
-        kernel_vec[0] = 0;
-        return 0;
-    }
-    while (count < EXEC_MAX_VEC_STRINGS) {
-        const char* src = user_vec[count];
-        if (!src) break;
-        if (copy_user_cstring(src, storage[count], EXEC_MAX_VEC_STR_LEN) < 0) {
-            return -1;
-        }
-        kernel_vec[count] = storage[count];
-        count++;
-    }
-    kernel_vec[count] = 0;
-    return 0;
-}
-
 static inline struct cpu_local* this_cpu(void) {
     struct cpu_local* cpu = (struct cpu_local*)(uintptr_t)rdmsr(MSR_GS_BASE);
     if (cpu) return cpu;
     return (struct cpu_local*)(uintptr_t)rdmsr(MSR_KERNEL_GS_BASE);
+}
+
+struct cpu_local* task_this_cpu(void) {
+    return this_cpu();
 }
 
 struct cpu_local* get_cpu_local(void) {
@@ -196,7 +209,7 @@ int task_get_runq_stats(struct orth_runq_stat* out, uint32_t max_count) {
             } else if (t->state == TASK_RUNNING) {
                 affined_running++;
                 if (migrate_reason != TASK_MIGRATE_OK) blocked_running++;
-            } else if (t->state == TASK_SLEEPING) {
+            } else if (t->state == TASK_SLEEPING || t->state == TASK_IO_WAIT) {
                 affined_sleeping++;
                 if (migrate_reason != TASK_MIGRATE_OK) blocked_sleeping++;
             }
@@ -329,13 +342,10 @@ static uint32_t choose_spawn_cpu_locked(uint32_t fallback_cpu) {
     return best_cpu;
 }
 
-int task_set_fork_spread(int enabled) {
-    g_fork_spread_enabled = enabled ? 1 : 0;
-    return 0;
-}
-
-int task_get_fork_spread(void) {
-    return g_fork_spread_enabled;
+uint32_t task_choose_fork_cpu_locked(uint32_t fallback_cpu) {
+    return task_get_fork_spread()
+        ? choose_spawn_cpu_locked(fallback_cpu)
+        : (uint32_t)normalize_cpu_affinity(fallback_cpu);
 }
 
 static void init_cpu_local(struct cpu_local* cpu, uint32_t cpu_id,
@@ -421,6 +431,21 @@ static struct task* task_runq_pop_locked(struct cpu_local* cpu) {
     task_runq_remove_locked(t);
     return t;
 }
+struct task* task_runq_pop_locked_internal(struct cpu_local* cpu) {
+    return task_runq_pop_locked(cpu);
+}
+
+int task_is_idle_task_internal(struct task* t) {
+    return task_is_idle_task(t);
+}
+
+void task_refresh_cpu_local_msrs_internal(struct cpu_local* cpu) {
+    task_refresh_cpu_local_msrs(cpu);
+}
+
+void task_write_user_fs_base_internal(uint64_t fs_base) {
+    wrmsr(MSR_FS_BASE, fs_base);
+}
 
 static int task_set_affinity_locked(struct task* t, uint32_t cpu_id) {
     if (!t) return -1;
@@ -451,6 +476,14 @@ static int task_mark_sleeping_locked(struct task* t) {
     return 0;
 }
 
+static int task_mark_io_wait_locked(struct task* t) {
+    if (!t) return -1;
+    task_runq_remove_locked(t);
+    t->sleep_until_ms = 0;
+    t->state = TASK_IO_WAIT;
+    return 0;
+}
+
 static int task_mark_zombie_locked(struct task* t, int exit_status) {
     if (!t) return -1;
     task_runq_remove_locked(t);
@@ -464,6 +497,10 @@ static int task_wake_locked(struct task* t) {
     if (t->state == TASK_ZOMBIE || t->state == TASK_DEAD) return -1;
     t->sleep_until_ms = 0;
     return task_mark_ready_on_cpu_locked(t, (uint32_t)t->cpu_affinity);
+}
+
+int task_wake_locked_internal(struct task* t) {
+    return task_wake_locked(t);
 }
 
 static int task_reap_locked(struct task* t) {
@@ -520,53 +557,6 @@ struct task* get_current_task(void) {
     return get_current_task_raw();
 }
 
-void task_request_resched(void) {
-    struct cpu_local* cpu = this_cpu();
-    if (cpu) cpu->resched_pending = 1;
-}
-
-void task_request_resched_cpu(uint32_t cpu_id) {
-    struct cpu_local* cpu = get_cpu_local_by_id(cpu_id);
-    struct cpu_local* self = this_cpu();
-    if (!cpu) return;
-    cpu->resched_pending = 1;
-    if (!self || self->cpu_id != cpu_id) {
-        smp_send_resched_ipi(cpu_id);
-    }
-}
-
-int task_consume_resched(void) {
-    struct cpu_local* cpu = this_cpu();
-    if (!cpu || !cpu->resched_pending) return 0;
-    cpu->resched_pending = 0;
-    return 1;
-}
-
-void task_on_timer_tick(void) {
-    struct task* current_task = get_current_task_raw();
-    struct cpu_local* cpu = this_cpu();
-    if (cpu && cpu->cpu_id == 0) {
-        uint64_t now = lapic_get_ticks_ms();
-        uint64_t flags = spin_lock_irqsave(&g_task_lock);
-        struct task* t = task_list;
-        while (t) {
-            if (t->state == TASK_SLEEPING && t->sleep_until_ms != 0 && t->sleep_until_ms <= now) {
-                t->sleep_until_ms = 0;
-                task_wake_locked(t);
-            }
-            t = t->next;
-        }
-        spin_unlock_irqrestore(&g_task_lock, flags);
-    }
-    if (!current_task || current_task->state != TASK_RUNNING) return;
-    if (current_task->timeslice_ticks > 1) {
-        current_task->timeslice_ticks--;
-        return;
-    }
-    current_task->timeslice_ticks = TASK_TIMESLICE_TICKS;
-    task_request_resched();
-}
-
 static void* kernel_memset(void* s, int c, size_t n) {
     unsigned char* p = s;
     while (n--) *p++ = (unsigned char)c;
@@ -610,304 +600,12 @@ static int free_task_struct(struct task* t) {
     return 0;
 }
 
-static int alloc_user_stack(uint64_t* pml4_virt, struct task* t, int stack_pages, uint8_t* stack_pages_out[]) {
-    if (!pml4_virt || !t || stack_pages <= USER_STACK_GUARD_PAGES) return -1;
-    uint64_t stack_bottom_vaddr = USER_STACK_TOP_VADDR - (uint64_t)stack_pages * PAGE_SIZE;
-    uint64_t mapped_bottom_vaddr = stack_bottom_vaddr + USER_STACK_GUARD_PAGES * PAGE_SIZE;
-    for (int i = 0; i < stack_pages - USER_STACK_GUARD_PAGES; i++) {
-        void* stack_phys = pmm_alloc(1);
-        if (!stack_phys) return -1;
-        uint8_t* stack_mem = (uint8_t*)PHYS_TO_VIRT(stack_phys);
-        kernel_memset(stack_mem, 0, PAGE_SIZE);
-        vmm_map_page(pml4_virt,
-                     mapped_bottom_vaddr + (uint64_t)i * PAGE_SIZE,
-                     (uint64_t)stack_phys,
-                     PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-        if (stack_pages_out) stack_pages_out[i] = stack_mem;
-    }
-    t->user_stack_top = USER_STACK_TOP_VADDR;
-    t->user_stack_bottom = mapped_bottom_vaddr;
-    t->user_stack_guard = stack_bottom_vaddr;
-    return 0;
+struct task* task_alloc_struct(void) {
+    return alloc_task_struct();
 }
 
-static int stack_write_bytes(uint8_t* stack_pages[], uint64_t mapped_bottom_vaddr,
-                             uint64_t stack_top_vaddr, uint64_t user_addr,
-                             const void* src, int len) {
-    const uint8_t* in = (const uint8_t*)src;
-    if (!stack_pages || !src || len < 0) return -1;
-    if (user_addr < mapped_bottom_vaddr || user_addr + (uint64_t)len > stack_top_vaddr) return -1;
-    uint64_t rel = user_addr - mapped_bottom_vaddr;
-    int remaining = len;
-    while (remaining > 0) {
-        uint64_t page_index = rel / PAGE_SIZE;
-        uint64_t page_off = rel % PAGE_SIZE;
-        int chunk = (int)(PAGE_SIZE - page_off);
-        if (chunk > remaining) chunk = remaining;
-        if (!stack_pages[page_index]) return -1;
-        for (int i = 0; i < chunk; i++) {
-            stack_pages[page_index][page_off + (uint64_t)i] = in[i];
-        }
-        in += chunk;
-        rel += (uint64_t)chunk;
-        remaining -= chunk;
-    }
-    return 0;
-}
-
-static int stack_write_u64(uint8_t* stack_pages[], uint64_t mapped_bottom_vaddr,
-                           uint64_t stack_top_vaddr, uint64_t user_addr, uint64_t value) {
-    return stack_write_bytes(stack_pages, mapped_bottom_vaddr, stack_top_vaddr,
-                             user_addr, &value, (int)sizeof(value));
-}
-
-static int copy_user_string_to_stack(uint8_t* stack_pages[], uint64_t mapped_bottom_vaddr,
-                                     uint64_t stack_top_vaddr, uint64_t* current_sp,
-                                     const char* src, uint64_t* user_addr_out) {
-    if ((uint64_t)src < 0x1000ULL) {
-        puts("Exec: invalid user string pointer ");
-        puthex((uint64_t)src);
-        puts("\r\n");
-        return -1;
-    }
-    int len = 0;
-    while (src[len]) len++;
-    len++;
-    if (*current_sp < mapped_bottom_vaddr + (uint64_t)len) return -1;
-    *current_sp -= (uint64_t)len;
-    if (*current_sp < mapped_bottom_vaddr || *current_sp >= stack_top_vaddr) return -1;
-    if (stack_write_bytes(stack_pages, mapped_bottom_vaddr, stack_top_vaddr, *current_sp, src, len) < 0) {
-        return -1;
-    }
-    *user_addr_out = *current_sp;
-    return 0;
-}
-
-enum {
-    AT_NULL = 0,
-    AT_PHDR = 3,
-    AT_PHENT = 4,
-    AT_PHNUM = 5,
-    AT_PAGESZ = 6,
-    AT_ENTRY = 9,
-    AT_UID = 11,
-    AT_EUID = 12,
-    AT_GID = 13,
-    AT_EGID = 14,
-    AT_SECURE = 23,
-    AT_RANDOM = 25,
-};
-
-struct syscall_frame {
-    uint64_t r15, r14, r13, r12, rbp, rbx, r9, r8, r10, rdx, rsi, rdi, rax;
-    uint64_t rip, cs, rflags, rsp, ss;
-};
-
-int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t, const struct elf_info* info, char* const argv[], char* const envp[]) {
-    uint8_t* stack_pages[USER_STACK_PAGES];
-    for (int i = 0; i < USER_STACK_PAGES; i++) stack_pages[i] = 0;
-    if (alloc_user_stack(pml4_virt, t, USER_STACK_PAGES, stack_pages) < 0) {
-        puts("Exec: alloc_user_stack failed\r\n");
-        return -1;
-    }
-
-    int argc = 0; if (argv) while (argv[argc]) argc++;
-    int envc = 0; if (envp) while (envp[envc]) envc++;
-    uint64_t env_ptrs[EXEC_MAX_VEC_STRINGS]; uint64_t arg_ptrs[EXEC_MAX_VEC_STRINGS];
-    if (argc > EXEC_MAX_VEC_STRINGS) argc = EXEC_MAX_VEC_STRINGS;
-    if (envc > EXEC_MAX_VEC_STRINGS) envc = EXEC_MAX_VEC_STRINGS;
-    uint64_t current_str_addr = t->user_stack_top;
-    current_str_addr -= 16;
-    uint64_t random_base = current_str_addr;
-    if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top,
-                        random_base, 0x0123456789abcdefULL) < 0 ||
-        stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top,
-                        random_base + 8, 0xfedcba9876543210ULL) < 0) {
-        return -1;
-    }
-
-    for (int i = envc - 1; i >= 0; i--) {
-        if (copy_user_string_to_stack(stack_pages, t->user_stack_bottom, t->user_stack_top,
-                                      &current_str_addr, envp[i], &env_ptrs[i]) < 0) {
-            return -1;
-        }
-    }
-    for (int i = argc - 1; i >= 0; i--) {
-        if (copy_user_string_to_stack(stack_pages, t->user_stack_bottom, t->user_stack_top,
-                                      &current_str_addr, argv[i], &arg_ptrs[i]) < 0) {
-            return -1;
-        }
-    }
-
-    current_str_addr &= ~7ULL;
-    if (current_str_addr < t->user_stack_bottom + (uint64_t)(envc + argc + 21) * 8ULL) {
-        return -1;
-    }
-
-    // auxv (push value first, then type)
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_NULL) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, random_base) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_RANDOM) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_SECURE) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_EGID) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_GID) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_EUID) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_UID) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, (uint64_t)info->entry) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_ENTRY) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, PAGE_SIZE) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PAGESZ) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, info->phnum) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PHNUM) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, info->phent) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PHENT) < 0) return -1;
-
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, info->phdr_vaddr) < 0) return -1;
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_PHDR) < 0) return -1;
-
-    // NULL sentinel for envp must appear before auxv in the user-visible stack layout.
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-
-    // envp
-    for (int i = envc - 1; i >= 0; i--) {
-        current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, env_ptrs[i]) < 0) return -1;
-    }
-    t->user_envp = current_str_addr;
-
-    // NULL sentinel for argv
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
-    // argv
-    for (int i = argc - 1; i >= 0; i--) {
-        current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, arg_ptrs[i]) < 0) return -1;
-    }
-    t->user_argv = current_str_addr;
-
-    // argc
-    current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, (uint64_t)argc) < 0) return -1;
-    t->user_argc = (uint64_t)argc;
-
-    t->user_stack = current_str_addr;
-    return 0;
-}
-
-int task_execve(struct syscall_frame* frame, const char* path, char* const argv[], char* const envp[]) {
-    void* file_addr = NULL;
-    size_t file_size = 0;
-    void* exec_copy_phys = 0;
-    struct exec_copy_buf* exec_copy = 0;
-    uint64_t old_cr3 = 0;
-    struct task* t = get_current_task_raw();
-    extern int fs_get_file_data(const char* path, void** data, size_t* size);
-    if (t && t->deferred_cr3 && t->deferred_cr3 != t->ctx.cr3 &&
-        t->deferred_cr3 != vmm_get_kernel_pml4_phys()) {
-        vmm_free_user_pml4(t->deferred_cr3);
-        t->deferred_cr3 = 0;
-    }
-    exec_copy_phys = pmm_alloc(EXEC_COPY_PAGES);
-    if (!exec_copy_phys) {
-        return -1;
-    }
-    exec_copy = (struct exec_copy_buf*)PHYS_TO_VIRT(exec_copy_phys);
-    kernel_memset(exec_copy, 0, EXEC_COPY_PAGES * PAGE_SIZE);
-    if (copy_user_cstring(path, exec_copy->path, EXEC_MAX_PATH_LEN) < 0 ||
-        copy_user_string_vector(argv, exec_copy->argv, exec_copy->argv_storage) < 0 ||
-        copy_user_string_vector(envp, exec_copy->envp, exec_copy->envp_storage) < 0) {
-        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
-        return -1;
-    }
-    if (fs_get_file_data(exec_copy->path, &file_addr, &file_size) < 0) {
-        puts("Exec: File not found: "); puts(exec_copy->path); puts("\r\n");
-        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
-        return -1;
-    }
-    void* pml4_phys = pmm_alloc(1);
-    if (!pml4_phys) {
-        puts("Exec: pml4 alloc failed\r\n");
-        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
-        return -1;
-    }
-    uint64_t* pml4_virt = (uint64_t*)PHYS_TO_VIRT(pml4_phys);
-    uint64_t* kernel_pml4 = vmm_get_kernel_pml4();
-    for (int i = 0; i < 512; i++) {
-        pml4_virt[i] = (i >= 256) ? kernel_pml4[i] : 0;
-    }
-    struct elf_info info = elf_load(pml4_virt, file_addr);
-    if (!info.entry) {
-        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
-        return -1;
-    }
-
-    if (task_prepare_initial_user_stack(pml4_virt, t, &info, exec_copy->argv, exec_copy->envp) < 0) {
-        pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
-        pmm_free(pml4_phys, 1);
-        return -1;
-    }
-
-    old_cr3 = t->ctx.cr3;
-    t->ctx.cr3 = (uint64_t)pml4_phys;
-    t->heap_break = info.max_vaddr;
-    t->mmap_end = 0x4000000000ULL;
-    t->user_entry = (uint64_t)info.entry;
-    t->sig_pending = 0;
-    t->sig_mask = 0;
-    for (int i = 0; i < 32; i++) {
-        t->sig_handlers[i] = 0;
-        t->sig_action_masks[i] = 0;
-        t->sig_action_flags[i] = 0;
-    }
-    t->user_fs_base = 0;
-    t->tls_vaddr = info.tls_vaddr;
-    t->tls_filesz = info.tls_filesz;
-    t->tls_memsz = info.tls_memsz;
-    t->tls_align = info.tls_align;
-    for (int i = 0; i < 512; i++) t->ctx.fxsave_area[i] = 0;
-    t->ctx.fxsave_area[0] = 0x7f;
-    t->ctx.fxsave_area[1] = 0x03;
-    t->ctx.fxsave_area[24] = 0x80;
-    t->ctx.fxsave_area[25] = 0x1f;
-    fs_close_cloexec_descriptors(t);
-    frame->r15 = 0;
-    frame->r14 = 0;
-    frame->r13 = 0;
-    frame->r12 = 0;
-    frame->rbp = 0;
-    frame->rbx = 0;
-    frame->r9 = 0;
-    frame->r8 = 0;
-    frame->r10 = 0;
-    frame->rax = 0;
-    frame->rip = t->user_entry;
-    frame->cs = 0x23;
-    frame->ss = 0x1B;
-    frame->rsp = t->user_stack;
-    frame->rflags = 0x202ULL;
-    frame->rdi = t->user_argc;
-    frame->rsi = t->user_argv;
-    frame->rdx = t->user_envp;
-    __asm__ volatile("mov %0, %%cr3" : : "r"(t->ctx.cr3) : "memory");
-    wrmsr(MSR_FS_BASE, t->user_fs_base);
-    __asm__ volatile("fninit");
-    if (old_cr3 && old_cr3 != t->ctx.cr3 && old_cr3 != vmm_get_kernel_pml4_phys()) {
-        t->deferred_cr3 = old_cr3;
-    }
-    pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
-    return 0;
+int task_free_struct(struct task* t) {
+    return free_task_struct(t);
 }
 
 void task_main(void) {
@@ -973,10 +671,26 @@ int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id) {
     return ret;
 }
 
+int task_mark_ready_on_cpu_locked_internal(struct task* t, uint32_t cpu_id) {
+    return task_mark_ready_on_cpu_locked(t, cpu_id);
+}
+
+uint32_t task_rebalance_ready_task_locked_internal(struct task* t) {
+    return task_rebalance_ready_task_locked(t);
+}
+
 int task_mark_sleeping(struct task* t) {
     int ret;
     uint64_t flags = spin_lock_irqsave(&g_task_lock);
     ret = task_mark_sleeping_locked(t);
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return ret;
+}
+
+int task_mark_io_wait(struct task* t) {
+    int ret;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    ret = task_mark_io_wait_locked(t);
     spin_unlock_irqrestore(&g_task_lock, flags);
     return ret;
 }
@@ -1084,131 +798,4 @@ struct task* task_create_idle(uint32_t cpu_id) {
     t->ctx.fxsave_area[25] = 0x1f;
     (void)cpu_id;
     return t;
-}
-
-int task_fork(struct syscall_frame* frame) {
-    struct task* parent = get_current_task_raw();
-    uint64_t flags = spin_lock_irqsave(&g_task_lock);
-    struct task* child = alloc_task_struct();
-    if (!child) {
-        spin_unlock_irqrestore(&g_task_lock, flags);
-        return -1;
-    }
-    child->pid = next_pid++;
-    child->ppid = parent->pid;
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->sig_pending = 0;
-    child->sig_mask = parent->sig_mask;
-    for (int i = 0; i < 32; i++) {
-        child->sig_handlers[i] = parent->sig_handlers[i];
-        child->sig_action_masks[i] = parent->sig_action_masks[i];
-        child->sig_action_flags[i] = parent->sig_action_flags[i];
-    }
-    uint32_t spawn_cpu = g_fork_spread_enabled
-        ? choose_spawn_cpu_locked((uint32_t)parent->cpu_affinity)
-        : (uint32_t)normalize_cpu_affinity((uint32_t)parent->cpu_affinity);
-    task_mark_ready_on_cpu_locked(child, spawn_cpu);
-    child->heap_break = parent->heap_break;
-    child->mmap_end = parent->mmap_end;
-    child->user_entry = parent->user_entry;
-    child->user_stack = parent->user_stack;
-    child->user_stack_top = parent->user_stack_top;
-    child->user_stack_bottom = parent->user_stack_bottom;
-    child->user_stack_guard = parent->user_stack_guard;
-    child->user_fs_base = parent->user_fs_base;
-    child->tls_vaddr = parent->tls_vaddr;
-    child->tls_filesz = parent->tls_filesz;
-    child->tls_memsz = parent->tls_memsz;
-    child->tls_align = parent->tls_align;
-    child->timeslice_ticks = TASK_TIMESLICE_TICKS;
-    child->ctx.cr3 = vmm_copy_pml4((uint64_t*)PHYS_TO_VIRT(parent->ctx.cr3));
-    kernel_strcpy(child->cwd, parent->cwd, sizeof(child->cwd));
-    void* kstack_phys = pmm_alloc(4);
-    child->kstack_top = (uint64_t)PHYS_TO_VIRT(kstack_phys) + 4 * PAGE_SIZE;
-    child->os_stack_ptr = child->kstack_top;
-    struct syscall_frame* child_frame = (struct syscall_frame*)(child->kstack_top - sizeof(struct syscall_frame));
-    for (size_t i = 0; i < sizeof(struct syscall_frame); i++) {
-        ((uint8_t*)child_frame)[i] = ((uint8_t*)frame)[i];
-    }
-    child_frame->rax = 0;
-    child_frame->rflags &= ~0x400ULL;
-    uint64_t* sp = (uint64_t*)child_frame;
-    *(--sp) = (uint64_t)fork_child_entry;
-    *(--sp) = 0x202;
-    *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0;
-    child->ctx.rip = (uint64_t)fork_child_entry;
-    child->ctx.rsp = (uint64_t)sp;
-    child->ctx.rflags = 0x202;
-    child->ctx.cs = 0x08;
-    child->ctx.ss = 0x10;
-    for (int i = 0; i < 512; i++) child->ctx.fxsave_area[i] = parent->ctx.fxsave_area[i];
-    for (int i = 0; i < MAX_FDS; i++) {
-        if (fs_clone_fd(&child->fds[i], &parent->fds[i]) < 0) {
-            for (int j = 0; j < i; j++) {
-                fs_release_fd(&child->fds[j]);
-            }
-            if (child->ctx.cr3 && child->ctx.cr3 != vmm_get_kernel_pml4_phys()) {
-                vmm_free_user_pml4(child->ctx.cr3);
-            }
-            pmm_free((void*)VIRT_TO_PHYS(child->kstack_top - 4 * PAGE_SIZE), 4);
-            free_task_struct(child);
-            spin_unlock_irqrestore(&g_task_lock, flags);
-            return -1;
-        }
-    }
-    child->next = task_list;
-    task_list = child;
-    task_rebalance_ready_task_locked(child);
-    spin_unlock_irqrestore(&g_task_lock, flags);
-    task_request_resched_cpu((uint32_t)child->cpu_affinity);
-    return child->pid;
-}
-
-void schedule(void) {
-    struct cpu_local* cpu = this_cpu();
-    struct task* current_task = cpu ? cpu->current_task : NULL;
-    struct task* next;
-    struct task* prev;
-    if (!current_task) return;
-    uint64_t flags = spin_lock_irqsave(&g_task_lock);
-    next = task_runq_pop_locked(cpu);
-    if (!next) {
-        if (current_task->state == TASK_RUNNING) {
-            spin_unlock_irqrestore(&g_task_lock, flags);
-            return;
-        }
-        next = cpu->idle_task;
-    }
-    if (next == current_task) {
-        spin_unlock_irqrestore(&g_task_lock, flags);
-        return;
-    }
-    prev = current_task;
-    if (prev->state == TASK_RUNNING && !task_is_idle_task(prev)) {
-        task_mark_ready_on_cpu_locked(prev, (uint32_t)prev->cpu_affinity);
-    }
-    cpu->current_task = next;
-    next->on_runq = 0;
-    next->state = TASK_RUNNING;
-    if (next->timeslice_ticks <= 0) next->timeslice_ticks = TASK_TIMESLICE_TICKS;
-    tss_set_stack_for_cpu(cpu->cpu_id, next->kstack_top);
-    cpu->kernel_stack = next->kstack_top;
-    task_refresh_cpu_local_msrs(cpu);
-    wrmsr(MSR_FS_BASE, next->user_fs_base);
-    spin_unlock_irqrestore(&g_task_lock, flags);
-    switch_context(&next->ctx, &prev->ctx);
-}
-
-void task_idle_loop(int poll_network) {
-    __asm__ volatile("sti");
-    for (;;) {
-        if (poll_network) {
-            net_poll();
-        }
-        __asm__ volatile("hlt");
-        if (task_consume_resched()) {
-            kernel_yield();
-        }
-    }
 }

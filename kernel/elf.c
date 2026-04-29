@@ -137,13 +137,8 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
                 }
 
                 curr_vaddr += size_in_page;
-            }
-            
-            puts("ELF Segment loaded: Virt 0x"); puthex(vaddr_start);
-            puts(" Flags: "); puthex(phdr[i].p_flags);
-            puts("\r\n");
-        }
-    }
+                }
+                }
+                }
 
-    return info;
-}
+                return info;}

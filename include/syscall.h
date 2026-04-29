@@ -15,6 +15,7 @@
 #define SYS_GETDENTS 78
 #define SYS_LSEEK   8
 #define SYS_MMAP    9
+#define SYS_MPROTECT 10
 #define SYS_MUNMAP  11
 #define SYS_BRK     12
 #define SYS_RT_SIGACTION 13
@@ -23,7 +24,11 @@
 #define SYS_READV   19
 #define SYS_WRITEV  20
 #define SYS_PIPE    22
+#define SYS_SCHED_YIELD 24
+#define SYS_MREMAP  25
+#define SYS_MADVISE 28
 #define SYS_DUP2    33
+#define SYS_NANOSLEEP 35
 #define SYS_GETPID  39
 #define SYS_SOCKET  41
 #define SYS_CONNECT 42
@@ -41,8 +46,14 @@
 #define SYS_EXIT    60
 #define SYS_WAIT4   61
 #define SYS_KILL    62
+#define SYS_UNAME   63
 #define SYS_FCNTL   72
 #define SYS_GETTIMEOFDAY 96
+#define SYS_GETRLIMIT 97
+#define SYS_SYSINFO 99
+#define SYS_GETUID  102
+#define SYS_GETGID  104
+#define SYS_GETEUID 107
 #define SYS_GETCWD  79
 #define SYS_CHDIR   80
 #define SYS_FCHDIR  81
@@ -52,9 +63,14 @@
 #define SYS_UNLINK  87
 #define SYS_READLINK 89
 #define SYS_CHMOD   90
+#define SYS_TRUNCATE 76
+#define SYS_FTRUNCATE 77
 #define SYS_SETPGID 109
+#define SYS_GETPPID 110
 #define SYS_GETPGRP 111
 #define SYS_SETSID  112
+#define SYS_GETEGID 108
+#define SYS_SIGALTSTACK 131
 #define SYS_ARCH_PRCTL 158
 #define SYS_SYNC    162
 #define SYS_FUTEX   202
@@ -68,8 +84,10 @@
 #define SYS_UNLINKAT 263
 #define SYS_READLINKAT 267
 #define SYS_FACCESSAT 269
+#define SYS_SET_ROBUST_LIST 273
 #define SYS_UTIMENSAT 280
 #define SYS_PIPE2   293
+#define SYS_PRLIMIT64 302
 #define SYS_GETRANDOM 318
 
 #define ARCH_SET_FS 0x1002

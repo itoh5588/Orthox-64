@@ -25,4 +25,8 @@ uint16_t pmm_get_ref(void* addr);
 // 取得済みページを返すのみで追加確保は行わない
 void* pmm_get_isa_dma_page(void);
 
+uint64_t pmm_get_allocated_pages(void);
+uint64_t pmm_get_free_pages(void);
+uint64_t pmm_get_total_pages(void);
+
 #endif

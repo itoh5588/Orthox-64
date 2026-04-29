@@ -62,7 +62,20 @@ extern void isr16(); extern void isr17(); extern void isr18(); extern void isr19
 extern void isr20(); extern void isr21();
 extern void isr32();
 extern void isr33();
+extern void isr34();
+extern void isr35();
 extern void isr36();
+extern void isr37();
+extern void isr38();
+extern void isr39();
+extern void isr40();
+extern void isr41();
+extern void isr42();
+extern void isr43();
+extern void isr44();
+extern void isr45();
+extern void isr46();
+extern void isr47();
 extern void isr48();
 
 void idt_set_gate(uint8_t num, void* handler, uint8_t ist, uint8_t type) {
@@ -111,7 +124,20 @@ static void idt_build_once(void) {
 
     idt_set_gate(INT_VECTOR_TIMER,    isr32, 1, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_KEYBOARD, isr33, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(34,                  isr34, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(35,                  isr35, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_SERIAL,   isr36, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(37,                  isr37, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(38,                  isr38, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(39,                  isr39, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(40,                  isr40, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(41,                  isr41, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(42,                  isr42, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(43,                  isr43, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(44,                  isr44, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(45,                  isr45, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(46,                  isr46, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(47,                  isr47, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_RESCHED,  isr48, 1, IDT_GATE_INTERRUPT);
     idt_built = 1;
 }
@@ -128,6 +154,12 @@ void idt_init(void) {
 }
 
 void interrupt_dispatch(struct interrupt_frame* frame) {
+    if (frame->int_no < 32 && frame->int_no != INT_VECTOR_PAGE_FAULT) {
+        puts("Exception: "); puthex(frame->int_no);
+        puts(" RIP: "); puthex(frame->rip);
+        puts(" ERR: "); puthex(frame->error_code);
+        puts("\r\n");
+    }
     kernel_lock_enter();
     if (frame->int_no == INT_VECTOR_PAGE_FAULT) {
         extern void vmm_page_fault_handler(struct interrupt_frame* frame);
@@ -162,6 +194,22 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
         serial_handler();
         extern void pic_eoi(int irq);
         pic_eoi(4);
+        kernel_lock_exit();
+        return;
+    }
+
+    if (frame->int_no >= INT_VECTOR_PIC_BASE && frame->int_no < INT_VECTOR_PIC_BASE + 16) {
+        int irq = (int)(frame->int_no - INT_VECTOR_PIC_BASE);
+        int handled = 0;
+        extern int virtio_blk_irq(int irq);
+        handled = virtio_blk_irq(irq);
+        extern void pic_eoi(int irq);
+        pic_eoi(irq);
+        if (!handled) {
+            puts("[irq] unhandled PIC irq=0x");
+            puthex((uint64_t)irq);
+            puts("\r\n");
+        }
         kernel_lock_exit();
         return;
     }

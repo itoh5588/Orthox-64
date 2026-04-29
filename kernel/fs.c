@@ -20,6 +20,7 @@
 #define F_DUPFD_CLOEXEC 14
 #define ORTH_O_ACCMODE 3
 #define ORTH_AT_FDCWD (-100)
+#define ORTH_LEGACY_AT_FDCWD (-2)
 #define ORTH_AT_REMOVEDIR 0x200
 #define ORTH_LINUX_O_CLOEXEC 0x80000
 #define ORTH_LINUX_O_NONBLOCK 0x800
@@ -35,11 +36,17 @@ extern void puthex(uint64_t v);
 #ifndef ENOENT
 #define ENOENT 2
 #endif
+#ifndef EBADF
+#define EBADF 9
+#endif
 #ifndef EINVAL
 #define EINVAL 22
 #endif
 #ifndef EISDIR
 #define EISDIR 21
+#endif
+#ifndef EFBIG
+#define EFBIG 27
 #endif
 #ifndef EROFS
 #define EROFS 30
@@ -445,7 +452,7 @@ static int resolve_dirfd_path(int dirfd, const char* path, char* out, size_t siz
         resolve_task_path(path, out, size);
         return 0;
     }
-    if (dirfd == ORTH_AT_FDCWD) {
+    if (dirfd == ORTH_AT_FDCWD || dirfd == ORTH_LEGACY_AT_FDCWD) {
         resolve_task_path(path, out, size);
         return 0;
     }
@@ -706,7 +713,7 @@ static int fat_resolve_path(const char* path, struct fat_dir_entry_info* out) {
 }
 
 #define MAX_RAMFS_FILES 16
-#define RAMFS_FILE_SIZE 65536 // 簡易的に1ファイル64KB固定
+#define RAMFS_FILE_SIZE (1024 * 1024)
 
 struct ramfs_file {
     char name[64];
@@ -814,6 +821,7 @@ static void kstat_from_ramfs(struct kstat* st, const struct ramfs_file* rf) {
 
 static int fs_try_active_root_lookup(const char* path, void** data, size_t* size, uint32_t* mode);
 static int fs_try_active_root_stat(const char* path, struct kstat* st);
+static int fs_stat_normalized_path(const char* path, struct kstat* st);
 
 static int fs_is_mount_dir(const char* path) {
     const char* subpath = 0;
@@ -1110,9 +1118,14 @@ static struct ramfs_file* create_ramfs(const char* name, uint32_t mode) {
                 if (name[j] == '\0') break;
             }
             ramfs_table[i].name[63] = '\0';
-            void* phys = pmm_alloc(16);
+            void* phys = pmm_alloc(RAMFS_FILE_SIZE / PAGE_SIZE);
+            if (!phys) {
+                ramfs_table[i].in_use = 0;
+                ramfs_table[i].name[0] = '\0';
+                return NULL;
+            }
             ramfs_table[i].data = (uint8_t*)PHYS_TO_VIRT(phys);
-            for (int j = 0; j < RAMFS_FILE_SIZE; j++) ramfs_table[i].data[j] = 0;
+            for (size_t j = 0; j < RAMFS_FILE_SIZE; j++) ramfs_table[i].data[j] = 0;
             ramfs_table[i].size = 0;
             ramfs_table[i].mode = KSTAT_MODE_FILE | (mode & 07777U);
             ramfs_table[i].uid = 0;
@@ -1566,7 +1579,9 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
     }
 
     if (fs_fd_type(f) != FT_RAMFS) return -1;
+    if (fs_fd_offset(f) >= RAMFS_FILE_SIZE) return -EFBIG;
     if (fs_fd_offset(f) + count > RAMFS_FILE_SIZE) count = RAMFS_FILE_SIZE - fs_fd_offset(f);
+    if (count == 0) return -EFBIG;
     uint8_t* dest = (uint8_t*)fs_fd_data(f) + fs_fd_offset(f);
     const uint8_t* src = (const uint8_t*)buf;
     for (size_t i = 0; i < count; i++) dest[i] = src[i];
@@ -1581,6 +1596,71 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         }
     }
     return (int64_t)count;
+}
+
+int sys_ftruncate(int fd, uint64_t length) {
+    struct task* current = get_current_task();
+    file_descriptor_t* f;
+
+    if (!current) return -EINVAL;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
+    f = &current->fds[fd];
+
+    if (fs_fd_type(f) == FT_RAMFS) {
+        struct ramfs_file* rf = find_ramfs(fs_fd_name(f));
+        if (!rf) return -ENOENT;
+        if (length > RAMFS_FILE_SIZE) return -EFBIG;
+        if (length > rf->size) {
+            for (size_t i = rf->size; i < (size_t)length; i++) {
+                rf->data[i] = 0;
+            }
+        }
+        rf->size = (size_t)length;
+        rf->mtime_sec = fs_now_sec();
+        rf->ctime_sec = rf->mtime_sec;
+        fs_fd_set_size(f, rf->size);
+        if (fs_fd_offset(f) > rf->size) fs_fd_set_offset(f, rf->size);
+        return 0;
+    }
+
+    if (fs_fd_type(f) == FT_RETROFS) {
+        if (retrofs_truncate_file(fs_fd_name(f), length) < 0) return -ENOENT;
+        fs_fd_set_size(f, (size_t)length);
+        if (fs_fd_offset(f) > (size_t)length) fs_fd_set_offset(f, (size_t)length);
+        return 0;
+    }
+
+    return -EINVAL;
+}
+
+int sys_truncate(const char* path, uint64_t length) {
+    char resolved_path[256];
+    const char* norm;
+    struct ramfs_file* rf;
+
+    if (!path) return -EINVAL;
+    resolve_task_path(path, resolved_path, sizeof(resolved_path));
+    norm = normalize_fs_path(resolved_path);
+
+    rf = find_ramfs(norm);
+    if (rf) {
+        if (length > RAMFS_FILE_SIZE) return -EFBIG;
+        if (length > rf->size) {
+            for (size_t i = rf->size; i < (size_t)length; i++) {
+                rf->data[i] = 0;
+            }
+        }
+        rf->size = (size_t)length;
+        rf->mtime_sec = fs_now_sec();
+        rf->ctime_sec = rf->mtime_sec;
+        return 0;
+    }
+
+    if (retrofs_truncate_file(norm, length) == 0) {
+        return 0;
+    }
+
+    return -ENOENT;
 }
 
 int64_t sys_read(int fd, void* buf, size_t count) {
@@ -1880,14 +1960,14 @@ int sys_fstat(int fd, struct kstat* st) {
         return 0;
     }
     if (fs_fd_type(f) == FT_DIR) {
-        if (fs_fd_name(f)[0]) return sys_stat(fs_fd_name(f), st);
+        if (fs_fd_name(f)[0]) return fs_stat_normalized_path(normalize_fs_path(fs_fd_name(f)), st);
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_DIR), (int64_t)fs_fd_size(f));
         st->dev = FS_DEV_SYNTH;
         st->ino = (uint64_t)fd + 1U;
         return 0;
     }
     if (fs_fd_type(f) == FT_USB) {
-        if (fs_fd_name(f)[0]) return sys_stat(fs_fd_name(f), st);
+        if (fs_fd_name(f)[0]) return fs_stat_normalized_path(normalize_fs_path(fs_fd_name(f)), st);
         kstat_set_defaults(st,
                            fs_default_mode_for_type((fs_fd_aux1(f) & 0x10U) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE),
                            (int64_t)fs_fd_size(f));
@@ -1896,7 +1976,7 @@ int sys_fstat(int fd, struct kstat* st) {
         return 0;
     }
     if ((fs_fd_type(f) == FT_RAMFS || fs_fd_type(f) == FT_MODULE || fs_fd_type(f) == FT_RETROFS) && fs_fd_name(f)[0]) {
-        return sys_stat(fs_fd_name(f), st);
+        return fs_stat_normalized_path(normalize_fs_path(fs_fd_name(f)), st);
     }
     kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_FILE), (int64_t)fs_fd_size(f));
     return 0;
@@ -1987,13 +2067,10 @@ int sys_getdents64(int fd, void* dirp, size_t count) {
     return (int)out_used;
 }
 
-int sys_stat(const char* path, struct kstat* st) {
+static int fs_stat_normalized_path(const char* path, struct kstat* st) {
     const char* mount_subpath = 0;
     const struct vfs_mountpoint* mount = 0;
-    char resolved_path[256];
     if (!st || !path) return -EINVAL;
-    resolve_task_path(path, resolved_path, sizeof(resolved_path));
-    path = normalize_fs_path(resolved_path);
     mount = vfs_find_mountpoint(path, &mount_subpath);
 
     if (*path == '\0') {
@@ -2053,6 +2130,13 @@ int sys_stat(const char* path, struct kstat* st) {
         }
     }
     return -ENOENT;
+}
+
+int sys_stat(const char* path, struct kstat* st) {
+    char resolved_path[256];
+    if (!st || !path) return -EINVAL;
+    resolve_task_path(path, resolved_path, sizeof(resolved_path));
+    return fs_stat_normalized_path(normalize_fs_path(resolved_path), st);
 }
 
 int sys_fstatat(int dirfd, const char* path, struct kstat* st, int flags) {
@@ -2124,7 +2208,7 @@ int sys_utimensat(int dirfd, const char* path, const void* times, int flags) {
         if (dirfd < 0 || dirfd >= MAX_FDS || !current->fds[dirfd].in_use) return -EINVAL;
         f = &current->fds[dirfd];
         if (!fs_fd_name(f)[0]) return -EINVAL;
-        if (sys_stat(fs_fd_name(f), &st) < 0) return -ENOENT;
+        if (fs_stat_normalized_path(normalize_fs_path(fs_fd_name(f)), &st) < 0) return -ENOENT;
         rf = find_ramfs(fs_fd_name(f));
         if (rf) {
             now = fs_now_sec();
@@ -2204,7 +2288,7 @@ int sys_unlink(const char* path) {
             if (ramfs_table[i].data) {
                 // 16ページ確保していたものを解放
                 void* phys_addr = (void*)VIRT_TO_PHYS((uint64_t)ramfs_table[i].data);
-                pmm_free(phys_addr, 16);
+                pmm_free(phys_addr, RAMFS_FILE_SIZE / PAGE_SIZE);
                 ramfs_table[i].data = NULL;
             }
             ramfs_table[i].size = 0;
@@ -2351,13 +2435,24 @@ int sys_chdir(const char* path) {
 
 int sys_fchdir(int fd) {
     struct task* current = get_current_task();
+    struct kstat st;
     file_descriptor_t* f;
+    const char* norm;
+    size_t i = 0;
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     f = &current->fds[fd];
     if (fs_fd_type(f) != FT_DIR) return -1;
     if (fs_fd_name(f)[0] == '\0') return -1;
-    return sys_chdir(fs_fd_name(f));
+    norm = normalize_fs_path(fs_fd_name(f));
+    if (fs_stat_normalized_path(norm, &st) < 0) return -1;
+    if ((st.mode & 0170000U) != KSTAT_MODE_DIR) return -1;
+    current->cwd[i++] = '/';
+    while (*norm && i + 1 < sizeof(current->cwd)) {
+        current->cwd[i++] = *norm++;
+    }
+    current->cwd[i] = '\0';
+    return 0;
 }
 
 int sys_getcwd(char* buf, size_t size) {

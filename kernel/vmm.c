@@ -15,6 +15,21 @@ static uint64_t* kernel_pml4;
 void puts(const char* s);
 void puthex(uint64_t v);
 
+#ifndef ORTHOX_MEM_TRACE
+#define ORTHOX_MEM_TRACE 0
+#endif
+
+#ifndef ORTHOX_MEM_PROGRESS
+#define ORTHOX_MEM_PROGRESS 0
+#endif
+
+#if ORTHOX_MEM_PROGRESS
+static void vmm_trace_progress_bump(struct task* current, uint64_t* counter) {
+    if (!current || !current->trace_progress || !counter) return;
+    (*counter)++;
+}
+#endif
+
 #define MSR_GS_BASE        0xC0000101
 #define MSR_KERNEL_GS_BASE 0xC0000102
 
@@ -22,6 +37,45 @@ static uint64_t rdmsr_local(uint32_t msr) {
     uint32_t low, high;
     __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
     return ((uint64_t)high << 32) | low;
+}
+
+#if ORTHOX_MEM_TRACE
+static int vmm_streq(const char* a, const char* b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+#endif
+
+#if ORTHOX_MEM_TRACE
+static int vmm_memtrace_current_enabled(void) {
+    struct task* current = get_current_task();
+    return current && vmm_streq(current->comm, "cc1");
+}
+#endif
+
+static void vmm_memtrace_pf(const char* tag, uint64_t fault_vaddr, uint64_t error_code, uint64_t rip) {
+#if ORTHOX_MEM_TRACE
+    struct task* current;
+    if (!vmm_memtrace_current_enabled()) return;
+    current = get_current_task();
+    puts("[memtrace] ");
+    puts(tag);
+    puts(" pid=0x"); puthex(current ? (uint64_t)current->pid : 0);
+    puts(" va=0x"); puthex(fault_vaddr);
+    puts(" err=0x"); puthex(error_code);
+    puts(" rip=0x"); puthex(rip);
+    puts(" brk=0x"); puthex(current ? current->heap_break : 0);
+    puts(" pmm_alloc=0x"); puthex(pmm_get_allocated_pages());
+    puts(" pmm_free=0x"); puthex(pmm_get_free_pages());
+    puts("\r\n");
+#else
+    (void)tag; (void)fault_vaddr; (void)error_code; (void)rip;
+#endif
 }
 
 static void dump_fault_cpu_state(void) {
@@ -294,6 +348,8 @@ static const char* classify_user_fault_reason(struct interrupt_frame* frame, uin
 
 void vmm_page_fault_handler(struct interrupt_frame* frame) {
     uint64_t fault_vaddr;
+    struct task* current = get_current_task();
+    (void)current;
     __asm__ volatile("mov %%cr2, %0" : "=r"(fault_vaddr));
 
     const char* stack_reason = classify_user_fault_reason(frame, fault_vaddr);
@@ -350,6 +406,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
     
     if (pd[PD_IDX(fault_vaddr)] & PTE_HUGE) {
         if (pd[PD_IDX(fault_vaddr)] & PTE_COW) {
+            vmm_memtrace_pf("pf-cow-huge", fault_vaddr, frame->error_code, frame->rip);
             void* old_page_phys = (void*)(pd[PD_IDX(fault_vaddr)] & PTE_ADDR_MASK);
             if (pmm_get_ref(old_page_phys) > 1) {
                 void* new_page_phys = pmm_alloc(512); // 2MB
@@ -379,9 +436,17 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
         uint64_t* pte = &pt[PT_IDX(fault_vaddr)];
 
         if (*pte & PTE_COW) {
+#if ORTHOX_MEM_PROGRESS
+            vmm_trace_progress_bump(current, &current->trace_cow_faults);
+#endif
+            vmm_memtrace_pf("pf-cow", fault_vaddr, frame->error_code, frame->rip);
             void* old_page_phys = (void*)(*pte & PTE_ADDR_MASK);
             if (pmm_get_ref(old_page_phys) > 1) {
                 void* new_page_phys = pmm_alloc(1);
+                if (!new_page_phys) {
+                    kill_current_task_on_user_fault(frame, fault_vaddr, "cow-alloc-failed");
+                    for(;;) __asm__("hlt");
+                }
                 for (int i = 0; i < 4096; i++) {
                     ((uint8_t*)PHYS_TO_VIRT(new_page_phys))[i] = ((uint8_t*)PHYS_TO_VIRT(old_page_phys))[i];
                 }

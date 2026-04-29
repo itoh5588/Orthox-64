@@ -20,6 +20,7 @@
 #include "storage.h"
 #include "virtio_blk.h"
 #include "usb.h"
+#include "version.h"
 
 LIMINE_BASE_REVISION(0);
 
@@ -232,7 +233,11 @@ static void register_boot_rootfs_image(void) {
 
 void _start(void) {
     init_serial();
-    puts("\r\n--- Orthox-64 Boot ---\r\n");
+    puts("\r\n--- ");
+    puts(ORTHOX_KERNEL_NAME);
+    puts(" v");
+    puts(ORTHOX_KERNEL_RELEASE);
+    puts(" Boot ---\r\n");
 
     if (memmap_request.response && hhdm_request.response && kernel_address_request.response) {
         pmm_init();
