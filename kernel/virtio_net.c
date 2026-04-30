@@ -5,6 +5,9 @@
 #include "pci.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "pic.h"
+#include "bottom_half.h"
+#include "irq.h"
 
 void puts(const char* s);
 void puthex(uint64_t v);
@@ -35,10 +38,15 @@ static uint64_t g_rx_buf_phys[VIRTIO_RX_SLOTS];
 static uint8_t* g_tx_buf;
 static uint64_t g_tx_buf_phys;
 static uint16_t g_iobase;
+static int g_irq_line = -1;
 static uint8_t g_mac[6];
 static int g_ready = 0;
 static int g_tx_busy = 0;
+static volatile int g_irq_bh_pending = 0;
+static volatile int g_polling = 0;
 static virtio_net_rx_cb_t g_rx_cb = 0;
+
+static int virtio_net_irq(int irq, void* ctx);
 
 static void* kernel_memset(void* s, int c, size_t n) {
     uint8_t* p = (uint8_t*)s;
@@ -69,6 +77,12 @@ static void virtio_net_reclaim_tx(void) {
     }
 }
 
+static void virtio_net_bottom_half(void* arg) {
+    (void)arg;
+    virtio_net_poll();
+    __atomic_store_n(&g_irq_bh_pending, 0, __ATOMIC_RELEASE);
+}
+
 int virtio_net_init(void) {
     if (g_ready) return 0;
 
@@ -88,6 +102,7 @@ int virtio_net_init(void) {
     }
 
     pci_enable_io_busmaster(&dev);
+    g_irq_line = (dev.irq_line <= 15) ? (int)dev.irq_line : -1;
 
     outb((uint16_t)(g_iobase + VIRTIO_PCI_STATUS), 0);
     outb((uint16_t)(g_iobase + VIRTIO_PCI_STATUS), VIRTIO_STATUS_ACKNOWLEDGE);
@@ -152,6 +167,10 @@ int virtio_net_init(void) {
          VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
 
     g_ready = 1;
+    if (g_irq_line >= 0) {
+        (void)irq_register_legacy(g_irq_line, virtio_net_irq, 0);
+        pic_unmask_irq(g_irq_line);
+    }
     puts("[net] virtio-net ready mac=");
     for (uint16_t i = 0; i < 6; i++) {
         puthex8(g_mac[i]);
@@ -159,12 +178,15 @@ int virtio_net_init(void) {
     }
     puts(" io=0x");
     puthex(g_iobase);
+    puts(" irq=0x");
+    puthex((uint64_t)(uint32_t)g_irq_line);
     puts("\r\n");
     return 0;
 }
 
 void virtio_net_poll(void) {
     if (!g_ready) return;
+    if (__sync_lock_test_and_set(&g_polling, 1)) return;
 
     virtio_net_reclaim_tx();
 
@@ -192,6 +214,21 @@ void virtio_net_poll(void) {
     }
 
     (void)inb((uint16_t)(g_iobase + VIRTIO_PCI_ISR));
+    __sync_lock_release(&g_polling);
+}
+
+static int virtio_net_irq(int irq, void* ctx) {
+    uint8_t isr;
+    (void)ctx;
+    if (!g_ready || irq != g_irq_line) return 0;
+    isr = inb((uint16_t)(g_iobase + VIRTIO_PCI_ISR));
+    if ((isr & 0x3U) == 0) return 1;
+    if (__sync_bool_compare_and_swap(&g_irq_bh_pending, 0, 1)) {
+        if (bottom_half_enqueue(virtio_net_bottom_half, 0) < 0) {
+            __atomic_store_n(&g_irq_bh_pending, 0, __ATOMIC_RELEASE);
+        }
+    }
+    return 1;
 }
 
 int virtio_net_is_ready(void) {

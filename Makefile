@@ -98,7 +98,7 @@ ROOTFS_VBLK_ARGS = -drive if=none,id=rootfs,file=$(ROOTFS_IMG),format=raw -devic
 # ソース
 SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
        kernel/vmm.c kernel/idt.c kernel/interrupt.S kernel/lapic.c kernel/sound.c kernel/syscall.c kernel/sys_time.c kernel/sys_signal.c kernel/sys_vm.c kernel/sys_proc.c kernel/syscall_entry.S \
-       kernel/task.c kernel/task_exec.c kernel/task_fork.c kernel/sched.c kernel/wait.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/retrofs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio.c kernel/virtio_net.c kernel/virtio_blk.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
+       kernel/task.c kernel/task_exec.c kernel/task_fork.c kernel/sched.c kernel/wait.c kernel/bottom_half.c kernel/irq.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/retrofs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio.c kernel/virtio_net.c kernel/virtio_blk.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
 
 LWIP_CORE_SRCS = \
 	ports/lwip/src/core/def.c \

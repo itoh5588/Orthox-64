@@ -126,6 +126,7 @@ int task_set_affinity(struct task* t, uint32_t cpu_id);
 int task_mark_ready_on_cpu(struct task* t, uint32_t cpu_id);
 int task_mark_sleeping(struct task* t);
 int task_mark_io_wait(struct task* t);
+int task_mark_io_wait_until(struct task* t, uint64_t deadline_ms);
 int task_mark_zombie(struct task* t, int exit_status);
 int task_wake(struct task* t);
 int task_reap(struct task* t);

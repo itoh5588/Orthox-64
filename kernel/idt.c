@@ -200,9 +200,8 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
 
     if (frame->int_no >= INT_VECTOR_PIC_BASE && frame->int_no < INT_VECTOR_PIC_BASE + 16) {
         int irq = (int)(frame->int_no - INT_VECTOR_PIC_BASE);
-        int handled = 0;
-        extern int virtio_blk_irq(int irq);
-        handled = virtio_blk_irq(irq);
+        extern int irq_dispatch_legacy(int irq);
+        int handled = irq_dispatch_legacy(irq);
         extern void pic_eoi(int irq);
         pic_eoi(irq);
         if (!handled) {

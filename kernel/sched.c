@@ -4,6 +4,7 @@
 #include "net.h"
 #include "smp.h"
 #include "spinlock.h"
+#include "bottom_half.h"
 
 extern struct task* task_list;
 extern void switch_context(struct task_context* next_ctx, struct task_context* prev_ctx);
@@ -113,10 +114,12 @@ void task_on_timer_tick(void) {
 void task_idle_loop(int poll_network) {
     __asm__ volatile("sti");
     for (;;) {
+        bottom_half_run();
         if (poll_network) {
             net_poll();
         }
         __asm__ volatile("hlt");
+        bottom_half_run();
         if (task_consume_resched()) {
             kernel_yield();
         }

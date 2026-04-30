@@ -484,6 +484,14 @@ static int task_mark_io_wait_locked(struct task* t) {
     return 0;
 }
 
+static int task_mark_io_wait_until_locked(struct task* t, uint64_t deadline_ms) {
+    if (!t) return -1;
+    task_runq_remove_locked(t);
+    t->sleep_until_ms = deadline_ms;
+    t->state = TASK_IO_WAIT;
+    return 0;
+}
+
 static int task_mark_zombie_locked(struct task* t, int exit_status) {
     if (!t) return -1;
     task_runq_remove_locked(t);
@@ -691,6 +699,14 @@ int task_mark_io_wait(struct task* t) {
     int ret;
     uint64_t flags = spin_lock_irqsave(&g_task_lock);
     ret = task_mark_io_wait_locked(t);
+    spin_unlock_irqrestore(&g_task_lock, flags);
+    return ret;
+}
+
+int task_mark_io_wait_until(struct task* t, uint64_t deadline_ms) {
+    int ret;
+    uint64_t flags = spin_lock_irqsave(&g_task_lock);
+    ret = task_mark_io_wait_until_locked(t, deadline_ms);
     spin_unlock_irqrestore(&g_task_lock, flags);
     return ret;
 }
