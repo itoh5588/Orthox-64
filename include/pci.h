@@ -26,6 +26,7 @@ int pci_find_device(struct pci_device_info* out,
 int pci_find_xhci(struct pci_device_info* out);
 int pci_find_virtio_net(struct pci_device_info* out);
 int pci_find_virtio_blk(struct pci_device_info* out);
+int pci_find_virtio_blk_n(int n, struct pci_device_info* out);
 uint32_t pci_get_bar_raw(const struct pci_device_info* dev, uint8_t bar_index);
 uint64_t pci_get_bar_mmio(const struct pci_device_info* dev, uint8_t bar_index);
 uint16_t pci_get_bar_iobase(const struct pci_device_info* dev, uint8_t bar_index);
@@ -33,5 +34,7 @@ uint64_t pci_get_bar0_mmio(const struct pci_device_info* dev);
 uint16_t pci_get_bar0_iobase(const struct pci_device_info* dev);
 void pci_enable_mmio_busmaster(const struct pci_device_info* dev);
 void pci_enable_io_busmaster(const struct pci_device_info* dev);
+int pci_enable_msi(const struct pci_device_info* dev, uint8_t vector);
+int pci_enable_msix(const struct pci_device_info* dev, uint8_t vector, uint16_t entry);
 
 #endif

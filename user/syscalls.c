@@ -28,6 +28,8 @@
 #endif
 #include "../include/syscall.h"
 
+static long orth_status_ret(int64_t ret);
+
 static int64_t orth_syscall3(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
     uint64_t ret;
     __asm__ volatile (
@@ -40,7 +42,7 @@ static int64_t orth_syscall3(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_
 }
 
 int arch_prctl(int code, unsigned long addr) {
-    return (int)orth_syscall3(SYS_ARCH_PRCTL, (uint64_t)code, (uint64_t)addr, 0);
+    return (int)orth_status_ret(orth_syscall3(SYS_ARCH_PRCTL, (uint64_t)code, (uint64_t)addr, 0));
 }
 
 static int64_t orth_syscall6(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3,
@@ -134,9 +136,9 @@ ssize_t readlink(const char *path, char *buf, size_t bufsiz);
 ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz);
 int faccessat(int dirfd, const char *path, int mode, int flags);
 
-int _fork(void) { return (int)orth_syscall3(SYS_FORK, 0, 0, 0); }
-int _execve(const char *pathname, char *const argv[], char *const envp[]) { return (int)orth_syscall3(SYS_EXECVE, (uint64_t)pathname, (uint64_t)argv, (uint64_t)envp); }
-int _wait(int *wstatus) { return (int)orth_syscall3(SYS_WAIT4, (uint64_t)-1, (uint64_t)wstatus, 0); }
+int _fork(void) { return (int)orth_status_ret(orth_syscall3(SYS_FORK, 0, 0, 0)); }
+int _execve(const char *pathname, char *const argv[], char *const envp[]) { return (int)orth_status_ret(orth_syscall3(SYS_EXECVE, (uint64_t)pathname, (uint64_t)argv, (uint64_t)envp)); }
+int _wait(int *wstatus) { return (int)orth_status_ret(orth_syscall3(SYS_WAIT4, (uint64_t)-1, (uint64_t)wstatus, 0)); }
 int _getpid(void) { return (int)orth_syscall3(SYS_GETPID, 0, 0, 0); }
 void _exit(int status) { orth_syscall3(SYS_EXIT, (uint64_t)status, 0, 0); for (;;) {} }
 ssize_t _write(int fd, const void *buf, size_t count) { return (ssize_t)orth_status_ret(orth_syscall3(SYS_WRITE, (uint64_t)fd, (uint64_t)buf, (uint64_t)count)); }
@@ -483,22 +485,22 @@ void *mremap(void *old_addr, size_t old_len, size_t new_len, int flags, ...) {
 int ftruncate(int fd, off_t length) { return (int)orth_status_ret(orth_syscall3(SYS_FTRUNCATE, (uint64_t)fd, (uint64_t)length, 0)); }
 int truncate(const char *path, off_t length) { return (int)orth_status_ret(orth_syscall3(SYS_TRUNCATE, (uint64_t)path, (uint64_t)length, 0)); }
 
-int get_video_info(struct video_info *info) { return (int)orth_syscall3(ORTH_SYS_GET_VIDEO_INFO, (uint64_t)info, 0, 0); }
+int get_video_info(struct video_info *info) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_GET_VIDEO_INFO, (uint64_t)info, 0, 0)); }
 uint64_t map_framebuffer(void) { return (uint64_t)orth_syscall3(ORTH_SYS_MAP_FRAMEBUFFER, 0, 0, 0); }
 uint64_t get_ticks_ms(void) { return (uint64_t)orth_syscall3(ORTH_SYS_GET_TICKS_MS, 0, 0, 0); }
-int sleep_ms(uint64_t ms) { return (int)orth_syscall3(ORTH_SYS_SLEEP_MS, ms, 0, 0); }
-int get_key_event(struct key_event *ev) { return (int)orth_syscall3(ORTH_SYS_GET_KEY_EVENT, (uint64_t)ev, 0, 0); }
-int sound_on(uint32_t freq_hz) { return (int)orth_syscall3(ORTH_SYS_SOUND_ON, (uint64_t)freq_hz, 0, 0); }
-int sound_off(void) { return (int)orth_syscall3(ORTH_SYS_SOUND_OFF, 0, 0, 0); }
-int sound_pcm_u8(const uint8_t *samples, uint32_t count, uint32_t sample_rate) { return (int)orth_syscall3(ORTH_SYS_SOUND_PCM_U8, (uint64_t)samples, (uint64_t)count, (uint64_t)sample_rate); }
-int usb_info(void) { return (int)orth_syscall3(ORTH_SYS_USB_INFO, 0, 0, 0); }
-int usb_read_block_sys(uint32_t lba, void *buf, uint32_t count) { return (int)orth_syscall3(ORTH_SYS_USB_READ_BLOCK, (uint64_t)lba, (uint64_t)buf, (uint64_t)count); }
-int mount_usb_root(const char *path) { return (int)orth_syscall3(ORTH_SYS_MOUNT_USB_ROOT, (uint64_t)path, 0, 0); }
-int mount_module_root(void) { return (int)orth_syscall3(ORTH_SYS_MOUNT_MODULE_ROOT, 0, 0, 0); }
-int get_mount_status(char *buf, uint32_t size) { return (int)orth_syscall3(ORTH_SYS_GET_MOUNT_STATUS, (uint64_t)buf, (uint64_t)size, 0); }
-int dns_lookup_ipv4(const char *hostname, uint32_t *out_addr) { return (int)orth_syscall3(ORTH_SYS_DNS_LOOKUP, (uint64_t)hostname, (uint64_t)out_addr, 0); }
+int sleep_ms(uint64_t ms) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_SLEEP_MS, ms, 0, 0)); }
+int get_key_event(struct key_event *ev) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_GET_KEY_EVENT, (uint64_t)ev, 0, 0)); }
+int sound_on(uint32_t freq_hz) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_SOUND_ON, (uint64_t)freq_hz, 0, 0)); }
+int sound_off(void) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_SOUND_OFF, 0, 0, 0)); }
+int sound_pcm_u8(const uint8_t *samples, uint32_t count, uint32_t sample_rate) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_SOUND_PCM_U8, (uint64_t)samples, (uint64_t)count, (uint64_t)sample_rate)); }
+int usb_info(void) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_USB_INFO, 0, 0, 0)); }
+int usb_read_block_sys(uint32_t lba, void *buf, uint32_t count) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_USB_READ_BLOCK, (uint64_t)lba, (uint64_t)buf, (uint64_t)count)); }
+int mount_usb_root(const char *path) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_MOUNT_USB_ROOT, (uint64_t)path, 0, 0)); }
+int mount_module_root(void) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_MOUNT_MODULE_ROOT, 0, 0, 0)); }
+int get_mount_status(char *buf, uint32_t size) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_GET_MOUNT_STATUS, (uint64_t)buf, (uint64_t)size, 0)); }
+int dns_lookup_ipv4(const char *hostname, uint32_t *out_addr) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_DNS_LOOKUP, (uint64_t)hostname, (uint64_t)out_addr, 0)); }
 int get_cpu_id(void) { return (int)orth_syscall3(ORTH_SYS_GET_CPU_ID, 0, 0, 0); }
-int set_fork_spread(int enabled) { return (int)orth_syscall3(ORTH_SYS_SET_FORK_SPREAD, (uint64_t)enabled, 0, 0); }
+int set_fork_spread(int enabled) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_SET_FORK_SPREAD, (uint64_t)enabled, 0, 0)); }
 int get_fork_spread(void) { return (int)orth_syscall3(ORTH_SYS_GET_FORK_SPREAD, 0, 0, 0); }
-int get_runq_stats(struct orth_runq_stat *out, uint32_t max_count) { return (int)orth_syscall3(ORTH_SYS_GET_RUNQ_STATS, (uint64_t)out, (uint64_t)max_count, 0); }
-int getdents_sys(int fd, struct orth_dirent *dirp, uint32_t count) { return (int)orth_syscall3(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count); }
+int get_runq_stats(struct orth_runq_stat *out, uint32_t max_count) { return (int)orth_status_ret(orth_syscall3(ORTH_SYS_GET_RUNQ_STATS, (uint64_t)out, (uint64_t)max_count, 0)); }
+int getdents_sys(int fd, struct orth_dirent *dirp, uint32_t count) { return (int)orth_status_ret(orth_syscall3(SYS_GETDENTS, (uint64_t)fd, (uint64_t)dirp, (uint64_t)count)); }

@@ -32,4 +32,4 @@ exec qemu-system-x86_64 \
     -cdrom orthos.iso \
     -boot d \
     "$@" \
-    -serial stdio
+    -serial mon:stdio

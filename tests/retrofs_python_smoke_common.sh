@@ -47,7 +47,7 @@ cat > "${SCRIPT_PATH}" <<EOF
 ${GUEST_SMOKE_BODY}
 EOF
 
-make orthos.iso >/tmp/retrofs-python-build.out
+make "${ISO}" >/tmp/retrofs-python-build.out
 
 export SERIAL_LOG
 export MONITOR_SOCK

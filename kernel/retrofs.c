@@ -172,7 +172,7 @@ static int retrofs_find_in_directory(uint64_t dir_sector, const char* name,
         entries = &block[1];
         for (size_t i = 0; i < entry_count; i++) {
             struct retrofs_directory_entry_inner* entry = &entries[i].entry;
-            if (entry->filename[0] == '\0') break;
+            if (entry->filename[0] == '\0') continue; /* skip deleted/unused slots */
             // cprintf("find: checking '%s' == '%s'?\r\n", entry->filename, name);
             if (strcmp_exact_retrofs(entry->filename, name)) {
                 if (out_entry) *out_entry = *entry;
@@ -263,7 +263,7 @@ static int retrofs_upsert_entry_in_directory(uint64_t dir_sector, const char* na
                     empty_slot_sector = current;
                     empty_slot_index = i;
                 }
-                break;
+                continue; /* keep scanning for a name match after deleted slots */
             }
             // cprintf("upsert: checking '%s' == '%s'?\r\n", entry->filename, name);
             if (strcmp_exact_retrofs(entry->filename, name)) {
@@ -515,7 +515,7 @@ int retrofs_list_dir(const char* path, struct orth_dirent* dirents, size_t max_e
         for (size_t i = 0; i < entry_count; i++) {
             struct retrofs_directory_entry_inner* e = &entries[i].entry;
             int j = 0;
-            if (e->filename[0] == '\0') break;
+            if (e->filename[0] == '\0') continue; /* skip deleted/unused slots */
             if (retrofs_dirent_name_exists(dirents, count, e->filename)) continue;
             if (count >= max_entries) {
                 pmm_free((void*)VIRT_TO_PHYS((uint64_t)block), (int)pages);

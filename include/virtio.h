@@ -20,7 +20,10 @@
 #define VIRTIO_PCI_QUEUE_NOTIFY    0x10
 #define VIRTIO_PCI_STATUS          0x12
 #define VIRTIO_PCI_ISR             0x13
+#define VIRTIO_PCI_CONFIG_VECTOR   0x14
+#define VIRTIO_PCI_QUEUE_VECTOR    0x16
 #define VIRTIO_PCI_CONFIG          0x14   /* device-specific config start */
+#define VIRTIO_MSI_NO_VECTOR       0xFFFF
 
 /* VirtIO Status bits */
 #define VIRTIO_STATUS_ACKNOWLEDGE  0x01
@@ -106,5 +109,7 @@ static inline uint32_t inl(uint16_t port) {
 /* Common VirtIO Functions (to be implemented in kernel/virtio.c) */
 int virtio_virtq_init(uint16_t iobase, uint16_t queue_index, struct virtio_queue* q);
 void virtio_kick(uint16_t iobase, uint16_t queue_index);
+void virtio_set_queue_msix_vector(uint16_t iobase, uint16_t queue_index, uint16_t vector);
+void virtio_disable_config_msix_vector(uint16_t iobase);
 
 #endif

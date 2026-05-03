@@ -15,6 +15,7 @@
 #define SYS_mprotect      10
 #define SYS_munmap        11
 #define SYS_brk           12
+#define SYS_mremap        25
 #define SYS_getpid        39
 #define SYS_gettid       186
 

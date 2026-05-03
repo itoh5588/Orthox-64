@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include "spinlock.h"
 
-#define MAX_FDS 32
+#define MAX_FDS 256
 
 struct task;
 
@@ -18,6 +18,7 @@ typedef enum {
     FT_SOCKET,  // lwIP-backed socket
     FT_USB,     // USB FAT file
     FT_RETROFS, // file inside RetroFS root image
+    FT_RAWDEV,  // raw output device (e.g. /dev/kout)
     FT_DIR      // synthesized directory listing
 } file_type_t;
 

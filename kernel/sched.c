@@ -115,7 +115,7 @@ void task_idle_loop(int poll_network) {
     __asm__ volatile("sti");
     for (;;) {
         bottom_half_run();
-        if (poll_network) {
+        if (poll_network && net_needs_poll_fallback()) {
             net_poll();
         }
         __asm__ volatile("hlt");

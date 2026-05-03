@@ -231,6 +231,12 @@ static void register_boot_rootfs_image(void) {
     }
 }
 
+static void* kernel_memset(void* s, int c, size_t n) {
+    unsigned char* p = s;
+    while (n--) *p++ = (unsigned char)c;
+    return s;
+}
+
 void _start(void) {
     init_serial();
     puts("\r\n--- ");
@@ -260,6 +266,7 @@ void _start(void) {
         net_init();
         usb_init();
         register_virtio_blk_image();
+        virtio_kout_init();
         register_boot_rootfs_image();
         smp_init(smp_request.response);
         puts("SMP CPUs detected: ");
@@ -295,11 +302,13 @@ void _start(void) {
                 struct task* user_task = task_create(0, 0);
                 uint64_t* user_pml4 = (uint64_t*)PHYS_TO_VIRT(user_task->ctx.cr3);
 
-                struct elf_info info = elf_load(user_pml4, module->address);
+                struct elf_info info = elf_load(user_pml4, module->address, 0);
                 if (info.entry) {
+                    struct elf_info empty_interp;
+                    kernel_memset(&empty_interp, 0, sizeof(empty_interp));
                     char* argv[] = { "sh", NULL };
                     char* envp[] = { "PATH=/bin:/bin-musl", "HOME=/", NULL };
-                    if (task_prepare_initial_user_stack(user_pml4, user_task, &info, argv, envp) < 0) {
+                    if (task_prepare_initial_user_stack(user_pml4, user_task, &info, &empty_interp, argv, envp) < 0) {
                         puts("Failed to prepare initial user stack\r\n");
                         while(1);
                     }

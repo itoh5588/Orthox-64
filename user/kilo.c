@@ -109,6 +109,24 @@ struct editorConfig {
 
 static struct editorConfig E;
 
+static void *kilo_realloc_copy(void *ptr, size_t old_size, size_t new_size) {
+    void *new_ptr;
+    size_t copy_size;
+
+    if (new_size == 0) {
+        free(ptr);
+        return NULL;
+    }
+    new_ptr = malloc(new_size);
+    if (!new_ptr) return NULL;
+    if (ptr) {
+        copy_size = old_size < new_size ? old_size : new_size;
+        if (copy_size) memcpy(new_ptr, ptr, copy_size);
+        free(ptr);
+    }
+    return new_ptr;
+}
+
 enum KEY_ACTION{
         KEY_NULL = 0,       /* NULL */
         CTRL_C = 3,         /* Ctrl-c */
@@ -253,6 +271,7 @@ int editorReadKey(int fd) {
     char c, seq[3];
     while ((nread = read(fd,&c,1)) == 0);
     if (nread == -1) exit(1);
+    if (c == '\n') return ENTER;
 
     while(1) {
         switch(c) {
@@ -378,7 +397,9 @@ int editorRowHasOpenComment(erow *row) {
 /* Set every byte of row->hl (that corresponds to every character in the line)
  * to the right syntax highlight type (HL_* defines). */
 void editorUpdateSyntax(erow *row) {
-    row->hl = realloc(row->hl,row->rsize);
+    free(row->hl);
+    row->hl = row->rsize ? malloc(row->rsize) : NULL;
+    if (!row->hl && row->rsize) exit(1);
     memset(row->hl,HL_NORMAL,row->rsize);
 
     if (E.syntax == NULL) return; /* No syntax, everything is HL_NORMAL. */
@@ -410,14 +431,14 @@ void editorUpdateSyntax(erow *row) {
         /* Handle // comments. */
         if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
             /* From here to end is a comment */
-            memset(row->hl+i,HL_COMMENT,row->size-i);
+            memset(row->hl+i,HL_COMMENT,row->rsize-i);
             return;
         }
 
         /* Handle multi line comments. */
         if (in_comment) {
             row->hl[i] = HL_MLCOMMENT;
-            if (*p == mce[0] && *(p+1) == mce[1]) {
+            if (i + 1 < row->rsize && *p == mce[0] && *(p+1) == mce[1]) {
                 row->hl[i+1] = HL_MLCOMMENT;
                 p += 2; i += 2;
                 in_comment = 0;
@@ -428,7 +449,7 @@ void editorUpdateSyntax(erow *row) {
                 p++; i++;
                 continue;
             }
-        } else if (*p == mcs[0] && *(p+1) == mcs[1]) {
+        } else if (i + 1 < row->rsize && *p == mcs[0] && *(p+1) == mcs[1]) {
             row->hl[i] = HL_MLCOMMENT;
             row->hl[i+1] = HL_MLCOMMENT;
             p += 2; i += 2;
@@ -440,7 +461,7 @@ void editorUpdateSyntax(erow *row) {
         /* Handle "" and '' */
         if (in_string) {
             row->hl[i] = HL_STRING;
-            if (*p == '\\') {
+            if (*p == '\\' && i + 1 < row->rsize) {
                 row->hl[i+1] = HL_STRING;
                 p += 2; i += 2;
                 prev_sep = 0;
@@ -589,7 +610,8 @@ void editorUpdateRow(erow *row) {
  * if required. */
 void editorInsertRow(int at, char *s, size_t len) {
     if (at > E.numrows) return;
-    E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
+    E.row = kilo_realloc_copy(E.row, sizeof(erow)*E.numrows, sizeof(erow)*(E.numrows+1));
+    if (!E.row) exit(1);
     if (at != E.numrows) {
         memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
         for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
@@ -623,7 +645,7 @@ void editorDelRow(int at) {
     row = E.row+at;
     editorFreeRow(row);
     memmove(E.row+at,E.row+at+1,sizeof(E.row[0])*(E.numrows-at-1));
-    for (int j = at; j < E.numrows-1; j++) E.row[j].idx++;
+    for (int j = at; j < E.numrows-1; j++) E.row[j].idx = j;
     E.numrows--;
     E.dirty++;
 }
@@ -662,14 +684,16 @@ void editorRowInsertChar(erow *row, int at, int c) {
          * current length by more than a single character. */
         int padlen = at-row->size;
         /* In the next line +2 means: new char and null term. */
-        row->chars = realloc(row->chars,row->size+padlen+2);
+        row->chars = kilo_realloc_copy(row->chars, row->size+1, row->size+padlen+2);
+        if (!row->chars) exit(1);
         memset(row->chars+row->size,' ',padlen);
         row->chars[row->size+padlen+1] = '\0';
         row->size += padlen+1;
     } else {
         /* If we are in the middle of the string just make space for 1 new
          * char plus the (already existing) null term. */
-        row->chars = realloc(row->chars,row->size+2);
+        row->chars = kilo_realloc_copy(row->chars, row->size+1, row->size+2);
+        if (!row->chars) exit(1);
         memmove(row->chars+at+1,row->chars+at,row->size-at+1);
         row->size++;
     }
@@ -680,7 +704,8 @@ void editorRowInsertChar(erow *row, int at, int c) {
 
 /* Append the string 's' at the end of a row */
 void editorRowAppendString(erow *row, char *s, size_t len) {
-    row->chars = realloc(row->chars,row->size+len+1);
+    row->chars = kilo_realloc_copy(row->chars, row->size+1, row->size+len+1);
+    if (!row->chars) exit(1);
     memcpy(row->chars+row->size,s,len);
     row->size += len;
     row->chars[row->size] = '\0';
@@ -863,7 +888,7 @@ struct abuf {
 #define ABUF_INIT {NULL,0}
 
 void abAppend(struct abuf *ab, const char *s, int len) {
-    char *new = realloc(ab->b,ab->len+len);
+    char *new = kilo_realloc_copy(ab->b, ab->len, ab->len+len);
 
     if (new == NULL) return;
     memcpy(new+ab->len,s,len);

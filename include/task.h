@@ -141,6 +141,7 @@ int task_consume_resched(void);
 void task_on_timer_tick(void);
 int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t,
                                     const struct elf_info* info,
+                                    const struct elf_info* interp_info,
                                     char* const argv[], char* const envp[]);
 void task_idle_loop(int poll_network);
 

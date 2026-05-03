@@ -7,10 +7,12 @@
 #include "fs.h"
 #include "lapic.h"
 
-#define EXEC_COPY_PAGES      64
+#define EXEC_COPY_PAGES      260
 #define EXEC_MAX_PATH_LEN    1024
 #define EXEC_MAX_VEC_STRINGS 128
-#define EXEC_MAX_VEC_STR_LEN 512
+#define EXEC_MAX_VEC_STR_LEN 4096
+#define EXEC_ET_DYN_LOAD_BASE 0x400000ULL
+#define EXEC_INTERP_LOAD_BASE 0x7fc000000000ULL
 
 #ifndef ORTHOX_MEM_TRACE
 #define ORTHOX_MEM_TRACE 0
@@ -23,6 +25,7 @@
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
 extern int fs_get_file_data(const char* path, void** data, size_t* size);
+extern void fs_free_exec_buffer(const char* path, void* data, size_t size);
 
 static inline void wrmsr(uint32_t msr, uint64_t val) {
     uint32_t low = val & 0xFFFFFFFF;
@@ -88,6 +91,38 @@ static int copy_user_string_vector(char* const user_vec[], char** kernel_vec,
     }
     kernel_vec[count] = 0;
     return 0;
+}
+
+static const char* path_basename(const char* path) {
+    const char* base = path;
+    if (!path) return "";
+    for (const char* p = path; *p; p++) {
+        if (*p == '/') base = p + 1;
+    }
+    return base;
+}
+
+static int streq(const char* a, const char* b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static int resolve_interp_file(const char* interp_path, void** file_addr, size_t* file_size) {
+    if (fs_get_file_data(interp_path, file_addr, file_size) == 0) {
+        return 0;
+    }
+
+    const char* base = path_basename(interp_path);
+    if (streq(base, "ld-musl-x86_64.so.1")) {
+        return fs_get_file_data("/lib/ld-musl-x86_64.so.1", file_addr, file_size);
+    }
+
+    return -1;
 }
 
 static int alloc_user_stack(uint64_t* pml4_virt, struct task* t, int stack_pages, uint8_t* stack_pages_out[]) {
@@ -180,6 +215,7 @@ enum {
 
 int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t,
                                     const struct elf_info* info,
+                                    const struct elf_info* interp_info,
                                     char* const argv[], char* const envp[]) {
     uint8_t* stack_pages[USER_STACK_PAGES];
     for (int i = 0; i < USER_STACK_PAGES; i++) stack_pages[i] = 0;
@@ -217,7 +253,7 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t,
     }
 
     current_str_addr &= ~7ULL;
-    if (current_str_addr < t->user_stack_bottom + (uint64_t)(envc + argc + 21) * 8ULL) {
+    if (current_str_addr < t->user_stack_bottom + (uint64_t)(envc + argc + 32) * 8ULL) {
         return -1;
     }
 
@@ -241,6 +277,11 @@ int task_prepare_initial_user_stack(uint64_t* pml4_virt, struct task* t,
 
     current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 0) < 0) return -1;
     current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_UID) < 0) return -1;
+
+    if (info->has_interp) {
+        current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, interp_info ? interp_info->load_bias : 0) < 0) return -1;
+        current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, 7 /* AT_BASE */) < 0) return -1;
+    }
 
     current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, (uint64_t)info->entry) < 0) return -1;
     current_str_addr -= 8; if (stack_write_u64(stack_pages, t->user_stack_bottom, t->user_stack_top, current_str_addr, AT_ENTRY) < 0) return -1;
@@ -317,13 +358,38 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
     for (int i = 0; i < 512; i++) {
         pml4_virt[i] = (i >= 256) ? kernel_pml4[i] : 0;
     }
-    struct elf_info info = elf_load(pml4_virt, file_addr);
+    Elf64_Ehdr* ehdr = (Elf64_Ehdr*)file_addr;
+    uint64_t exec_load_bias = (ehdr->e_type == ET_DYN) ? EXEC_ET_DYN_LOAD_BASE : 0;
+    struct elf_info info = elf_load(pml4_virt, file_addr, exec_load_bias);
+    fs_free_exec_buffer(exec_copy->path, file_addr, file_size);
+    file_addr = NULL;
     if (!info.entry) {
         pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
         return -1;
     }
 
-    if (task_prepare_initial_user_stack(pml4_virt, t, &info, exec_copy->argv, exec_copy->envp) < 0) {
+    struct elf_info interp_info;
+    kernel_memset(&interp_info, 0, sizeof(interp_info));
+    void* interp_file_addr = NULL;
+    size_t interp_file_size = 0;
+
+    if (info.has_interp) {
+        if (resolve_interp_file(info.interp_path, &interp_file_addr, &interp_file_size) < 0) {
+            puts("Exec: Interpreter not found: "); puts(info.interp_path); puts("\r\n");
+            pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
+            return -1;
+        }
+        interp_info = elf_load(pml4_virt, interp_file_addr, EXEC_INTERP_LOAD_BASE);
+        fs_free_exec_buffer(info.interp_path, interp_file_addr, interp_file_size);
+        interp_file_addr = NULL;
+        if (!interp_info.entry) {
+            puts("Exec: Failed to load interpreter\r\n");
+            pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
+            return -1;
+        }
+    }
+
+    if (task_prepare_initial_user_stack(pml4_virt, t, &info, &interp_info, exec_copy->argv, exec_copy->envp) < 0) {
         pmm_free(exec_copy_phys, EXEC_COPY_PAGES);
         pmm_free(pml4_phys, 1);
         return -1;
@@ -368,7 +434,7 @@ int task_execve(struct syscall_frame* frame, const char* path, char* const argv[
 #endif
     t->heap_break = info.max_vaddr;
     t->mmap_end = 0x4000000000ULL;
-    t->user_entry = (uint64_t)info.entry;
+    t->user_entry = info.has_interp ? (uint64_t)interp_info.entry : (uint64_t)info.entry;
     t->sig_pending = 0;
     t->sig_mask = 0;
     for (int i = 0; i < 32; i++) {

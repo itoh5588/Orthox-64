@@ -55,8 +55,9 @@ static void update_page_flags(uint64_t* pml4, uint64_t vaddr, uint64_t new_flags
     *pte = merged;
 }
 
-struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
-    struct elf_info info = { NULL, 0, 0, 0, 0, 0, 0, 0, 0 };
+struct elf_info elf_load(uint64_t* pml4, void* elf_data, uint64_t load_bias) {
+    struct elf_info info;
+    kernel_memset(&info, 0, sizeof(info));
     Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_data;
 
     if (memcmp(ehdr->e_ident, ELFMAG, 4) != 0) {
@@ -64,7 +65,9 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
         return info;
     }
 
-    info.entry = (void*)ehdr->e_entry;
+    info.type = ehdr->e_type;
+    info.load_bias = load_bias;
+    info.entry = (void*)(ehdr->e_entry + load_bias);
     info.phent = ehdr->e_phentsize;
     info.phnum = ehdr->e_phnum;
     Elf64_Phdr* phdr = (Elf64_Phdr*)((uint8_t*)elf_data + ehdr->e_phoff);
@@ -73,20 +76,28 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
         if (ehdr->e_phoff < phdr[i].p_offset) continue;
         uint64_t phdr_end = ehdr->e_phoff + (uint64_t)ehdr->e_phnum * ehdr->e_phentsize;
         if (phdr_end > phdr[i].p_offset + phdr[i].p_filesz) continue;
-        info.phdr_vaddr = phdr[i].p_vaddr + (ehdr->e_phoff - phdr[i].p_offset);
+        info.phdr_vaddr = phdr[i].p_vaddr + (ehdr->e_phoff - phdr[i].p_offset) + load_bias;
         break;
     }
 
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type == PT_INTERP) {
+            info.has_interp = true;
+            uint64_t len = phdr[i].p_filesz;
+            if (len > sizeof(info.interp_path) - 1) len = sizeof(info.interp_path) - 1;
+            kernel_memcpy(info.interp_path, (uint8_t*)elf_data + phdr[i].p_offset, len);
+            info.interp_path[len] = '\0';
+        }
+
         if (phdr[i].p_type == PT_TLS) {
-            info.tls_vaddr = phdr[i].p_vaddr;
+            info.tls_vaddr = phdr[i].p_vaddr + load_bias;
             info.tls_filesz = phdr[i].p_filesz;
             info.tls_memsz = phdr[i].p_memsz;
             info.tls_align = phdr[i].p_align;
         }
 
         if (phdr[i].p_type == PT_LOAD) {
-            uint64_t vaddr_start = phdr[i].p_vaddr;
+            uint64_t vaddr_start = phdr[i].p_vaddr + load_bias;
             uint64_t vaddr_end = vaddr_start + phdr[i].p_memsz;
             uint64_t filesz = phdr[i].p_filesz;
             uint64_t offset = phdr[i].p_offset;
@@ -137,8 +148,9 @@ struct elf_info elf_load(uint64_t* pml4, void* elf_data) {
                 }
 
                 curr_vaddr += size_in_page;
-                }
-                }
-                }
+            }
+        }
+    }
 
-                return info;}
+    return info;
+}

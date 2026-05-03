@@ -63,17 +63,23 @@
 #include "lwip/api.h"
 #include "lwip/priv/tcpip_priv.h"
 #include "lwip/priv/api_msg.h"
+#if LWIP_SOCKET
 #include "lwip/priv/sockets_priv.h"
+#endif
 #include "lwip/etharp.h"
 #include "lwip/igmp.h"
 #include "lwip/timeouts.h"
 /* needed by default MEMP_NUM_SYS_TIMEOUT */
+#if PPP_SUPPORT
 #include "netif/ppp/ppp_opts.h"
+#endif
 #include "lwip/netdb.h"
 #include "lwip/dns.h"
+#if LWIP_IPV6
 #include "lwip/priv/nd6_priv.h"
 #include "lwip/ip6_frag.h"
 #include "lwip/mld6.h"
+#endif
 
 #define LWIP_MEMPOOL(name,num,size,desc) LWIP_MEMPOOL_DECLARE(name,num,size,desc)
 #include "lwip/priv/memp_std.h"

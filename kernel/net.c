@@ -21,8 +21,14 @@ void net_init(void) {
 }
 
 void net_poll(void) {
-    virtio_net_poll();
+    if (virtio_net_needs_poll_fallback()) {
+        virtio_net_poll();
+    }
     lwip_port_poll();
+}
+
+int net_needs_poll_fallback(void) {
+    return virtio_net_needs_poll_fallback();
 }
 
 int net_is_ready(void) {

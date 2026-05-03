@@ -12,6 +12,7 @@
 
 #define MMAP_BASE_ADDR 0x0000200000000000ULL
 #define MMAP_TOP_ADDR  0x00007F0000000000ULL
+#define USER_TOP_ADDR  0x0000800000000000ULL
 
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
@@ -82,6 +83,16 @@ static int is_user_mmap_range_valid(uint64_t vaddr, uint64_t size) {
     if (vaddr >= MMAP_TOP_ADDR) return 0;
     if (vaddr + size < vaddr) return 0;
     if (vaddr + size > MMAP_TOP_ADDR) return 0;
+    return 1;
+}
+
+static int is_user_page_range_valid(uint64_t vaddr, uint64_t size) {
+    if (size == 0) return 0;
+    if ((vaddr & (PAGE_SIZE - 1)) != 0) return 0;
+    if (vaddr < PAGE_SIZE) return 0;
+    if (vaddr >= USER_TOP_ADDR) return 0;
+    if (vaddr + size < vaddr) return 0;
+    if (vaddr + size > USER_TOP_ADDR) return 0;
     return 1;
 }
 
@@ -191,7 +202,7 @@ int sys_mprotect(void* addr, size_t length, int prot) {
     uint64_t base = (uint64_t)addr & ~(PAGE_SIZE - 1);
     uint64_t end = align_up_page((uint64_t)addr + (uint64_t)length);
     if (end <= base) return -22;
-    if (!is_user_mmap_range_valid(base, end - base)) return -22;
+    if (!is_user_page_range_valid(base, end - base)) return -22;
 
     uint64_t* pml4 = (uint64_t*)PHYS_TO_VIRT(current->ctx.cr3);
     for (uint64_t vaddr = base; vaddr < end; vaddr += PAGE_SIZE) {

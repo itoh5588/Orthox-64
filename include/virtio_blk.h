@@ -39,4 +39,8 @@ int virtio_blk_read(uint64_t sector, void* buf, uint32_t count);
 int virtio_blk_write(uint64_t sector, const void* buf, uint32_t count);
 uint64_t virtio_blk_capacity(void);
 
+/* Second drive: write-only output device ("kout") */
+int virtio_kout_init(void);
+int virtio_kout_write_raw(uint64_t byte_offset, const void* buf, size_t count);
+
 #endif

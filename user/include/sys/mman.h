@@ -16,6 +16,10 @@
 
 #define MAP_FAILED ((void *)-1)
 
+#define MREMAP_MAYMOVE 1
+#define MREMAP_FIXED   2
+#define MREMAP_DONTUNMAP 4
+
 #define MS_ASYNC      1
 #define MS_INVALIDATE 2
 #define MS_SYNC       4
@@ -23,6 +27,7 @@
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
 int munmap(void *addr, size_t length);
 int mprotect(void *addr, size_t length, int prot);
+void *mremap(void *old_addr, size_t old_len, size_t new_len, int flags, ...);
 int msync(void *addr, size_t length, int flags);
 
 #endif

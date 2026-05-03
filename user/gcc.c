@@ -141,7 +141,8 @@ int main(int argc, char **argv) {
         }
         if (strncmp(argv[i], "-I", 2) == 0 || strncmp(argv[i], "-D", 2) == 0 ||
             strncmp(argv[i], "-U", 2) == 0 || strncmp(argv[i], "-O", 2) == 0 ||
-            strncmp(argv[i], "-W", 2) == 0 || strcmp(argv[i], "-g") == 0) {
+            strncmp(argv[i], "-W", 2) == 0 || strncmp(argv[i], "-std=", 5) == 0 ||
+            strcmp(argv[i], "-g") == 0) {
             if (cc1_argc + 1 >= MAX_TOOL_ARGS) {
                 fprintf(stderr, "gcc: too many options\n");
                 return 1;
@@ -292,6 +293,11 @@ int main(int argc, char **argv) {
     if (run_wait("/bin/ld", ld_args) != 0) {
         fprintf(stderr, "gcc: ld failed\n");
         return 1;
+    }
+
+    for (i = 0; i < src_count; i++) {
+        unlink(asm_outs[i]);
+        unlink(obj_outs[i]);
     }
 
     printf("--- OrthOS GCC Pipeline Finished! Output: %s ---\n", exe_out);

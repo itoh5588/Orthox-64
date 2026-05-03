@@ -77,6 +77,21 @@ extern void isr45();
 extern void isr46();
 extern void isr47();
 extern void isr48();
+extern void isr49();
+extern void isr50();
+extern void isr51();
+extern void isr52();
+extern void isr53();
+extern void isr54();
+extern void isr55();
+extern void isr56();
+extern void isr57();
+extern void isr58();
+extern void isr59();
+extern void isr60();
+extern void isr61();
+extern void isr62();
+extern void isr63();
 
 void idt_set_gate(uint8_t num, void* handler, uint8_t ist, uint8_t type) {
     uint64_t addr = (uint64_t)handler;
@@ -139,6 +154,21 @@ static void idt_build_once(void) {
     idt_set_gate(46,                  isr46, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(47,                  isr47, 0, IDT_GATE_INTERRUPT);
     idt_set_gate(INT_VECTOR_RESCHED,  isr48, 1, IDT_GATE_INTERRUPT);
+    idt_set_gate(49,                  isr49, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(50,                  isr50, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(51,                  isr51, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(52,                  isr52, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(53,                  isr53, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(54,                  isr54, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(55,                  isr55, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(56,                  isr56, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(57,                  isr57, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(58,                  isr58, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(59,                  isr59, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(60,                  isr60, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(61,                  isr61, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(62,                  isr62, 0, IDT_GATE_INTERRUPT);
+    idt_set_gate(63,                  isr63, 0, IDT_GATE_INTERRUPT);
     idt_built = 1;
 }
 
@@ -226,6 +256,19 @@ void interrupt_dispatch(struct interrupt_frame* frame) {
             puts(buf);
         }
         lapic_eoi();
+        kernel_lock_exit();
+        return;
+    }
+
+    if (frame->int_no >= INT_VECTOR_MSI_BASE && frame->int_no < INT_VECTOR_MSI_END) {
+        extern int irq_dispatch_vector(int vector);
+        int handled = irq_dispatch_vector((int)frame->int_no);
+        lapic_eoi();
+        if (!handled) {
+            puts("[irq] unhandled MSI vector=0x");
+            puthex(frame->int_no);
+            puts("\r\n");
+        }
         kernel_lock_exit();
         return;
     }

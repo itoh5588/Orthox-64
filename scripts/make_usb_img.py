@@ -4,10 +4,8 @@ import io
 import math
 import struct
 import sys
-import tarfile
 
 USB_IMG = Path(sys.argv[1])
-ROOTFS_TAR = Path('rootfs.tar')
 SECTOR_SIZE = 512
 SECTORS_PER_CLUSTER = 8
 CLUSTER_SIZE = SECTOR_SIZE * SECTORS_PER_CLUSTER
@@ -122,16 +120,6 @@ def alloc_clusters(data_bytes):
 
 
 def main():
-    rootfs_bytes = ROOTFS_TAR.read_bytes()
-
-    mini_buf = io.BytesIO()
-    with tarfile.open(fileobj=mini_buf, mode='w', format=tarfile.USTAR_FORMAT) as tf:
-        payload = b'Hello from USB root tar!\n'
-        ti = tarfile.TarInfo('hello.txt')
-        ti.size = len(payload)
-        tf.addfile(ti, io.BytesIO(payload))
-    usbroot_bytes = mini_buf.getvalue()
-
     data1 = b'OrthOS USB FAT root file\r\n'
     data2 = b'OrthOS multi-cluster FAT test file.\r\n' * 20
     data3 = b'OrthOS nested file inside DIR1\r\n'
@@ -152,8 +140,6 @@ def main():
     c_deep_long = alloc_clusters(data7)
     c_longdir = alloc_clusters(bytes(CLUSTER_SIZE))
     c_longdir_file = alloc_clusters(data8)
-    c_rootfs = alloc_clusters(rootfs_bytes)
-    c_usbroot = alloc_clusters(usbroot_bytes)
 
     root_entries = [
         short_entry(b'README  TXT', 0x20, c_readme, len(data1)),
@@ -164,10 +150,6 @@ def main():
     root_entries.append(short_entry(b'VERYLN~1TXT', 0x20, c_longfile, len(data5)))
     root_entries.extend(lfn_entries('VeryLongDirectory', b'VERYLD~1   '))
     root_entries.append(short_entry(b'VERYLD~1   ', 0x10, c_longdir, 0))
-    root_entries.extend(lfn_entries('rootfs.tar', b'ROOTFS~1TAR'))
-    root_entries.append(short_entry(b'ROOTFS~1TAR', 0x20, c_rootfs, len(rootfs_bytes)))
-    root_entries.extend(lfn_entries('usbroot.tar', b'USBROT~1TAR'))
-    root_entries.append(short_entry(b'USBROT~1TAR', 0x20, c_usbroot, len(usbroot_bytes)))
 
     dir1_entries = [
         short_entry(b'.          ', 0x10, c_dir1, 0),

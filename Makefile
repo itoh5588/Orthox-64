@@ -75,10 +75,21 @@ MUSL_ENVSHOW_ELF = user/muslenvshow.elf
 RETROFS_BASIC_ELF = user/retrofsbasic.elf
 RETROFS_EDGE_ELF = user/retrofsedge.elf
 VBLK_TEST_ELF = user/vblk_test.elf
+VBLK_STRESS_ELF = user/vblkstress.elf
 KILO_ELF = user/kilo.elf
 FILE_ELF = user/file.elf
 VMERRNO_TEST_ELF = user/vmerrno_test.elf
 FTRUNCSAVE_TEST_ELF = user/ftruncsave_test.elf
+HELLO_DYN_ELF = user/hello_dyn.elf
+DYNLINK_LIB_A_SO = user/libdyn_a.so
+DYNLINK_LIB_B_SO = user/libdyn_b.so
+DYNLINK_PLUGIN_SO = user/libdyn_plugin.so
+DYNLINK_CPP_SO = user/libdyn_cpp.so
+DYNLINK_MULTI_TLS_ELF = user/dynlink_multi_tls.elf
+DYNLINK_DLOPEN_ELF = user/dynlink_dlopen.elf
+DYNLINK_MALLOC_ELF = user/dynlink_malloc.elf
+BUSYBOX_ASH_DYN_ELF = user/busybox-ash-dyn.elf
+GCC_DYN_ELF = user/gcc-dyn.elf
 RUST_HELLO_STD_ELF = ports/rust/hello_std
 GCC_MUSL_ELF = user/gcc.elf
 CC1_MUSL_ELF = user/cc1.elf
@@ -149,9 +160,10 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/fchdirtest.d $(USER_BUILD_DIR)/ttylinktest.d \
        $(USER_BUILD_DIR)/mkdirtest.d $(USER_BUILD_DIR)/wadheadtest.d \
        $(USER_BUILD_DIR)/vmerrno_test.d $(USER_BUILD_DIR)/ftruncsave_test.d \
-       $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d
+       $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d \
+       $(USER_BUILD_DIR)/vblkstress.d
 
-.PHONY: all clean run ac97run ac97smoke doomac97smoke musltoolchainsmoke muslforkprobesmoke muslexecprobesmoke muslforkexecwaitsmoke muslbusyboxsmoke muslbusyboxenvshowsmoke vmsyscallsmoke timesyscallsmoke signalsyscallsmoke ftruncsavesmoke smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install
+.PHONY: all clean run ac97run ac97smoke doomac97smoke musltoolchainsmoke muslforkprobesmoke muslexecprobesmoke muslforkexecwaitsmoke muslbusyboxsmoke muslbusyboxenvshowsmoke dynlinkrealappsmoke vmsyscallsmoke timesyscallsmoke signalsyscallsmoke ftruncsavesmoke virtionetirqsmoke virtioblkinflightsmoke virtioq35smoke irqbottomhalfstresssmoke irqbottomhalfsmpstresssmoke finalsmokesuite smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install nativekernelbuildsmoke nativekernelbootsmoke
 
 all: $(ISO)
 
@@ -205,11 +217,11 @@ TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF
 
 FORCE:
 
-$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(SIGNAL_TEST_ELF) $(SIGMASK_TEST_ELF) $(SIGACTION_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(SOUND_TEST_ELF) $(GCC_MUSL_ELF) $(CC1_MUSL_ELF) $(AS_MUSL_ELF) $(LD_MUSL_ELF) $(MAKE_MUSL_ELF) $(DOOM_MUSL_ELF) $(KILO_ELF) $(FILE_ELF) $(VMERRNO_TEST_ELF) $(FTRUNCSAVE_TEST_ELF)
+$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(SIGNAL_TEST_ELF) $(SIGMASK_TEST_ELF) $(SIGACTION_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(VBLK_STRESS_ELF) $(SOUND_TEST_ELF) $(GCC_MUSL_ELF) $(CC1_MUSL_ELF) $(AS_MUSL_ELF) $(LD_MUSL_ELF) $(MAKE_MUSL_ELF) $(DOOM_MUSL_ELF) $(KILO_ELF) $(FILE_ELF) $(VMERRNO_TEST_ELF) $(FTRUNCSAVE_TEST_ELF) $(HELLO_DYN_ELF) $(DYNLINK_LIB_A_SO) $(DYNLINK_LIB_B_SO) $(DYNLINK_PLUGIN_SO) $(DYNLINK_CPP_SO) $(DYNLINK_MULTI_TLS_ELF) $(DYNLINK_DLOPEN_ELF) $(DYNLINK_MALLOC_ELF) $(BUSYBOX_ASH_DYN_ELF) $(GCC_DYN_ELF)
 	@if [ "$(ROOTFS_REBUILD)" = "0" ] && [ -f "$(ROOTFS_IMG)" ]; then \
 		echo "Keeping existing $(ROOTFS_IMG) (ROOTFS_REBUILD=0)"; \
 	else \
-		mkdir -p rootfs/bin; \
+			mkdir -p rootfs/bin rootfs/lib; \
 		mkdir -p rootfs/work rootfs/src rootfs/tmp rootfs/home; \
 		bash scripts/populate_c_env_musl.sh; \
 		rm -f rootfs/bin/ash.orthos rootfs/bin/busybox.orthos; \
@@ -263,15 +275,39 @@ $(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/
 		cp $(RETROFS_BASIC_ELF) rootfs/bin/retrofsbasic; \
 		cp $(RETROFS_EDGE_ELF) rootfs/bin/retrofsedge; \
 		cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test; \
+		cp $(VBLK_STRESS_ELF) rootfs/bin/vblkstress; \
 		cp $(SOUND_TEST_ELF) rootfs/bin/testsound; \
 		cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf; \
 		rm -f rootfs/bin/edit; \
 		cp $(KILO_ELF) rootfs/bin/kilo; \
 		cp $(FILE_ELF) rootfs/bin/file; \
-		cp $(VMERRNO_TEST_ELF) rootfs/bin/vmerrno_test.elf; \
-		cp $(FTRUNCSAVE_TEST_ELF) rootfs/bin/ftruncsave_test.elf; \
-		python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG); \
-	fi
+			cp $(VMERRNO_TEST_ELF) rootfs/bin/vmerrno_test.elf; \
+			cp $(FTRUNCSAVE_TEST_ELF) rootfs/bin/ftruncsave_test.elf; \
+			cp $(HELLO_DYN_ELF) rootfs/bin/hello_dyn.elf; \
+			cp $(DYNLINK_MULTI_TLS_ELF) rootfs/bin/dynlink_multi_tls.elf; \
+			cp $(DYNLINK_DLOPEN_ELF) rootfs/bin/dynlink_dlopen.elf; \
+			cp $(DYNLINK_MALLOC_ELF) rootfs/bin/dynlink_malloc.elf; \
+			cp $(BUSYBOX_ASH_DYN_ELF) rootfs/bin/busybox.dyn; \
+			cp $(GCC_DYN_ELF) rootfs/bin/gcc.dyn; \
+			cp $(DYNLINK_LIB_A_SO) rootfs/lib/libdyn_a.so; \
+			cp $(DYNLINK_LIB_B_SO) rootfs/lib/libdyn_b.so; \
+			cp $(DYNLINK_PLUGIN_SO) rootfs/lib/libdyn_plugin.so; \
+			cp $(DYNLINK_CPP_SO) rootfs/lib/libdyn_cpp.so; \
+			mkdir -p rootfs/tmp/kbuild/kernel rootfs/tmp/kbuild/lwip/core/ipv4 rootfs/tmp/kbuild/lwip/netif; \
+			KBUILD=rootfs/src/kernel-build; \
+			rm -rf "$$KBUILD"; \
+			mkdir -p "$$KBUILD/ports/lwip/src"; \
+			cp -r kernel "$$KBUILD/"; \
+			cp -r include "$$KBUILD/"; \
+			cp -r ports/lwip/src/include "$$KBUILD/ports/lwip/src/"; \
+			cp -r ports/lwip/src/core "$$KBUILD/ports/lwip/src/"; \
+			mkdir -p "$$KBUILD/ports/lwip/src/netif"; \
+			cp ports/lwip/src/netif/ethernet.c "$$KBUILD/ports/lwip/src/netif/"; \
+			mkdir -p "$$KBUILD/scripts"; \
+			cp scripts/kernel.ld "$$KBUILD/scripts/"; \
+			cp scripts/Makefile.kernel-native "$$KBUILD/Makefile"; \
+			python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG); \
+		fi
 
 $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_IMG)
 	rm -rf iso_root
@@ -348,6 +384,9 @@ muslbusyboxsmoke: $(ISO)
 muslbusyboxenvshowsmoke: $(ISO)
 	bash ./tests/musl_busybox_envshow_smoke.sh $(ISO)
 
+dynlinkrealappsmoke: $(RETROFS_ISO)
+	bash ./tests/dynlink_realapp_smoke.sh $(RETROFS_ISO)
+
 vmsyscallsmoke: $(ISO)
 	bash ./tests/vm_syscall_smoke.sh $(ISO)
 
@@ -359,6 +398,30 @@ signalsyscallsmoke: $(ISO)
 
 ftruncsavesmoke: $(ISO)
 	bash ./tests/ftruncate_save_smoke.sh $(ISO)
+
+virtionetirqsmoke: $(ISO)
+	bash ./tests/virtio_net_irq_smoke.sh $(ISO)
+
+virtioblkinflightsmoke: $(ISO)
+	bash ./tests/virtio_blk_inflight_smoke.sh $(ISO)
+
+virtioq35smoke: $(ISO)
+	bash ./tests/virtio_q35_msix_smoke.sh $(ISO)
+
+irqbottomhalfstresssmoke: $(ISO)
+	bash ./tests/irq_bottom_half_stress_smoke.sh $(ISO)
+
+irqbottomhalfsmpstresssmoke: $(ISO)
+	bash ./tests/irq_bottom_half_smp_stress_smoke.sh $(ISO)
+
+finalsmokesuite:
+	bash ./tests/final_smoke_suite.sh
+
+nativekernelbuildsmoke: $(RETROFS_ISO)
+	bash ./tests/native_kernel_build_smoke.sh $(RETROFS_ISO)
+
+nativekernelbootsmoke: $(RETROFS_ISO)
+	bash ./tests/native_kernel_boot_smoke.sh $(RETROFS_ISO)
 
 smprun: $(ISO)
 	bash ./run_qemu_stdio.sh \

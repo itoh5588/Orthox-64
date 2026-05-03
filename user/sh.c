@@ -15,6 +15,10 @@
 #endif
 #include "syscall.h"
 
+#ifndef ORTHOS_SH_ENABLE_USB
+#define ORTHOS_SH_ENABLE_USB 1
+#endif
+
 extern int scandir(const char*, struct dirent***,
                    int (*)(const struct dirent*),
                    int (*)(const struct dirent**, const struct dirent**));
@@ -34,12 +38,14 @@ extern int scandir(const char*, struct dirent***,
 #endif
 
 extern char **environ;
+#if ORTHOS_SH_ENABLE_USB
 static uint8_t g_usb_read_buf[4096];
 static uint8_t g_usb_dir_bufs[8][4096];
 static int g_usb_dir_buf_depth = 0;
+#endif
 static struct orth_dirent g_dirents_buf[16];
 static char g_cwd[256] = "/";
-static char g_env_path[] = "PATH=/bin:/:/usr/bin:/boot";
+static char g_env_path[] = "PATH=/usr/bin:/bin:/:/boot";
 static char g_env_pwd[320] = "PWD=/";
 static char g_env_home[] = "HOME=/";
 static char* g_initial_envp[] = { g_env_path, g_env_pwd, g_env_home, NULL };
@@ -53,18 +59,28 @@ static int g_history_next = 0;
 static const char* g_builtin_names[] = {
     "pwd", "cd", "ls", "cat", "stat", "sync", "touch", "history",
     "mount", "muslcheck", "writecheck", "dircheck", "scandircheck",
-    "globcheck", "usb", "exit", NULL
+    "globcheck",
+#if ORTHOS_SH_ENABLE_USB
+    "usb",
+#endif
+    "exit", NULL
 };
 
 static void shell_restore_foreground(void);
+static void shell_init_job_control(void);
 static int run_pipeline_or_redirect(int argc, char** args);
+static int run_shell_command_once(char* line);
+static int run_extended_builtin(int argc, char** args);
 static void run_write_check(const char* path);
 static void run_dir_check(const char* path);
 static void run_scandir_check(const char* path);
 static void run_glob_check(const char* pattern);
 static void run_musl_check(void);
 static void resolve_shell_path(const char* path, char* out, size_t out_size);
+static int shell_exec_external(char* const argv[]);
+static void shell_debug_exec_args(int argc, char** argv);
 
+#if ORTHOS_SH_ENABLE_USB
 static int usb_read_blocks_safe(uint32_t lba, void* buf, uint32_t count) {
     uint8_t* dst = (uint8_t*)buf;
     for (uint32_t done = 0; done < count; done++) {
@@ -110,6 +126,7 @@ struct fat_lfn_state {
     char name[256];
     int valid;
 };
+#endif
 
 static void shell_write_str(const char* s) {
     if (!s) return;
@@ -118,21 +135,22 @@ static void shell_write_str(const char* s) {
 
 static void render_line(const char* prompt, const char* buf, int len, int cursor, int* rendered_len) {
     char seq[32];
-    int total_len = len;
+    int visible_len = len;
     if (!prompt) prompt = "";
     write(1, "\r", 1);
     shell_write_str(prompt);
     if (len > 0) write(1, buf, len);
-    if (rendered_len && *rendered_len > total_len) {
-        int extra = *rendered_len - total_len;
+    if (rendered_len && *rendered_len > visible_len) {
+        int extra = *rendered_len - visible_len;
         for (int i = 0; i < extra; i++) write(1, " ", 1);
+        visible_len += extra;
     }
     shell_write_str("\x1b[K");
-    if (len > cursor) {
-        snprintf(seq, sizeof(seq), "\x1b[%dD", len - cursor);
+    if (visible_len > cursor) {
+        snprintf(seq, sizeof(seq), "\x1b[%dD", visible_len - cursor);
         shell_write_str(seq);
     }
-    if (rendered_len) *rendered_len = total_len;
+    if (rendered_len) *rendered_len = len;
 }
 
 static void history_store(const char* line) {
@@ -442,8 +460,8 @@ static void get_line(const char* prompt, char* buf, int size) {
                 memmove(&buf[cursor - 1], &buf[cursor], (size_t)(len - cursor + 1));
                 cursor--;
                 len--;
-                render_line(prompt, buf, len, cursor, &rendered_len);
             }
+            render_line(prompt, buf, len, cursor, &rendered_len);
             continue;
         }
         if ((unsigned char)c == 0x1b) {
@@ -578,7 +596,7 @@ static void sync_shell_env(void) {
     g_env_pwd[i + 4] = '\0';
 }
 
-
+#if ORTHOS_SH_ENABLE_USB
 static int usb_get_first_partition(uint32_t* start, uint32_t* sectors) {
     uint8_t *e;
     for (int attempt = 0; attempt < USB_READ_RETRIES; attempt++) {
@@ -852,6 +870,7 @@ static const char* usb_strip_mount_prefix(const char* path) {
     if (strncmp(path, "usb/", 4) == 0) return path + 4;
     return 0;
 }
+#endif
 
 static int print_dir_listing(const char* path) {
     int fd;
@@ -1000,11 +1019,190 @@ static int run_command_child(int argc, char** args) {
         return builtin;
     }
     args[argc] = NULL;
-    execvp(args[0], args);
-    perror("execvp");
+    if (shell_exec_external(args) < 0) {
+        perror(args[0]);
+    }
     fflush(stdout);
     fflush(stderr);
     return 1;
+}
+
+static int shell_exec_external(char* const argv[]) {
+    const char* path_env;
+    const char* path_scan;
+    int saved_errno = ENOENT;
+    if (!argv || !argv[0] || !argv[0][0]) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (strchr(argv[0], '/')) {
+        execve(argv[0], argv, environ);
+        return -1;
+    }
+
+    path_env = getenv("PATH");
+    if (!path_env || !path_env[0]) path_env = "/bin:/usr/bin:/";
+    path_scan = path_env;
+
+    while (1) {
+        char candidate[256];
+        const char* next = strchr(path_scan, ':');
+        size_t entry_len = next ? (size_t)(next - path_scan) : strlen(path_scan);
+
+        if (entry_len == 0) {
+            snprintf(candidate, sizeof(candidate), "./%s", argv[0]);
+        } else if (entry_len == 1 && path_scan[0] == '/') {
+            snprintf(candidate, sizeof(candidate), "/%s", argv[0]);
+        } else {
+            int n = snprintf(candidate, sizeof(candidate), "%.*s/%s", (int)entry_len, path_scan, argv[0]);
+            if (n < 0 || (size_t)n >= sizeof(candidate)) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+        }
+
+        execve(candidate, argv, environ);
+        if (errno != ENOENT && errno != ENOTDIR) {
+            saved_errno = errno;
+        }
+
+        if (!next) break;
+        path_scan = next + 1;
+    }
+
+    errno = saved_errno;
+    return -1;
+}
+
+static void shell_debug_exec_args(int argc, char** argv) {
+    const char* debug = getenv("ORTHOS_SH_DEBUG");
+    if (!debug || strcmp(debug, "0") == 0) return;
+    printf("[sh.debug] argc=%d\n", argc);
+    for (int i = 0; i < argc; i++) {
+        printf("[sh.debug] argv[%d]='%s'\n", i, argv[i] ? argv[i] : "(null)");
+    }
+}
+
+static int wait_status_to_exit_code(int status) {
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 1;
+}
+
+static int run_shell_command_once(char* line) {
+    char expanded[MAX_LINE];
+    if (!line || strlen(line) == 0) return 0;
+    if (strcmp(line, "exit") == 0) return 0;
+    if (line[0] == '!') {
+        if (history_expand(line, expanded, sizeof(expanded)) < 0) {
+            printf("history: event not found: %s\n", line);
+            return 1;
+        }
+        line = expanded;
+    }
+
+    char *args[MAX_ARGS];
+    int argc = 0;
+    char *token = strtok(line, " ");
+    while (token && argc < MAX_ARGS - 1) {
+        args[argc++] = token;
+        token = strtok(NULL, " ");
+    }
+    args[argc] = NULL;
+
+    if (argc == 0 || args[0] == NULL) {
+        return 0;
+    }
+
+    {
+        int special = run_pipeline_or_redirect(argc, args);
+        if (special != -2) return special;
+    }
+
+    {
+        int builtin = run_builtin(argc, args);
+        if (builtin >= 0) return builtin;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        (void)setpgid(0, 0);
+        exit(run_command_child(argc, args));
+    } else if (pid > 0) {
+        int status;
+        (void)setpgid(pid, pid);
+        (void)tcsetpgrp(0, pid);
+        if (waitpid(pid, &status, 0) < 0) {
+            perror("waitpid");
+            shell_restore_foreground();
+            return 1;
+        }
+        shell_restore_foreground();
+        return wait_status_to_exit_code(status);
+    }
+
+    perror("fork");
+    return 1;
+}
+
+static void shell_setup_environment(void) {
+    setenv("PATH", "/bin:/:/usr/bin:/boot", 1);
+    setenv("HOME", "/", 1);
+    sync_shell_cwd();
+    sync_shell_env();
+    setenv("PWD", g_cwd, 1);
+    shell_init_job_control();
+}
+
+static int run_extended_builtin(int argc, char** args) {
+    if (strcmp(args[0], "mount") == 0) {
+        char status[256];
+        if (argc == 1) {
+            if (get_mount_status(status, sizeof(status)) == 0) {
+                printf("%s\n", status);
+            } else {
+                printf("mount: status unavailable\n");
+            }
+            return 0;
+        }
+        if (argc >= 2 && strcmp(args[1], "module") == 0) {
+            if (mount_module_root() == 0) {
+                sync_shell_cwd();
+                printf("mount: root switched to boot module image\n");
+            } else {
+                printf("mount: failed to switch root to module\n");
+            }
+            return 0;
+        }
+        printf("mount: usage: mount [module]\n");
+        return 0;
+    }
+
+    if (strcmp(args[0], "muslcheck") == 0) {
+        run_musl_check();
+        return 0;
+    }
+    if (strcmp(args[0], "writecheck") == 0) {
+        run_write_check((argc >= 2) ? args[1] : "scratch.txt");
+        return 0;
+    }
+
+    if (strcmp(args[0], "dircheck") == 0) {
+        run_dir_check((argc >= 2) ? args[1] : "/");
+        return 0;
+    }
+
+    if (strcmp(args[0], "scandircheck") == 0) {
+        run_scandir_check((argc >= 2) ? args[1] : "/");
+        return 0;
+    }
+
+    if (strcmp(args[0], "globcheck") == 0) {
+        run_glob_check((argc >= 2) ? args[1] : "/usb/*");
+        return 0;
+    }
+
+    return -1;
 }
 
 static void run_shell_line(char* line) {
@@ -1042,54 +1240,13 @@ static void run_shell_line(char* line) {
         if (builtin >= 0) return;
     }
 
-    if (strcmp(args[0], "mount") == 0) {
-        char status[256];
-        if (argc == 1) {
-            if (get_mount_status(status, sizeof(status)) == 0) {
-                printf("%s\n", status);
-            } else {
-                printf("mount: status unavailable\n");
-            }
-            return;
-        }
-        if (argc >= 2 && strcmp(args[1], "module") == 0) {
-            if (mount_module_root() == 0) {
-                sync_shell_cwd();
-                printf("mount: root switched to boot module image\n");
-            } else {
-                printf("mount: failed to switch root to module\n");
-            }
-            return;
-        }
-        printf("mount: usage: mount [module]\n");
-        return;
-    }
-
-    if (strcmp(args[0], "muslcheck") == 0) {
-        run_musl_check();
-        return;
-    }
-    if (strcmp(args[0], "writecheck") == 0) {
-        run_write_check((argc >= 2) ? args[1] : "scratch.txt");
-        return;
-    }
-
-    if (strcmp(args[0], "dircheck") == 0) {
-        run_dir_check((argc >= 2) ? args[1] : "/");
-        return;
-    }
-
-    if (strcmp(args[0], "scandircheck") == 0) {
-        run_scandir_check((argc >= 2) ? args[1] : "/");
-        return;
-    }
-
-    if (strcmp(args[0], "globcheck") == 0) {
-        run_glob_check((argc >= 2) ? args[1] : "/usb/*");
-        return;
+    {
+        int extended = run_extended_builtin(argc, args);
+        if (extended >= 0) return;
     }
 
     if (strcmp(args[0], "usb") == 0) {
+#if ORTHOS_SH_ENABLE_USB
         if (argc >= 2 && strcmp(args[1], "mbr") == 0) {
             if (usb_read_block_sys(0, g_usb_read_buf, 1) < 0) {
                 printf("usb: failed to read MBR\n");
@@ -1306,6 +1463,9 @@ static void run_shell_line(char* line) {
         }
         int ready = usb_info();
         printf("usb: xhci %s\n", (ready > 0) ? "ready" : "not-ready");
+#else
+        printf("usb: disabled in this build\n");
+#endif
         return;
     }
 
@@ -1590,17 +1750,26 @@ static void try_autostart_saba(void) {
     perror("execve /bin/saba");
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc >= 3 && (strcmp(argv[1], "-c") == 0 || strcmp(argv[1], "-ec") == 0 || strcmp(argv[1], "-ce") == 0)) {
+        char* line = strdup(argv[2]);
+        int rc;
+        if (!line) {
+            perror("strdup");
+            return 1;
+        }
+        shell_debug_exec_args(argc, argv);
+        shell_setup_environment();
+        rc = run_shell_command_once(line);
+        free(line);
+        return rc;
+    }
+
     printf("Welcome to Orthox-64 Shell!\n");
     run_musl_check();
     
     // 初期シェルとして環境変数をセットアップ
-    setenv("PATH", "/bin:/:/usr/bin:/boot", 1);
-    setenv("HOME", "/", 1);
-    sync_shell_cwd();
-    sync_shell_env();
-    setenv("PWD", g_cwd, 1);
-    shell_init_job_control();
+    shell_setup_environment();
     try_run_bootcmd();
     // try_autostart_saba();
 

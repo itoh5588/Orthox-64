@@ -2,6 +2,7 @@
 #define ELF64_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef uint64_t Elf64_Addr;
 typedef uint64_t Elf64_Off;
@@ -46,7 +47,14 @@ typedef struct {
 #define ELFMAG        "\177ELF"
 
 #define PT_LOAD       1
+#define PT_DYNAMIC    2
+#define PT_INTERP     3
 #define PT_TLS        7
+
+#define ET_NONE       0
+#define ET_REL        1
+#define ET_EXEC       2
+#define ET_DYN        3
 
 // セグメントフラグ
 #define PF_X          1
@@ -60,6 +68,11 @@ struct elf_info {
     uint64_t phdr_vaddr;
     uint64_t phent;
     uint64_t phnum;
+    uint64_t load_bias;
+    // インタープリタ情報
+    char interp_path[256];
+    bool has_interp;
+    uint16_t type; // e_type
     // TLS 情報
     uint64_t tls_vaddr;
     uint64_t tls_filesz;
@@ -68,6 +81,6 @@ struct elf_info {
 };
 
 // elf_load の返り値を構造体に
-struct elf_info elf_load(uint64_t* pml4, void* elf_data);
+struct elf_info elf_load(uint64_t* pml4, void* elf_data, uint64_t load_bias);
 
 #endif

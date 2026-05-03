@@ -2,16 +2,6 @@
 set -euo pipefail
 
 ISO="${1:-orthos-retrofs.iso}"
-RETROFS_CMDS="$(cat <<'EOF'
-ls /
-/bin/retrofsbasic
-/bin/retrofsedge
-/bin/musldircheck
-/bin/pyenccheck
-ls /bin
-ls /lib/python3.12
-EOF
-)"
 export RETROFS_CMDS="/bin/ash /etc/native-python-smoke.sh"
 export RETROFS_SETTLE_SECONDS="${RETROFS_SETTLE_SECONDS:-20}"
 export GUEST_SMOKE_BODY="$(cat <<'EOF'

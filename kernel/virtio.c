@@ -52,3 +52,12 @@ void virtio_kick(uint16_t iobase, uint16_t queue_index) {
     __sync_synchronize();
     outw((uint16_t)(iobase + VIRTIO_PCI_QUEUE_NOTIFY), queue_index);
 }
+
+void virtio_set_queue_msix_vector(uint16_t iobase, uint16_t queue_index, uint16_t vector) {
+    outw((uint16_t)(iobase + VIRTIO_PCI_QUEUE_SEL), queue_index);
+    outw((uint16_t)(iobase + VIRTIO_PCI_QUEUE_VECTOR), vector);
+}
+
+void virtio_disable_config_msix_vector(uint16_t iobase) {
+    outw((uint16_t)(iobase + VIRTIO_PCI_CONFIG_VECTOR), VIRTIO_MSI_NO_VECTOR);
+}

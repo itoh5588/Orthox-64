@@ -33,6 +33,8 @@ void idt_set_gate(uint8_t num, void* handler, uint8_t ist, uint8_t type);
 #define INT_VECTOR_KEYBOARD   33
 #define INT_VECTOR_SERIAL     36
 #define INT_VECTOR_RESCHED    48
+#define INT_VECTOR_MSI_BASE   49
+#define INT_VECTOR_MSI_END    64
 #define INT_VECTOR_PIC_BASE   32
 
 // type_attributes の定義

@@ -56,6 +56,13 @@ ports/test.cpp
 **/*.a
 **/*.tar.gz
 **/*.tar.bz2
-Docs/
+#Docs/
 tests/binutils_test/README.md
 user/doomgeneric/
+rootfs/src/kernel-build/
+rootfs/tmp/kbuild/
+native-kernel.elf
+native-kernel-boot.iso
+native-kernel-boot-serial.log
+native-kernel-boot-build.log
+kernel-output.img

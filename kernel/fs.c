@@ -11,6 +11,7 @@
 #include "vfs.h"
 #include "retrofs.h"
 #include "string.h"
+#include "virtio_blk.h"
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -50,6 +51,9 @@ extern void puthex(uint64_t v);
 #endif
 #ifndef EROFS
 #define EROFS 30
+#endif
+#ifndef ENOSPC
+#define ENOSPC 28
 #endif
 
 static void pipe_wake_task(struct task* waiter) {
@@ -712,13 +716,13 @@ static int fat_resolve_path(const char* path, struct fat_dir_entry_info* out) {
     return 0;
 }
 
-#define MAX_RAMFS_FILES 16
-#define RAMFS_FILE_SIZE (1024 * 1024)
+#define MAX_RAMFS_FILES 256
 
 struct ramfs_file {
     char name[64];
     uint8_t* data;
     size_t size;
+    size_t capacity;
     uint32_t mode;
     uint32_t uid;
     uint32_t gid;
@@ -1100,6 +1104,23 @@ void fs_init(void) {
     vfs_register_mountpoint("usb", VFS_MOUNT_USB_FAT, 0);
 }
 
+static int ramfs_grow(struct ramfs_file* rf, size_t needed) {
+    if (needed <= rf->capacity) return 0;
+    size_t new_cap = rf->capacity ? rf->capacity * 2 : (size_t)PAGE_SIZE;
+    while (new_cap < needed) new_cap *= 2;
+    void* phys = pmm_alloc((int)(new_cap / PAGE_SIZE));
+    if (!phys) return -1;
+    uint8_t* nd = (uint8_t*)PHYS_TO_VIRT(phys);
+    for (size_t i = 0; i < new_cap; i++) nd[i] = 0;
+    if (rf->data) {
+        for (size_t i = 0; i < rf->size; i++) nd[i] = rf->data[i];
+        pmm_free((void*)VIRT_TO_PHYS((uint64_t)rf->data), (int)(rf->capacity / PAGE_SIZE));
+    }
+    rf->data = nd;
+    rf->capacity = new_cap;
+    return 0;
+}
+
 static struct ramfs_file* find_ramfs(const char* name) {
     for (int i = 0; i < MAX_RAMFS_FILES; i++) {
         if (ramfs_table[i].in_use && strcmp_exact(ramfs_table[i].name, name)) {
@@ -1118,15 +1139,9 @@ static struct ramfs_file* create_ramfs(const char* name, uint32_t mode) {
                 if (name[j] == '\0') break;
             }
             ramfs_table[i].name[63] = '\0';
-            void* phys = pmm_alloc(RAMFS_FILE_SIZE / PAGE_SIZE);
-            if (!phys) {
-                ramfs_table[i].in_use = 0;
-                ramfs_table[i].name[0] = '\0';
-                return NULL;
-            }
-            ramfs_table[i].data = (uint8_t*)PHYS_TO_VIRT(phys);
-            for (size_t j = 0; j < RAMFS_FILE_SIZE; j++) ramfs_table[i].data[j] = 0;
+            ramfs_table[i].data = NULL;
             ramfs_table[i].size = 0;
+            ramfs_table[i].capacity = 0;
             ramfs_table[i].mode = KSTAT_MODE_FILE | (mode & 07777U);
             ramfs_table[i].uid = 0;
             ramfs_table[i].gid = 0;
@@ -1403,6 +1418,28 @@ int sys_open(const char* path, int flags, int mode) {
         return fd;
     }
 
+    /* /dev/kout: raw write-only output device (second virtio-blk) */
+    if (path[0]=='d' && path[1]=='e' && path[2]=='v' && path[3]=='/' &&
+        path[4]=='k' && path[5]=='o' && path[6]=='u' && path[7]=='t' && path[8]=='\0') {
+        fs_file_t* file = fs_alloc_file();
+        if (!file) return -1;
+        file->type = FT_RAWDEV;
+        file->size = 0;
+        file->offset = 0;
+        file->ops = 0;
+        file->private_data = 0;
+        file->path[0] = '\0';
+        current->fds[fd].type = FT_RAWDEV;
+        current->fds[fd].file = file;
+        current->fds[fd].data = 0;
+        current->fds[fd].size = 0;
+        current->fds[fd].offset = 0;
+        current->fds[fd].in_use = 1;
+        current->fds[fd].flags = flags;
+        current->fds[fd].name[0] = '\0';
+        return fd;
+    }
+
     if (want_creat) {
         rf = create_ramfs(path, (uint32_t)mode);
         if (rf) {
@@ -1566,6 +1603,13 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         return net_socket_write_fd(f, buf, count);
     }
 
+    if (fs_fd_type(f) == FT_RAWDEV) {
+        size_t off = fs_fd_offset(f);
+        if (virtio_kout_write_raw((uint64_t)off, buf, count) < 0) return -1;
+        fs_fd_set_offset(f, off + count);
+        return (int64_t)count;
+    }
+
     if (fs_fd_type(f) == FT_RETROFS) {
         size_t offset_now = fs_fd_offset(f);
         if (retrofs_write_file(fs_fd_name(f), offset_now, buf, count) == 0) {
@@ -1579,23 +1623,24 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
     }
 
     if (fs_fd_type(f) != FT_RAMFS) return -1;
-    if (fs_fd_offset(f) >= RAMFS_FILE_SIZE) return -EFBIG;
-    if (fs_fd_offset(f) + count > RAMFS_FILE_SIZE) count = RAMFS_FILE_SIZE - fs_fd_offset(f);
-    if (count == 0) return -EFBIG;
-    uint8_t* dest = (uint8_t*)fs_fd_data(f) + fs_fd_offset(f);
-    const uint8_t* src = (const uint8_t*)buf;
-    for (size_t i = 0; i < count; i++) dest[i] = src[i];
-    fs_fd_set_offset(f, fs_fd_offset(f) + count);
-    if (fs_fd_offset(f) > fs_fd_size(f)) {
-        fs_fd_set_size(f, fs_fd_offset(f));
-        struct ramfs_file* rf = find_ramfs(fs_fd_name(f));
-        if (rf) {
-            rf->size = fs_fd_size(f);
-            rf->mtime_sec = fs_now_sec();
-            rf->ctime_sec = rf->mtime_sec;
+    {
+        struct ramfs_file* rf_w = find_ramfs(fs_fd_name(f));
+        if (!rf_w || !rf_w->in_use) return -ENOENT;
+        size_t off_w = fs_fd_offset(f);
+        if (ramfs_grow(rf_w, off_w + count) < 0) return -ENOSPC;
+        if (f->file) f->file->private_data = rf_w->data;
+        uint8_t* dest = rf_w->data + off_w;
+        const uint8_t* src = (const uint8_t*)buf;
+        for (size_t i = 0; i < count; i++) dest[i] = src[i];
+        fs_fd_set_offset(f, off_w + count);
+        if (off_w + count > rf_w->size) {
+            rf_w->size = off_w + count;
+            fs_fd_set_size(f, rf_w->size);
+            rf_w->mtime_sec = fs_now_sec();
+            rf_w->ctime_sec = rf_w->mtime_sec;
         }
+        return (int64_t)count;
     }
-    return (int64_t)count;
 }
 
 int sys_ftruncate(int fd, uint64_t length) {
@@ -1609,11 +1654,9 @@ int sys_ftruncate(int fd, uint64_t length) {
     if (fs_fd_type(f) == FT_RAMFS) {
         struct ramfs_file* rf = find_ramfs(fs_fd_name(f));
         if (!rf) return -ENOENT;
-        if (length > RAMFS_FILE_SIZE) return -EFBIG;
         if (length > rf->size) {
-            for (size_t i = rf->size; i < (size_t)length; i++) {
-                rf->data[i] = 0;
-            }
+            if (ramfs_grow(rf, (size_t)length) < 0) return -ENOSPC;
+            if (f->file) f->file->private_data = rf->data;
         }
         rf->size = (size_t)length;
         rf->mtime_sec = fs_now_sec();
@@ -1644,11 +1687,8 @@ int sys_truncate(const char* path, uint64_t length) {
 
     rf = find_ramfs(norm);
     if (rf) {
-        if (length > RAMFS_FILE_SIZE) return -EFBIG;
         if (length > rf->size) {
-            for (size_t i = rf->size; i < (size_t)length; i++) {
-                rf->data[i] = 0;
-            }
+            if (ramfs_grow(rf, (size_t)length) < 0) return -ENOSPC;
         }
         rf->size = (size_t)length;
         rf->mtime_sec = fs_now_sec();
@@ -2285,13 +2325,13 @@ int sys_unlink(const char* path) {
         if (ramfs_table[i].in_use && strcmp_exact(ramfs_table[i].name, path)) {
             if ((ramfs_table[i].mode & 0170000U) == KSTAT_MODE_DIR) return -1;
             ramfs_table[i].in_use = 0;
-            if (ramfs_table[i].data) {
-                // 16ページ確保していたものを解放
+            if (ramfs_table[i].data && ramfs_table[i].capacity) {
                 void* phys_addr = (void*)VIRT_TO_PHYS((uint64_t)ramfs_table[i].data);
-                pmm_free(phys_addr, RAMFS_FILE_SIZE / PAGE_SIZE);
+                pmm_free(phys_addr, (int)(ramfs_table[i].capacity / PAGE_SIZE));
                 ramfs_table[i].data = NULL;
             }
             ramfs_table[i].size = 0;
+            ramfs_table[i].capacity = 0;
             ramfs_table[i].mode = 0;
             ramfs_table[i].uid = 0;
             ramfs_table[i].gid = 0;
@@ -2357,7 +2397,6 @@ int sys_mkdir(const char* path, int mode) {
     norm = normalize_fs_path(resolved_path);
     if (*norm == '\0') return -1;
 
-    if (contains_char(norm, '/')) return -1;
     if (find_ramfs(norm)) return -1;
     return create_ramfs_dir(norm, (uint32_t)mode) ? 0 : -1;
 }
@@ -2496,6 +2535,22 @@ int fs_get_file_data(const char* path, void** data, size_t* size) {
         }
     }
     return -1;
+}
+
+/* Free a buffer returned by fs_get_file_data if it was heap-allocated.
+ * RAMFS and module pointers are not freed (they are not owned by the caller).
+ * Only retrofs buffers (allocated by fs_try_active_root_lookup) need freeing. */
+void fs_free_exec_buffer(const char* path, void* data, size_t size) {
+    if (!data || size == 0) return;
+    /* Normalize the path the same way fs_get_file_data does. */
+    char resolved[256];
+    resolve_task_path(path, resolved, sizeof(resolved));
+    const char* norm = normalize_fs_path(resolved);
+    /* If the file lives in RAMFS, the data pointer belongs to the RAMFS table. */
+    if (find_ramfs(norm)) return;
+    /* Otherwise it was allocated by fs_try_active_root_lookup — free it. */
+    size_t pages = (size + PAGE_SIZE - 1U) / PAGE_SIZE;
+    if (pages) pmm_free((void*)VIRT_TO_PHYS((uint64_t)data), (int)pages);
 }
 
 void sys_ls(void) {

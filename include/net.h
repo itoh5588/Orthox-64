@@ -7,6 +7,7 @@ typedef void (*net_rx_handler_t)(const uint8_t* frame, uint16_t len);
 
 void net_init(void);
 void net_poll(void);
+int net_needs_poll_fallback(void);
 int net_is_ready(void);
 int net_send_frame(const void* frame, uint16_t len);
 const uint8_t* net_get_mac(void);

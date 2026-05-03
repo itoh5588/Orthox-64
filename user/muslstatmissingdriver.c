@@ -4,7 +4,7 @@
 
 extern char **environ;
 
-static char g_env_path[] = "PATH=/bin:/:/usr/bin:/boot";
+static char g_env_path[] = "PATH=/usr/bin:/bin:/:/boot";
 static char g_env_pwd[] = "PWD=/";
 static char g_env_home[] = "HOME=/";
 static char *g_envp[] = { g_env_path, g_env_pwd, g_env_home, NULL };

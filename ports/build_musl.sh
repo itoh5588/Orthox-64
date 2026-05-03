@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${1:-$ROOT/ports/musl}"
 OUT="${2:-$ROOT/ports/musl-install}"
-TARGET="x86_64-elf"
+TARGET="x86_64-linux-musl"
 
 if [ ! -d "$SRC" ]; then
   echo "musl source not found: $SRC" >&2
@@ -15,16 +15,16 @@ fi
 mkdir -p "$OUT"
 cd "$SRC"
 
-CC="clang -target $TARGET -ffreestanding -fno-PIE"
-AR="x86_64-elf-ar"
-RANLIB="x86_64-elf-ranlib"
+CC="clang -target $TARGET -ffreestanding -fno-PIE -fuse-ld=lld"
+AR="$(command -v x86_64-elf-ar || echo ar)"
+RANLIB="$(command -v x86_64-elf-ranlib || echo ranlib)"
 
 ./configure \
   --target="$TARGET" \
   --prefix="$OUT" \
-  --syslibdir="$OUT/libs" \
-  --disable-shared \
+  --syslibdir="$OUT/lib" \
+  --enable-shared \
   CC="$CC" AR="$AR" RANLIB="$RANLIB"
 
-make -j"$(sysctl -n hw.ncpu)"
+make -j"$(nproc 2>/dev/null || echo 1)"
 make install
