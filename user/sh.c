@@ -1766,8 +1766,6 @@ int main(int argc, char** argv) {
     }
 
     printf("Welcome to Orthox-64 Shell!\n");
-    run_musl_check();
-    
     // 初期シェルとして環境変数をセットアップ
     shell_setup_environment();
     try_run_bootcmd();

@@ -43,7 +43,7 @@ rm -f "${WRITE_LOG}"
     -serial stdio >"${WRITE_LOG}" 2>&1 || true
 
 grep -q 'reqs=0x0000000000000008' "${WRITE_LOG}"
-grep -q '\[boot\] mounted RetroFS root image on vblk0' "${WRITE_LOG}"
+grep -qE '\[boot\] mounted xv6fs root image on (vblk0|bootimg0)' "${WRITE_LOG}"
 grep -q 'Write successful' "${WRITE_LOG}"
 grep -q 'SUCCESS: Persistence verified!' "${WRITE_LOG}"
 

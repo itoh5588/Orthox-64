@@ -16,7 +16,7 @@
 #include "pci.h"
 #include "fs.h"
 #include "net.h"
-#include "retrofs.h"
+#include "xv6fs.h"
 #include "storage.h"
 #include "virtio_blk.h"
 #include "usb.h"
@@ -194,20 +194,20 @@ static void register_virtio_blk_image(void) {
         uint64_t capacity = virtio_blk_capacity();
         if (storage_register_device("vblk0", 512, capacity, virtio_blk_storage_read, virtio_blk_storage_write, NULL, 0) == 0) {
             puts("[boot] registered virtio-blk as vblk0\r\n");
-            if (retrofs_mount_storage("vblk0") == 0) {
-                puts("[boot] mounted RetroFS root image on vblk0\r\n");
-                if (fs_mount_retrofs_root() == 0) {
-                    puts("[boot] switched root source to RetroFS (vblk0)\r\n");
+            if (xv6fs_mount_storage("vblk0") == 0) {
+                puts("[boot] mounted xv6fs root image on vblk0\r\n");
+                if (fs_mount_xv6fs_root() == 0) {
+                    puts("[boot] switched root source to xv6fs (vblk0)\r\n");
                 }
             } else {
-                puts("[boot] vblk0 is not RetroFS\r\n");
+                puts("[boot] vblk0 is not xv6fs\r\n");
             }
         }
     }
 }
 
 static void register_boot_rootfs_image(void) {
-    if (storage_find_device("vblk0")) return; // Already mounted vblk0
+    if (xv6fs_is_mounted()) return; // vblk0 で xv6fs マウント済みならスキップ
     struct limine_file* img = find_module_by_suffix("rootfs.img");
     uint64_t blocks;
     if (!img) return;
@@ -218,13 +218,13 @@ static void register_boot_rootfs_image(void) {
     blocks = img->size / 512U;
     if (storage_register_memory_device("bootimg0", img->address, 512U, blocks, 0) == 0) {
         puts("[boot] registered rootfs.img as storage device bootimg0\r\n");
-        if (retrofs_mount_storage("bootimg0") == 0) {
-            puts("[boot] mounted RetroFS root image on bootimg0\r\n");
-            if (fs_mount_retrofs_root() == 0) {
-                puts("[boot] switched root source to RetroFS\r\n");
+        if (xv6fs_mount_storage("bootimg0") == 0) {
+            puts("[boot] mounted xv6fs root image on bootimg0\r\n");
+            if (fs_mount_xv6fs_root() == 0) {
+                puts("[boot] switched root source to xv6fs\r\n");
             }
         } else {
-            puts("[boot] rootfs.img is not RetroFS yet\r\n");
+            puts("[boot] rootfs.img is not xv6fs\r\n");
         }
     } else {
         puts("[boot] failed to register rootfs.img storage device\r\n");

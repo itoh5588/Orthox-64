@@ -100,8 +100,8 @@ DOOM_MUSL_ELF = user/doomgeneric.elf
 BUSYBOX_ASH_MUSL_ELF = user/busybox-ash.elf
 BUSYBOX_ASH_APPLETS = ash sh busybox cat chmod cp echo env false head httpd ls mkdir mv printenv printf pwd rm rmdir stat tail test touch true wc
 ISO = orthos.iso
-RETROFS_ISO = orthos-retrofs.iso
 ROOTFS_IMG = rootfs.img
+XV6FS_IMG  = rootfs-xv6.img
 ROOTFS_FILES = $(shell find rootfs -type f 2>/dev/null)
 ROOTFS_REBUILD ?= 1
 ROOTFS_VBLK_ARGS = -drive if=none,id=rootfs,file=$(ROOTFS_IMG),format=raw -device virtio-blk-pci,drive=rootfs
@@ -109,7 +109,7 @@ ROOTFS_VBLK_ARGS = -drive if=none,id=rootfs,file=$(ROOTFS_IMG),format=raw -devic
 # ソース
 SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
        kernel/vmm.c kernel/idt.c kernel/interrupt.S kernel/lapic.c kernel/sound.c kernel/syscall.c kernel/sys_time.c kernel/sys_signal.c kernel/sys_vm.c kernel/sys_proc.c kernel/syscall_entry.S \
-       kernel/task.c kernel/task_exec.c kernel/task_fork.c kernel/sched.c kernel/wait.c kernel/bottom_half.c kernel/irq.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/retrofs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio.c kernel/virtio_net.c kernel/virtio_blk.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
+       kernel/task.c kernel/task_exec.c kernel/task_fork.c kernel/sched.c kernel/wait.c kernel/bottom_half.c kernel/irq.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/xv6bio.c kernel/xv6log.c kernel/xv6fs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio.c kernel/virtio_net.c kernel/virtio_blk.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
 
 LWIP_CORE_SRCS = \
 	ports/lwip/src/core/def.c \
@@ -306,8 +306,13 @@ $(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/
 			mkdir -p "$$KBUILD/scripts"; \
 			cp scripts/kernel.ld "$$KBUILD/scripts/"; \
 			cp scripts/Makefile.kernel-native "$$KBUILD/Makefile"; \
-			python3 scripts/build_rootfs_retrofs.py rootfs $(ROOTFS_IMG); \
+			python3 scripts/build_rootfs_xv6fs.py rootfs $(ROOTFS_IMG); \
 		fi
+
+$(XV6FS_IMG): $(ROOTFS_FILES)
+	python3 scripts/build_rootfs_xv6fs.py rootfs $(XV6FS_IMG)
+
+rootfs-xv6.img: $(XV6FS_IMG)
 
 $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_IMG)
 	rm -rf iso_root
@@ -329,25 +334,6 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_IMG)
 	$(CURDIR)/limine/limine bios-install $(ISO)
 	rm -rf iso_root
 
-$(RETROFS_ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine-retrofs.conf limine/limine $(ROOTFS_IMG)
-	rm -rf iso_root
-	mkdir -p iso_root/boot/limine
-	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
-	cp $(SH_ELF) iso_root/boot/sh.elf
-	cp $(ROOTFS_IMG) iso_root/boot/rootfs.img
-	cp iso/limine-retrofs.conf iso_root/boot/limine/limine.conf
-
-	mkdir -p iso_root/EFI/BOOT
-	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
-	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
-	cp limine/BOOTIA32.EFI iso_root/EFI/BOOT/
-	xorriso -as mkisofs -v -R -r -J -b boot/limine/limine-bios-cd.bin \
-		-no-emul-boot -boot-load-size 4 -boot-info-table -hfsplus \
-		-apm-block-size 2048 --efi-boot boot/limine/limine-uefi-cd.bin \
-		-efi-boot-part --efi-boot-image --protective-msdos-label \
-		iso_root -o $(RETROFS_ISO)
-	$(CURDIR)/limine/limine bios-install $(RETROFS_ISO)
-	rm -rf iso_root
 
 run: $(ISO)
 	bash ./run_qemu_stdio.sh
@@ -360,11 +346,11 @@ persist-run: $(ISO) $(ROOTFS_IMG)
 ac97run: $(ISO)
 	bash ./run_qemu_ac97.sh
 
-ac97smoke: $(RETROFS_ISO)
-	bash ./tests/ac97_smoke.sh $(RETROFS_ISO)
+ac97smoke: $(ISO)
+	bash ./tests/ac97_smoke.sh $(ISO)
 
-doomac97smoke: $(RETROFS_ISO)
-	bash ./tests/doom_ac97_smoke.sh $(RETROFS_ISO)
+doomac97smoke: $(ISO)
+	bash ./tests/doom_ac97_smoke.sh $(ISO)
 
 musltoolchainsmoke: $(ISO)
 	bash ./tests/musl_toolchain_smoke.sh
@@ -384,8 +370,8 @@ muslbusyboxsmoke: $(ISO)
 muslbusyboxenvshowsmoke: $(ISO)
 	bash ./tests/musl_busybox_envshow_smoke.sh $(ISO)
 
-dynlinkrealappsmoke: $(RETROFS_ISO)
-	bash ./tests/dynlink_realapp_smoke.sh $(RETROFS_ISO)
+dynlinkrealappsmoke: $(ISO)
+	bash ./tests/dynlink_realapp_smoke.sh $(ISO)
 
 vmsyscallsmoke: $(ISO)
 	bash ./tests/vm_syscall_smoke.sh $(ISO)
@@ -417,11 +403,11 @@ irqbottomhalfsmpstresssmoke: $(ISO)
 finalsmokesuite:
 	bash ./tests/final_smoke_suite.sh
 
-nativekernelbuildsmoke: $(RETROFS_ISO)
-	bash ./tests/native_kernel_build_smoke.sh $(RETROFS_ISO)
+nativekernelbuildsmoke: $(ISO)
+	bash ./tests/native_kernel_build_smoke.sh $(ISO)
 
-nativekernelbootsmoke: $(RETROFS_ISO)
-	bash ./tests/native_kernel_boot_smoke.sh $(RETROFS_ISO)
+nativekernelbootsmoke: $(ISO)
+	bash ./tests/native_kernel_boot_smoke.sh $(ISO)
 
 smprun: $(ISO)
 	bash ./run_qemu_stdio.sh \

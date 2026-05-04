@@ -33,7 +33,7 @@ KERNEL_C_SRCS = \
     kernel/sys_proc.c \
     kernel/task.c kernel/task_exec.c kernel/task_fork.c kernel/sched.c \
     kernel/wait.c kernel/bottom_half.c kernel/irq.c \
-    kernel/fs.c kernel/vfs.c kernel/storage.c kernel/retrofs.c \
+    kernel/fs.c kernel/vfs.c kernel/storage.c kernel/xv6bio.c kernel/xv6log.c kernel/xv6fs.c \
     kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c \
     kernel/net_socket.c kernel/virtio.c kernel/virtio_net.c \
     kernel/virtio_blk.c kernel/lwip_port.c kernel/cstring.c \

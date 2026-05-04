@@ -9,7 +9,7 @@
 #include "spinlock.h"
 #include "storage.h"
 #include "vfs.h"
-#include "retrofs.h"
+#include "xv6fs.h"
 #include "string.h"
 #include "virtio_blk.h"
 
@@ -83,7 +83,7 @@ static void pipe_clear_waiter(struct task** waiter, struct task* task) {
 
 static int fs_fd_has_private_copy(const file_descriptor_t* fd) {
     if (!fd) return 0;
-    return fd->file == 0 && (fd->type == FT_DIR || fd->type == FT_RETROFS);
+    return fd->file == 0 && (fd->type == FT_DIR || fd->type == FT_XV6FS);
 }
 
 static fs_file_t* fs_alloc_file(void) {
@@ -118,10 +118,12 @@ static void fs_release_dir_file(fs_file_t* file) {
     }
 }
 
-static void fs_release_retrofs_file(fs_file_t* file) {
+static void fs_release_xv6fs_file(fs_file_t* file) {
     if (!file) return;
-    if (file->private_data && file->aux0) {
-        pmm_free((void*)VIRT_TO_PHYS((uint64_t)file->private_data), (int)file->aux0);
+    struct xv6fs_inode* ip = (struct xv6fs_inode*)file->private_data;
+    if (ip) {
+        xv6fs_iput(ip);
+        file->private_data = 0;
     }
 }
 
@@ -156,8 +158,8 @@ static const fs_file_ops_t g_dir_file_ops = {
     .release = fs_release_dir_file,
 };
 
-static const fs_file_ops_t g_retrofs_file_ops = {
-    .release = fs_release_retrofs_file,
+static const fs_file_ops_t g_xv6fs_file_ops = {
+    .release = fs_release_xv6fs_file,
 };
 
 static const fs_file_ops_t g_console_file_ops = {
@@ -260,7 +262,7 @@ void fs_release_fd(file_descriptor_t* fd) {
     } else {
         switch (fd->type) {
             case FT_DIR:
-            case FT_RETROFS:
+            case FT_XV6FS:
                 if (fd->data && fd->aux0) {
                     pmm_free((void*)VIRT_TO_PHYS((uint64_t)fd->data), (int)fd->aux0);
                 }
@@ -350,7 +352,8 @@ static int strcmp_suffix_fs(const char* full_path, const char* suffix) {
 }
 
 static const char* normalize_fs_path(const char* path) {
-    while (*path == '/') path++;
+    /* xv6fs は絶対パス ('/') 必須。先頭スラッシュは保持する。
+     * './' プレフィックスのみ除去（resolve_task_path 未経由パス向け）。 */
     if (path[0] == '.' && path[1] == '/') {
         path += 2;
         while (*path == '/') path++;
@@ -737,7 +740,7 @@ static struct ramfs_file ramfs_table[MAX_RAMFS_FILES];
 
 enum root_source_type {
     ROOT_SOURCE_MODULE = 0,
-    ROOT_SOURCE_RETROFS = 1,
+    ROOT_SOURCE_XV6FS  = 1,
 };
 
 #define DIR_BUF_PAGES 64
@@ -974,8 +977,8 @@ static int build_root_dirents(struct orth_dirent* dirents, size_t max_entries, s
         if (contains_char(ramfs_table[i].name, '/')) continue;
         if (dirent_append(dirents, max_entries, &count, ramfs_table[i].name, ramfs_table[i].mode, (uint32_t)ramfs_table[i].size) < 0) return -1;
     }
-    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-        if (retrofs_list_dir("", dirents, max_entries, &count) < 0) return -1;
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        if (xv6fs_list_dir("", dirents, max_entries, &count) < 0) return -1;
     } else if (module_request.response) {
         if (build_module_dirents("", dirents, max_entries, &count) < 0 && count == 0) return -1;
     }
@@ -1065,8 +1068,8 @@ static int build_active_root_dirents(const char* path, struct orth_dirent* diren
     if (fs_try_active_root_lookup(norm, 0, &dir_size, &dir_mode) == 0) {
         if ((dir_mode & 0170000U) != KSTAT_MODE_DIR) return -1;
         explicit_dir = 1;
-        if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-            if (retrofs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
+        if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+            if (xv6fs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
             found = 1;
         }
         else if (module_request.response) {
@@ -1074,9 +1077,9 @@ static int build_active_root_dirents(const char* path, struct orth_dirent* diren
         }
     }
     if (!found && !explicit_dir) {
-        if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+        if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
             size_t before = count;
-            if (retrofs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
+            if (xv6fs_list_dir(norm, dirents, max_entries, &count) < 0) return -1;
             if (count > before) found = 1;
         } else if (module_request.response) {
             size_t before = count;
@@ -1180,29 +1183,21 @@ static struct ramfs_file* create_ramfs_dir(const char* name, uint32_t mode) {
 }
 
 static int fs_try_active_root_lookup(const char* path, void** data, size_t* size, uint32_t* mode) {
-    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-        uint64_t retro_size = 0;
-        int64_t retro_mtime = 0;
-        uint32_t retro_mode = 0;
-        if (retrofs_stat_path(path, &retro_mode, &retro_size, &retro_mtime) < 0) return -1;
-        if (mode) *mode = retro_mode;
-        if (size) *size = (size_t)retro_size;
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        uint32_t xv6_mode = 0;
+        uint64_t xv6_size = 0;
+        if (xv6fs_stat_path(path, &xv6_mode, &xv6_size, 0) < 0) return -1;
+        if (mode) *mode = xv6_mode;
+        if (size) *size = (size_t)xv6_size;
         if (data) {
-            uint64_t pages;
-            uint8_t* buf;
-            if ((retro_mode & 0170000U) == KSTAT_MODE_DIR || retro_size == 0) {
+            if ((xv6_mode & 0170000U) == KSTAT_MODE_DIR) {
                 *data = 0;
                 return 0;
             }
-            pages = (retro_size + PAGE_SIZE - 1U) / PAGE_SIZE;
-            if (pages == 0) pages = 1;
-            buf = (uint8_t*)PHYS_TO_VIRT(pmm_alloc((int)pages));
-            if (!buf) return -1;
-            if (retrofs_read_file(path, 0, buf, (size_t)retro_size) < 0) {
-                pmm_free((void*)VIRT_TO_PHYS((uint64_t)buf), (int)pages);
-                return -1;
-            }
-            *data = buf;
+            /* inode ポインタを返す (FT_XV6FS の private_data として使用) */
+            struct xv6fs_inode* ip = xv6fs_namei(path);
+            if (!ip) return -1;
+            *data = ip;
         }
         return 0;
     }
@@ -1210,17 +1205,13 @@ static int fs_try_active_root_lookup(const char* path, void** data, size_t* size
 }
 
 static int fs_try_active_root_stat(const char* path, struct kstat* st) {
-    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
         uint32_t mode = 0;
         uint64_t size = 0;
-        int64_t mtime = 0;
-        if (retrofs_stat_path(path, &mode, &size, &mtime) < 0) return -1;
+        if (xv6fs_stat_path(path, &mode, &size, 0) < 0) return -1;
         kstat_set_defaults(st, mode, (int64_t)size);
         st->dev = FS_DEV_ROOT_ARCHIVE;
         st->ino = fs_hash_name(path);
-        st->mtime_sec = mtime;
-        st->ctime_sec = mtime;
-        st->atime_sec = mtime;
         return 0;
     }
     return -1;
@@ -1235,30 +1226,20 @@ int fs_mount_module_root(void) {
     return 0;
 }
 
-int fs_mount_retrofs_root(void) {
-    if (!retrofs_is_mounted()) return -1;
-    g_root_source = ROOT_SOURCE_RETROFS;
+int fs_mount_xv6fs_root(void) {
+    if (!xv6fs_is_mounted()) return -1;
+    g_root_source = ROOT_SOURCE_XV6FS;
     return 0;
 }
 
 int fs_get_mount_status(char* buf, size_t size) {
     const char* module_root = "root=module:boot/rootfs.img\n/usb -> usb-fat";
-    const char* retrofs_root_vblk = "root=retrofs:vblk0";
-    const char* retrofs_root_boot = "root=retrofs:bootimg0";
-    const char* retrofs_root = storage_find_device("vblk0") ? retrofs_root_vblk : retrofs_root_boot;
+    const char* xv6fs_root  = storage_find_device("vblk0") ?
+                               "root=xv6fs:vblk0" : "root=xv6fs:bootimg0";
+    const char* src = (g_root_source == ROOT_SOURCE_MODULE) ? module_root : xv6fs_root;
     size_t i = 0;
     if (!buf || size == 0) return -1;
-    if (g_root_source == ROOT_SOURCE_MODULE) {
-        while (module_root[i] && i + 1 < size) {
-            buf[i] = module_root[i];
-            i++;
-        }
-    } else if (g_root_source == ROOT_SOURCE_RETROFS) {
-        while (retrofs_root[i] && i + 1 < size) {
-            buf[i] = retrofs_root[i];
-            i++;
-        }
-    }
+    while (src[i] && i + 1 < size) { buf[i] = src[i]; i++; }
     buf[(i < size) ? i : (size - 1)] = '\0';
     return 0;
 }
@@ -1419,8 +1400,10 @@ int sys_open(const char* path, int flags, int mode) {
     }
 
     /* /dev/kout: raw write-only output device (second virtio-blk) */
-    if (path[0]=='d' && path[1]=='e' && path[2]=='v' && path[3]=='/' &&
-        path[4]=='k' && path[5]=='o' && path[6]=='u' && path[7]=='t' && path[8]=='\0') {
+    if ((path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' && path[4]=='/' &&
+         path[5]=='k' && path[6]=='o' && path[7]=='u' && path[8]=='t' && path[9]=='\0') ||
+        (path[0]=='d' && path[1]=='e' && path[2]=='v' && path[3]=='/' &&
+         path[4]=='k' && path[5]=='o' && path[6]=='u' && path[7]=='t' && path[8]=='\0')) {
         fs_file_t* file = fs_alloc_file();
         if (!file) return -1;
         file->type = FT_RAWDEV;
@@ -1487,18 +1470,18 @@ int sys_open(const char* path, int flags, int mode) {
                 }
                 return -1;
             }
-            file->type = FT_RETROFS;
+            file->type = FT_XV6FS;
             file->size = root_size;
             file->offset = 0;
-            file->ops = &g_retrofs_file_ops;
-            file->private_data = root_data;
-            file->aux0 = (uint32_t)((root_size + PAGE_SIZE - 1U) / PAGE_SIZE);
+            file->ops = &g_xv6fs_file_ops;
+            file->private_data = root_data;   /* struct xv6fs_inode* */
+            file->aux0 = 0;                   /* inode は iput で解放、pmm 不要 */
             for (int j = 0; j < 63; j++) {
                 file->path[j] = path[j];
                 if (path[j] == '\0') break;
             }
             file->path[63] = '\0';
-            current->fds[fd].type = FT_RETROFS;
+            current->fds[fd].type = FT_XV6FS;
             current->fds[fd].file = file;
             current->fds[fd].data = 0;
             current->fds[fd].size = 0;
@@ -1610,16 +1593,19 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
         return (int64_t)count;
     }
 
-    if (fs_fd_type(f) == FT_RETROFS) {
+    if (fs_fd_type(f) == FT_XV6FS) {
+        struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data(f);
+        if (!ip) return -1;
         size_t offset_now = fs_fd_offset(f);
-        if (retrofs_write_file(fs_fd_name(f), offset_now, buf, count) == 0) {
-            fs_fd_set_offset(f, offset_now + count);
-            if (fs_fd_offset(f) > fs_fd_size(f)) {
-                fs_fd_set_size(f, fs_fd_offset(f));
-            }
-            return (int64_t)count;
-        }
-        return -1;
+        xv6log_begin_op();
+        xv6fs_ilock(ip);
+        int n = xv6fs_writei(ip, buf, (uint32_t)offset_now, (uint32_t)count);
+        if (ip->size > fs_fd_size(f)) fs_fd_set_size(f, ip->size);
+        xv6fs_iunlock(ip);
+        xv6log_end_op();
+        if (n < 0) return -1;
+        fs_fd_set_offset(f, offset_now + (size_t)n);
+        return (int64_t)n;
     }
 
     if (fs_fd_type(f) != FT_RAMFS) return -1;
@@ -1666,8 +1652,8 @@ int sys_ftruncate(int fd, uint64_t length) {
         return 0;
     }
 
-    if (fs_fd_type(f) == FT_RETROFS) {
-        if (retrofs_truncate_file(fs_fd_name(f), length) < 0) return -ENOENT;
+    if (fs_fd_type(f) == FT_XV6FS) {
+        if (xv6fs_truncate_file(fs_fd_name(f), length) < 0) return -ENOENT;
         fs_fd_set_size(f, (size_t)length);
         if (fs_fd_offset(f) > (size_t)length) fs_fd_set_offset(f, (size_t)length);
         return 0;
@@ -1696,7 +1682,7 @@ int sys_truncate(const char* path, uint64_t length) {
         return 0;
     }
 
-    if (retrofs_truncate_file(norm, length) == 0) {
+    if (xv6fs_truncate_file(norm, length) == 0) {
         return 0;
     }
 
@@ -1814,6 +1800,18 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     }
 
     if (fs_fd_type(f) == FT_DIR) return -1;
+
+    if (fs_fd_type(f) == FT_XV6FS) {
+        struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data(f);
+        if (!ip) return -1;
+        xv6fs_ilock(ip);
+        uint32_t off = (uint32_t)fs_fd_offset(f);
+        int n = xv6fs_readi(ip, buf, off, (uint32_t)count);
+        xv6fs_iunlock(ip);
+        if (n < 0) return -1;
+        fs_fd_set_offset(f, fs_fd_offset(f) + (size_t)n);
+        return (int64_t)n;
+    }
 
     if (fs_fd_offset(f) >= fs_fd_size(f)) return 0;
     size_t remaining = fs_fd_size(f) - fs_fd_offset(f);
@@ -2015,7 +2013,7 @@ int sys_fstat(int fd, struct kstat* st) {
         st->ino = fs_fd_name(f)[0] ? fs_hash_name(fs_fd_name(f)) : ((uint64_t)fs_fd_aux0(f) + 1U);
         return 0;
     }
-    if ((fs_fd_type(f) == FT_RAMFS || fs_fd_type(f) == FT_MODULE || fs_fd_type(f) == FT_RETROFS) && fs_fd_name(f)[0]) {
+    if ((fs_fd_type(f) == FT_RAMFS || fs_fd_type(f) == FT_MODULE || fs_fd_type(f) == FT_XV6FS) && fs_fd_name(f)[0]) {
         return fs_stat_normalized_path(normalize_fs_path(fs_fd_name(f)), st);
     }
     kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_FILE), (int64_t)fs_fd_size(f));
@@ -2316,8 +2314,8 @@ int sys_unlink(const char* path) {
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     path = normalize_fs_path(resolved_path);
     
-    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-        if (retrofs_unlink(path) == 0) return 0;
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        if (xv6fs_unlink_path(path) == 0) return 0;
     }
 
     // 現在の簡易実装では Ramfs のファイルのみ削除可能とする
@@ -2415,8 +2413,8 @@ int sys_rmdir(const char* path) {
     norm = normalize_fs_path(resolved_path);
     if (*norm == '\0') return -1;
 
-    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-        if (retrofs_rmdir(norm) == 0) return 0;
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        if (xv6fs_rmdir_path(norm) == 0) return 0;
     }
 
     for (int i = 0; i < MAX_RAMFS_FILES; i++) {
@@ -2440,8 +2438,8 @@ int sys_rmdir(const char* path) {
 }
 
 int sys_sync(void) {
-    if (g_root_source == ROOT_SOURCE_RETROFS && retrofs_is_mounted()) {
-        return retrofs_sync();
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        return xv6fs_sync();
     }
     return 0;
 }
@@ -2519,9 +2517,28 @@ int fs_get_file_data(const char* path, void** data, size_t* size) {
         return 0;
     }
 
-    if (fs_try_active_root_lookup(path, data, size, 0) == 0) {
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        uint32_t xv6_mode = 0;
+        uint64_t xv6_size = 0;
+        if (xv6fs_stat_path(path, &xv6_mode, &xv6_size, 0) < 0) goto try_module;
+        if ((xv6_mode & 0170000U) == KSTAT_MODE_DIR) return -1;
+        if (data) {
+            size_t npages = (xv6_size + PAGE_SIZE - 1U) / PAGE_SIZE;
+            if (npages == 0) npages = 1;
+            void* buf = PHYS_TO_VIRT(pmm_alloc((int)npages));
+            if (!buf) return -1;
+            struct xv6fs_inode* ip = xv6fs_namei(path);
+            if (!ip) { pmm_free((void*)VIRT_TO_PHYS((uint64_t)buf), (int)npages); return -1; }
+            xv6fs_ilock(ip);
+            xv6fs_readi(ip, buf, 0, (uint32_t)xv6_size);
+            xv6fs_iunlock(ip);
+            xv6fs_iput(ip);
+            *data = buf;
+        }
+        if (size) *size = (size_t)xv6_size;
         return 0;
     }
+try_module:
     if (fs_root_is_usb_only()) return -1;
 
     if (module_request.response) {
@@ -2539,16 +2556,20 @@ int fs_get_file_data(const char* path, void** data, size_t* size) {
 
 /* Free a buffer returned by fs_get_file_data if it was heap-allocated.
  * RAMFS and module pointers are not freed (they are not owned by the caller).
- * Only retrofs buffers (allocated by fs_try_active_root_lookup) need freeing. */
+ * xv6fs content buffers (pmm-allocated by fs_get_file_data) are freed here. */
 void fs_free_exec_buffer(const char* path, void* data, size_t size) {
     if (!data || size == 0) return;
-    /* Normalize the path the same way fs_get_file_data does. */
     char resolved[256];
     resolve_task_path(path, resolved, sizeof(resolved));
     const char* norm = normalize_fs_path(resolved);
-    /* If the file lives in RAMFS, the data pointer belongs to the RAMFS table. */
     if (find_ramfs(norm)) return;
-    /* Otherwise it was allocated by fs_try_active_root_lookup — free it. */
+    /* Module pointers are direct references to Limine memory — skip them. */
+    if (module_request.response) {
+        for (uint64_t i = 0; i < module_request.response->module_count; i++) {
+            struct limine_file* m = module_request.response->modules[i];
+            if (m->address == data) return;
+        }
+    }
     size_t pages = (size + PAGE_SIZE - 1U) / PAGE_SIZE;
     if (pages) pmm_free((void*)VIRT_TO_PHYS((uint64_t)data), (int)pages);
 }

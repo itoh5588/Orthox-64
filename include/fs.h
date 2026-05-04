@@ -17,7 +17,7 @@ typedef enum {
     FT_PIPE,    // パイプ
     FT_SOCKET,  // lwIP-backed socket
     FT_USB,     // USB FAT file
-    FT_RETROFS, // file inside RetroFS root image
+    FT_XV6FS,   // file inside xv6fs root image
     FT_RAWDEV,  // raw output device (e.g. /dev/kout)
     FT_DIR      // synthesized directory listing
 } file_type_t;
@@ -155,7 +155,7 @@ uint32_t fs_fd_aux0(const file_descriptor_t* fd);
 uint32_t fs_fd_aux1(const file_descriptor_t* fd);
 const char* fs_fd_name(const file_descriptor_t* fd);
 int fs_mount_module_root(void);
-int fs_mount_retrofs_root(void);
+int fs_mount_xv6fs_root(void);
 int fs_get_mount_status(char* buf, size_t size);
 
 #endif
