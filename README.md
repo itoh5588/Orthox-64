@@ -16,7 +16,7 @@ Orthox-64 is a project that presents a modern approach to operating system devel
 - **Bootloader:** Uses [Limine](https://github.com/limine-bootloader/limine) for modern UEFI/BIOS booting.
 - **Memory Management:** PMM (Physical Memory Manager) and VMM (Virtual Memory Manager) with paging.
 - **Multitasking:** Preemptive multitasking, kernel threads, and an SMP-ready per-CPU scheduler base.
-- **File System:** Virtual File System (VFS), read-write RetroFS-based root filesystem support, and tar-based initial ramdisk tooling for bring-up and fallback workflows.
+- **File System:** Virtual File System (VFS), read-write xv6fs-based root filesystem (ported from xv6-riscv, with triple-indirect block support for files up to ~16 GB), and tar-based initial ramdisk tooling for bring-up and fallback workflows.
 - **USB Support:** Basic USB stack and Mass Storage Class (MSC) support.
 - **Networking:** `virtio-net` + `lwIP` based IPv4 networking with DHCP, DNS, ICMP, UDP, TCP, socket syscalls, BusyBox `httpd`, outbound HTTP client support, and userland HTTPS client support with BearSSL.
 - **SMP:** 4 CPU bring-up, LAPIC timer, reschedule IPI, per-CPU run queue, and validated blocking wakeup paths for pipe, wait, and socket workloads.
@@ -47,4 +47,4 @@ The SMP base is stable: Orthox-64 boots and runs on 4 CPUs in QEMU, uses a per-C
 Orthox-64 is inspired by and references the following projects:
 - **[MikanOS](https://github.com/uchan-nos/mikanos)**: A modern educational OS by [uchan-nos](https://github.com/uchan-nos). The kernel architecture and some primitive setups were developed with reference to its implementation.
 - **[Limine](https://github.com/limine-bootloader/limine)**: Used as the bootloader for modern UEFI/BIOS support.
-- **[retro-rocket](https://github.com/brainboxdotcc/retro-rocket)**: Referenced while integrating RetroFS support into Orthox-64.
+- **[xv6-riscv](https://github.com/mit-pdos/xv6-riscv)**: The xv6 teaching operating system by MIT PDOS, MIT License. Orthox-64's root filesystem (xv6fs) is ported from xv6-riscv's `kernel/fs.c`, `bio.c`, and `log.c`, extended with triple-indirect block support and adapted to the Orthox-64 kernel environment.
