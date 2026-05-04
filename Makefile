@@ -336,15 +336,15 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_IMG)
 
 
 run: $(ISO)
-	bash ./run_qemu_stdio.sh
+	bash tests/run_qemu_stdio.sh
 
 persist-run: ROOTFS_REBUILD=0
 persist-run: $(ISO) $(ROOTFS_IMG)
-	bash ./run_qemu_stdio.sh \
+	bash tests/run_qemu_stdio.sh \
 		$(ROOTFS_VBLK_ARGS)
 
 ac97run: $(ISO)
-	bash ./run_qemu_ac97.sh
+	bash tests/run_qemu_ac97.sh
 
 ac97smoke: $(ISO)
 	bash ./tests/ac97_smoke.sh $(ISO)
@@ -410,33 +410,33 @@ nativekernelbootsmoke: $(ISO)
 	bash ./tests/native_kernel_boot_smoke.sh $(ISO)
 
 smprun: $(ISO)
-	bash ./run_qemu_stdio.sh \
+	bash tests/run_qemu_stdio.sh \
 		-smp 2
 
 persistsmprun: ROOTFS_REBUILD=0
 persistsmprun: $(ISO) $(ROOTFS_IMG)
-	bash ./run_qemu_stdio.sh \
+	bash tests/run_qemu_stdio.sh \
 		$(ROOTFS_VBLK_ARGS) \
 		-smp 2
 
 smp4run: $(ISO)
-	bash ./run_qemu_stdio.sh \
+	bash tests/run_qemu_stdio.sh \
 		-smp 4
 
 netrun: $(ISO)
-	bash ./run_qemu_stdio.sh \
+	bash tests/run_qemu_stdio.sh \
 		-netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=udp::12345-:12345,hostfwd=udp::12346-:12346 \
 		-device virtio-net-pci,netdev=net0
 
 persistnetrun: ROOTFS_REBUILD=0
 persistnetrun: $(ISO) $(ROOTFS_IMG)
-	bash ./run_qemu_stdio.sh \
+	bash tests/run_qemu_stdio.sh \
 		$(ROOTFS_VBLK_ARGS) \
 		-netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=udp::12345-:12345,hostfwd=udp::12346-:12346 \
 		-device virtio-net-pci,netdev=net0
 
 doommsulrun: $(ISO)
-	bash ./run_doom_musl.sh
+	bash tests/run_doom_musl.sh
 
 doommuslrun: doommsulrun
 
@@ -452,7 +452,7 @@ usb-img:
 		dd of=$(USB_IMG) bs=512 seek=3 conv=notrunc status=none
 
 usb: $(ISO) usb-img
-	bash ./run_qemu_stdio.sh \
+	bash tests/run_qemu_stdio.sh \
 		-device qemu-xhci,id=xhci \
 		-drive if=none,id=usbdisk,file=$(USB_IMG),format=raw \
 		-device usb-storage,bus=xhci.0,drive=usbdisk
