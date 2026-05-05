@@ -210,8 +210,8 @@ $(BEARSSL_A): $(BEARSSL_OBJS)
 	@mkdir -p $(@D)
 	ar rcs $@ $^
 
-limine/limine:
-	CC=cc CFLAGS="-O2 -pipe" LDFLAGS="" $(MAKE) -C limine limine
+Limine/limine:
+	CC=cc CFLAGS="-O2 -pipe" LDFLAGS="" $(MAKE) -C Limine limine
 
 TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF) $(TIME_TEST_ELF) $(KEY_TEST_ELF) $(SOUND_TEST_ELF) $(SIGNAL_TEST_ELF) $(TTY_TEST_ELF) $(SIGMASK_TEST_ELF) $(SIGACTION_TEST_ELF) $(FCHDIR_TEST_ELF) $(TTYLINK_TEST_ELF) $(MKDIR_TEST_ELF) $(WADHEAD_TEST_ELF)
 
@@ -314,7 +314,7 @@ $(XV6FS_IMG): $(ROOTFS_FILES)
 
 rootfs-xv6.img: $(XV6FS_IMG)
 
-$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_IMG)
+$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf Limine/limine $(ROOTFS_IMG)
 	rm -rf iso_root
 	mkdir -p iso_root/boot/limine
 	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
@@ -323,15 +323,15 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf limine/limine $(ROOTFS_IMG)
 	cp iso/limine.conf iso_root/boot/limine/limine.conf
 
 	mkdir -p iso_root/EFI/BOOT
-	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
-	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
-	cp limine/BOOTIA32.EFI iso_root/EFI/BOOT/
+	cp Limine/limine-bios.sys Limine/limine-bios-cd.bin Limine/limine-uefi-cd.bin iso_root/boot/limine/
+	cp Limine/BOOTX64.EFI iso_root/EFI/BOOT/
+	cp Limine/BOOTIA32.EFI iso_root/EFI/BOOT/
 	xorriso -as mkisofs -v -R -r -J -b boot/limine/limine-bios-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table -hfsplus \
 		-apm-block-size 2048 --efi-boot boot/limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		iso_root -o $(ISO)
-	$(CURDIR)/limine/limine bios-install $(ISO)
+	$(CURDIR)/Limine/limine bios-install $(ISO)
 	rm -rf iso_root
 
 
@@ -463,6 +463,6 @@ clean:
 	rm -f user/*.elf
 	rm -rf iso_root
 	rm -f rootfs.tar
-	$(MAKE) -C limine clean
+	$(MAKE) -C Limine clean
 
 -include $(DEPS)

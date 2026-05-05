@@ -22,35 +22,35 @@
 #include "usb.h"
 #include "version.h"
 
-LIMINE_BASE_REVISION(0);
+volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(0);
 
 volatile struct limine_memmap_request memmap_request = {
-    .id = LIMINE_MEMMAP_REQUEST,
+    .id = LIMINE_MEMMAP_REQUEST_ID,
     .revision = 0
 };
 
 volatile struct limine_hhdm_request hhdm_request = {
-    .id = LIMINE_HHDM_REQUEST,
+    .id = LIMINE_HHDM_REQUEST_ID,
     .revision = 0
 };
 
 volatile struct limine_module_request module_request = {
-    .id = LIMINE_MODULE_REQUEST,
+    .id = LIMINE_MODULE_REQUEST_ID,
     .revision = 0
 };
 
-volatile struct limine_kernel_address_request kernel_address_request = {
-    .id = LIMINE_KERNEL_ADDRESS_REQUEST,
+volatile struct limine_executable_address_request kernel_address_request = {
+    .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID,
     .revision = 0
 };
 
 volatile struct limine_framebuffer_request framebuffer_request = {
-    .id = LIMINE_FRAMEBUFFER_REQUEST,
+    .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
     .revision = 0
 };
 
-volatile struct limine_smp_request smp_request = {
-    .id = LIMINE_SMP_REQUEST,
+volatile struct limine_mp_request smp_request = {
+    .id = LIMINE_MP_REQUEST_ID,
     .revision = 0,
     .flags = 0
 };
@@ -275,7 +275,7 @@ void _start(void) {
         smp_debug_dump();
 
         uint64_t* pml4 = vmm_get_kernel_pml4();
-        struct limine_kernel_address_response* kaddr = kernel_address_request.response;
+        struct limine_executable_address_response* kaddr = kernel_address_request.response;
         
         vmm_map_range(pml4, kaddr->virtual_base, kaddr->physical_base, 0x2000000, PTE_PRESENT | PTE_WRITABLE);
         vmm_map_range(pml4, hhdm_request.response->offset, 0, 0x100000000ULL, PTE_PRESENT | PTE_WRITABLE);

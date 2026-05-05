@@ -10,7 +10,7 @@
 static struct smp_cpu_info g_smp_cpus[ORTHOX_MAX_CPUS];
 static uint32_t g_smp_cpu_count = 1;
 static int g_bsp_cpu_index = 0;
-static struct limine_smp_response* g_smp_response;
+static struct limine_mp_response* g_smp_response;
 static uint64_t g_ap_stack_tops[ORTHOX_MAX_CPUS];
 static volatile uint32_t g_smp_started_cpu_count = 1;
 
@@ -68,7 +68,7 @@ static void smp_log_cpu_line(const char* prefix, uint32_t cpu_index,
     puts(buf);
 }
 
-void smp_init(struct limine_smp_response* response) {
+void smp_init(struct limine_mp_response* response) {
     g_smp_response = response;
     g_smp_cpu_count = 1;
     g_bsp_cpu_index = 0;
@@ -91,7 +91,7 @@ void smp_init(struct limine_smp_response* response) {
     task_set_cpu_count(cpu_count);
 
     for (uint32_t i = 0; i < cpu_count; i++) {
-        struct limine_smp_info* cpu = response->cpus[i];
+        struct limine_mp_info* cpu = response->cpus[i];
         g_smp_cpus[i].cpu_index = i;
         g_smp_cpus[i].processor_id = cpu ? cpu->processor_id : 0;
         g_smp_cpus[i].lapic_id = cpu ? cpu->lapic_id : 0;
@@ -133,7 +133,7 @@ static void smp_enable_paging_features(void) {
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
 }
 
-static void smp_ap_entry(struct limine_smp_info* info) {
+static void smp_ap_entry(struct limine_mp_info* info) {
     uint32_t cpu_index = info ? (uint32_t)info->extra_argument : 0;
     uint32_t lapic_id = info ? info->lapic_id : 0;
     uint64_t stack_top = 0;
@@ -187,7 +187,7 @@ void smp_start_aps(void) {
     }
 
     for (uint32_t i = 0; i < g_smp_cpu_count; i++) {
-        struct limine_smp_info* cpu = g_smp_response->cpus[i];
+        struct limine_mp_info* cpu = g_smp_response->cpus[i];
         if (!cpu || g_smp_cpus[i].is_bsp) continue;
         if (!g_ap_stack_tops[i]) {
             void* stack_phys = pmm_alloc(4);

@@ -126,9 +126,9 @@ void vmm_init(void) {
 
     vmm_map_range(kernel_pml4, 0, 0, 0x100000000ULL, PTE_PRESENT | PTE_WRITABLE);
     
-    extern volatile struct limine_kernel_address_request kernel_address_request;
+    extern volatile struct limine_executable_address_request kernel_address_request;
     if (kernel_address_request.response) {
-        struct limine_kernel_address_response* kaddr = kernel_address_request.response;
+        struct limine_executable_address_response* kaddr = kernel_address_request.response;
         vmm_map_range(kernel_pml4, kaddr->virtual_base, kaddr->physical_base, 0x2000000, PTE_PRESENT | PTE_WRITABLE);
     }
 }

@@ -12,7 +12,7 @@ struct smp_cpu_info {
     uint8_t started;
 };
 
-void smp_init(struct limine_smp_response* response);
+void smp_init(struct limine_mp_response* response);
 uint32_t smp_get_cpu_count(void);
 int smp_get_bsp_cpu_index(void);
 const struct smp_cpu_info* smp_get_cpu_info(uint32_t cpu_index);
