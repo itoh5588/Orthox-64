@@ -351,11 +351,130 @@ def write_bitmap() -> None:
 
 
 # ──────────────────────────────────────────────
+# xv6fs ファイル抽出 (読み取り専用)
+# ──────────────────────────────────────────────
+def _get_data_block(addrs: list, fbn: int) -> int:
+    """ファイルブロック番号 fbn に対応するディスクブロック番号を返す (未割り当て=0)。"""
+    if fbn < NDIRECT:
+        return addrs[fbn]
+    fbn -= NDIRECT
+    if fbn < NINDIRECT:
+        if addrs[NDIRECT] == 0:
+            return 0
+        return _read_uints(addrs[NDIRECT])[fbn]
+    fbn -= NINDIRECT
+    if fbn < NDINDIRECT:
+        if addrs[NDIRECT + 1] == 0:
+            return 0
+        dind = _read_uints(addrs[NDIRECT + 1])
+        i2, i1 = fbn // NINDIRECT, fbn % NINDIRECT
+        if dind[i2] == 0:
+            return 0
+        return _read_uints(dind[i2])[i1]
+    fbn -= NDINDIRECT
+    if fbn < NTINDIRECT:
+        if addrs[NDIRECT + 2] == 0:
+            return 0
+        tind = _read_uints(addrs[NDIRECT + 2])
+        i3  = fbn // NDINDIRECT
+        r2  = fbn % NDINDIRECT
+        i2, i1 = r2 // NINDIRECT, r2 % NINDIRECT
+        if tind[i3] == 0:
+            return 0
+        dind = _read_uints(tind[i3])
+        if dind[i2] == 0:
+            return 0
+        return _read_uints(dind[i2])[i1]
+    return 0
+
+
+def _read_file_data(din: dict) -> bytes:
+    """inode の全データバイトを読み取って返す。"""
+    size   = din['size']
+    addrs  = din['addrs']
+    result = bytearray()
+    fbn    = 0
+    while len(result) < size:
+        blk = _get_data_block(addrs, fbn)
+        if blk == 0:
+            break
+        to_read = min(BSIZE, size - len(result))
+        result.extend(rsect(blk)[:to_read])
+        fbn += 1
+    return bytes(result)
+
+
+def _find_dirent(dir_inum: int, din: dict, name: str) -> int | None:
+    """ディレクトリ内の name を検索し、子 inum を返す。見つからなければ None。"""
+    data = _read_file_data(din)
+    entry_size = 2 + DIRSIZ
+    for i in range(0, len(data), entry_size):
+        raw = data[i:i + entry_size]
+        if len(raw) < entry_size:
+            break
+        child_inum, name_b = struct.unpack(DIRENT_FMT, raw)
+        if child_inum == 0:
+            continue
+        if name_b.rstrip(b'\x00').decode('utf-8', errors='replace') == name:
+            return child_inum
+    return None
+
+
+def extract_file_from_image(img_path: str, fs_path: str, out_path: str) -> int:
+    """xv6fs イメージから fs_path のファイルを out_path に書き出す。"""
+    global image, inodestart, bmapstart, logstart
+
+    raw = Path(img_path).read_bytes()
+    image = bytearray(raw)
+
+    sb_fields = struct.unpack("<IIIIIIII", bytes(image[BSIZE:BSIZE + 32]))
+    magic, _, _, _, _, logstart_sb, inodestart_sb, bmapstart_sb = sb_fields
+    if magic != FSMAGIC:
+        print(f"ERROR: bad magic 0x{magic:08x} (expected 0x{FSMAGIC:08x})", file=sys.stderr)
+        return 1
+
+    inodestart = inodestart_sb
+    bmapstart  = bmapstart_sb
+    logstart   = logstart_sb
+
+    parts = [p for p in fs_path.strip('/').split('/') if p]
+    inum  = ROOTINO
+
+    for part in parts:
+        din = rinode(inum)
+        if din['type'] != T_DIR:
+            print(f"ERROR: inum={inum} is not a directory (looking for '{part}')", file=sys.stderr)
+            return 1
+        child = _find_dirent(inum, din, part)
+        if child is None:
+            print(f"ERROR: '{part}' not found", file=sys.stderr)
+            return 1
+        inum = child
+
+    din = rinode(inum)
+    if din['type'] != T_FILE:
+        print(f"ERROR: {fs_path!r} is not a regular file (type={din['type']})", file=sys.stderr)
+        return 1
+
+    data = _read_file_data(din)
+    Path(out_path).write_bytes(data)
+    print(f"Extracted {len(data):,} bytes: {fs_path} -> {out_path}")
+    return 0
+
+
+# ──────────────────────────────────────────────
 # main
 # ──────────────────────────────────────────────
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == '--extract':
+        if len(sys.argv) != 5:
+            print("usage: build_rootfs_xv6fs.py --extract FS_PATH OUT_FILE IMG_FILE", file=sys.stderr)
+            return 1
+        return extract_file_from_image(sys.argv[4], sys.argv[2], sys.argv[3])
+
     if len(sys.argv) < 3:
         print("usage: build_rootfs_xv6fs.py ROOT_DIR OUT_IMG", file=sys.stderr)
+        print("       build_rootfs_xv6fs.py --extract FS_PATH OUT_FILE IMG_FILE", file=sys.stderr)
         return 1
 
     root_dir = Path(sys.argv[1])
