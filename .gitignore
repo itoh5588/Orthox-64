@@ -66,3 +66,10 @@ native-kernel-boot.iso
 native-kernel-boot-serial.log
 native-kernel-boot-build.log
 kernel-output.img
+
+# Private / internal files
+CLAUDE.md
+RISCV-virt-Porting-Plan.md
+SMP-Design.md
+future.md
+send_keys.py
