@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-ftruncate-save-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/ftruncate-save-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/ftruncate-save-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 SCRIPT_PATH="rootfs/etc/ftruncate_save_smoke.sh"

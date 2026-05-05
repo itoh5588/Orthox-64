@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-musl-statmissing-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/musl-statmissing-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/musl-statmissing-qemu.out}"
 DRIVER_ELF="user/muslstatmissingdriver.elf"
 SH_ELF_PATH="user/sh.elf"

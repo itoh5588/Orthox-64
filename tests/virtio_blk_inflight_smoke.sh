@@ -4,7 +4,8 @@ set -euo pipefail
 ISO="${1:-orthos.iso}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 BOOTCMD_BACKUP="$(mktemp)"
-WRITE_LOG="${WRITE_LOG:-virtio-blk-inflight-write.log}"
+WRITE_LOG="${WRITE_LOG:-LOGs/virtio-blk-inflight-write.log}"
+mkdir -p LOGs
 
 cleanup() {
     if [ -f "${BOOTCMD_BACKUP}" ]; then

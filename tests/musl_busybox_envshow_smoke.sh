@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-musl-busybox-envshow-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/musl-busybox-envshow-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/musl-busybox-envshow-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 SCRIPT_PATH="rootfs/etc/musl_busybox_envshow.ash"

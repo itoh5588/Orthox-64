@@ -3,7 +3,8 @@ set -euo pipefail
 
 ISO="${1:-orthos.iso}"
 OVMF="${OVMF:-Web/wasabi/third_party/ovmf/RELEASEX64_OVMF.fd}"
-SERIAL_LOG="${SERIAL_LOG:-irq-bottom-half-stress-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/irq-bottom-half-stress-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/irq-bottom-half-stress-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 BOOTCMD_BACKUP="$(mktemp)"

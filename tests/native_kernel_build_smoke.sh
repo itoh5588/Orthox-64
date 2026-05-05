@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos-retrofs.iso}"
-SERIAL_LOG="${SERIAL_LOG:-native-kernel-build-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/native-kernel-build-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/native-kernel-build-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 SCRIPT_PATH="rootfs/etc/native_kernel_build_smoke.sh"

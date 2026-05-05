@@ -7,8 +7,9 @@ set -euo pipefail
 
 ISO="${1:-orthos-retrofs.iso}"
 ROOTFS_IMG="${ROOTFS_IMG:-rootfs.img}"
-SERIAL_LOG_BUILD="${SERIAL_LOG_BUILD:-native-kernel-boot-build.log}"
-SERIAL_LOG_BOOT="${SERIAL_LOG_BOOT:-native-kernel-boot-serial.log}"
+SERIAL_LOG_BUILD="${SERIAL_LOG_BUILD:-LOGs/native-kernel-boot-build.log}"
+SERIAL_LOG_BOOT="${SERIAL_LOG_BOOT:-LOGs/native-kernel-boot-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/native-kernel-boot-qemu.out}"
 BOOT_ISO="${BOOT_ISO:-native-kernel-boot.iso}"
 NATIVE_KERNEL="native-kernel.elf"

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-musl-execprobe-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/musl-execprobe-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/musl-execprobe-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 BOOTCMD_BACKUP="$(mktemp)"

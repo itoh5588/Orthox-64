@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-native-cc1-ramfs-probe-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/native-cc1-ramfs-probe-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/native-cc1-ramfs-probe-qemu.out}"
 MODE="${CC1_RAMFS_PROBE_MODE:-ramfs}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"

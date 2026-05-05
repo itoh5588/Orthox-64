@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos-retrofs.iso}"
-SERIAL_LOG="${SERIAL_LOG:-dynlink-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/dynlink-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/dynlink-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 BOOTCMD_BACKUP="$(mktemp)"

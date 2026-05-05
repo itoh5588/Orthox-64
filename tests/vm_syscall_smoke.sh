@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-vm-syscall-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/vm-syscall-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/vm-syscall-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 SCRIPT_PATH="rootfs/etc/vm_syscall_smoke.sh"

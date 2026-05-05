@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-native-sh-stage2-probe-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/native-sh-stage2-probe-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/native-sh-stage2-probe-qemu.out}"
 TIMEOUT_SECONDS="${SH_STAGE2_PROBE_TIMEOUT:-90}"
 PROBES="${SH_STAGE2_PROBES:-sh_probe_core.c sh_probe_usb_boot.c sh_probe_fat_helpers.c sh_probe_fat_iter.c sh_probe_fat_resolve.c sh_probe_fat_shell.c sh_probe_usb_load.c sh_probe_fat_lba.c sh_probe_fat_iter2.c sh_probe_fat_find.c sh_probe_fat_read_entry.c sh_probe_fat_resolve2.c sh_probe_listing.c sh_probe_run_builtin.c sh_probe_run_command_child.c sh_probe_shell_exec.c sh_probe_run_once.c sh_probe_run_extended.c sh_probe_run_line.c sh_probe_try_bootcmd.c sh_probe_full.c}"

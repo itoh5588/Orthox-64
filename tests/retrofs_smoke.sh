@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos-retrofs.iso}"
-SERIAL_LOG="${SERIAL_LOG:-retrofs-smoke-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/retrofs-smoke-serial.log}"
+mkdir -p LOGs
 MONITOR_SOCK="${MONITOR_SOCK:-retrofs-smoke.sock}"
 QEMU_OUT="${QEMU_OUT:-/tmp/retrofs-smoke-qemu.out}"
 QEMU_PID=""

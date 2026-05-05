@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-busybox-stat-missing-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/busybox-stat-missing-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/busybox-stat-missing-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 SCRIPT_PATH="rootfs/etc/busybox_stat_missing.ash"

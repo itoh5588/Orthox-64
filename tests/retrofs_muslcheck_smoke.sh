@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-retrofs-muslcheck-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/retrofs-muslcheck-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/retrofs-muslcheck-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 SCRIPT_PATH="rootfs/etc/retrofs_muslcheck_smoke.ash"

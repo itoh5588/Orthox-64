@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-native-stage2-userland-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/native-stage2-userland-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/native-stage2-userland-qemu.out}"
 TIMEOUT_SECONDS="${STAGE2_USERLAND_TIMEOUT:-360}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"

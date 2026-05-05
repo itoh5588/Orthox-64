@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-musl-forkexecwait-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/musl-forkexecwait-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/musl-forkexecwait-qemu.out}"
 DRIVER_ELF="user/muslforkexecdriver.elf"
 SH_ELF_PATH="user/sh.elf"

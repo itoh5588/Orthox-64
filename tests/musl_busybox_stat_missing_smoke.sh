@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-musl-busybox-stat-missing-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/musl-busybox-stat-missing-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/musl-busybox-stat-missing-qemu.out}"
 DRIVER_ELF="user/muslbusyboxstatdriver.elf"
 SH_ELF_PATH="user/sh.elf"

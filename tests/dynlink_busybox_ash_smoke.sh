@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos-retrofs.iso}"
-SERIAL_LOG="${SERIAL_LOG:-dynlink-busybox-ash-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/dynlink-busybox-ash-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/dynlink-busybox-ash-qemu.out}"
 BOOTCMD_PATH="rootfs/etc/bootcmd"
 SCRIPT_PATH="rootfs/etc/dynlink_busybox_ash.ash"

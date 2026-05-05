@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-musl-retrofs-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/musl-retrofs-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/musl-retrofs-qemu.out}"
 QEMU_PID=""
 

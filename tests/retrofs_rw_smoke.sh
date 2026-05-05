@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ISO="${1:-orthos.iso}"
-SERIAL_LOG="${SERIAL_LOG:-retrofs-rw-serial.log}"
+SERIAL_LOG="${SERIAL_LOG:-LOGs/retrofs-rw-serial.log}"
+mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/retrofs-rw-qemu.out}"
 DRIVER_ELF="user/muslretrofsrwdriver.elf"
 SH_ELF_PATH="user/sh.elf"
