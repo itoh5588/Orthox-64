@@ -58,14 +58,9 @@ echo "=== Phase 1: native build ==="
 cat > "${SCRIPT_PATH}" <<'EOF'
 export PATH=/bin:/usr/bin:/
 echo native-kernel-build-start
-mkdir /tmp/kbuild
-mkdir /tmp/kbuild/kernel
-mkdir /tmp/kbuild/lwip
-mkdir /tmp/kbuild/lwip/core
-mkdir /tmp/kbuild/lwip/core/ipv4
-mkdir /tmp/kbuild/lwip/netif
-make -f /src/kernel-build/Makefile BUILD=/tmp/kbuild OUTPUT=/tmp/kernel.elf
-cp /tmp/kernel.elf /dev/kout
+mkdir -p /kbuild/kernel /kbuild/lwip/core/ipv4 /kbuild/lwip/netif
+make -f /src/kernel-build/Makefile BUILD=/kbuild OUTPUT=/kernel.elf
+cp /kernel.elf /dev/kout
 echo native-kernel-saved
 EOF
 

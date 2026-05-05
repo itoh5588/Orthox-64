@@ -41,13 +41,8 @@ fi
 cat > "${SCRIPT_PATH}" <<'EOF'
 export PATH=/bin:/usr/bin:/
 echo native-kernel-build-start
-mkdir /tmp/kbuild
-mkdir /tmp/kbuild/kernel
-mkdir /tmp/kbuild/lwip
-mkdir /tmp/kbuild/lwip/core
-mkdir /tmp/kbuild/lwip/core/ipv4
-mkdir /tmp/kbuild/lwip/netif
-make -f /src/kernel-build/Makefile BUILD=/tmp/kbuild OUTPUT=/tmp/kernel.elf
+mkdir -p /kbuild/kernel /kbuild/lwip/core/ipv4 /kbuild/lwip/netif
+make -f /src/kernel-build/Makefile BUILD=/kbuild OUTPUT=/kernel.elf
 echo native-kernel-build-end
 EOF
 

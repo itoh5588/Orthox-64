@@ -2,8 +2,8 @@
 # Orthox-64 上で実行: make -f /src/kernel-build/Makefile
 
 SRCDIR  ?= /src/kernel-build
-BUILD   ?= /tmp/kbuild
-OUTPUT  ?= /tmp/kernel.elf
+BUILD   ?= /kbuild
+OUTPUT  ?= /kernel.elf
 
 # /bin/sh は user/sh.elf（カスタム最小シェル）のため for ループが使えない。
 # busybox ash を明示的に指定する。
