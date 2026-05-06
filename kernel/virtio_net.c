@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "kassert.h"
 #include "virtio_net.h"
 #include "virtio.h"
 #include "pci.h"
@@ -75,8 +76,19 @@ static void virtio_net_fail(const char* msg) {
     puts("\r\n");
 }
 
+static void virtio_net_assert_queue_ready(const struct virtio_queue* q) {
+    KASSERT(q != 0);
+    KASSERT(q->queue_size > 0);
+    KASSERT(q->desc != 0);
+    KASSERT(q->avail != 0);
+    KASSERT(q->used != 0);
+}
+
 static void virtio_net_reclaim_tx(void) {
+    virtio_net_assert_queue_ready(&g_txq);
     while (g_txq.last_used_idx != g_txq.used->idx) {
+        struct vring_used_elem* elem = &g_txq.used->ring[g_txq.last_used_idx % g_txq.queue_size];
+        KASSERT(elem->id == VIRTIO_TX_SLOT);
         g_txq.last_used_idx++;
         g_tx_busy = 0;
     }
@@ -135,6 +147,12 @@ int virtio_net_init(void) {
         g_rxq.active_descs = g_rxq.queue_size;
     }
     g_txq.active_descs = 1;
+    virtio_net_assert_queue_ready(&g_rxq);
+    virtio_net_assert_queue_ready(&g_txq);
+    KASSERT(g_rxq.active_descs > 0);
+    KASSERT(g_rxq.active_descs <= VIRTIO_RX_SLOTS);
+    KASSERT(g_rxq.active_descs <= g_rxq.queue_size);
+    KASSERT(VIRTIO_TX_SLOT < g_txq.queue_size);
 
     for (uint16_t i = 0; i < g_rxq.active_descs; i++) {
         void* buf_phys = pmm_alloc(1);
@@ -143,6 +161,7 @@ int virtio_net_init(void) {
             return -1;
         }
         g_rx_buf_phys[i] = (uint64_t)buf_phys;
+        KASSERT((g_rx_buf_phys[i] & (PAGE_SIZE - 1)) == 0);
         g_rx_bufs[i] = (uint8_t*)PHYS_TO_VIRT(buf_phys);
         kernel_memset(g_rx_bufs[i], 0, PAGE_SIZE);
 
@@ -160,6 +179,7 @@ int virtio_net_init(void) {
         return -1;
     }
     g_tx_buf_phys = (uint64_t)tx_phys;
+    KASSERT((g_tx_buf_phys & (PAGE_SIZE - 1)) == 0);
     g_tx_buf = (uint8_t*)PHYS_TO_VIRT(tx_phys);
     kernel_memset(g_tx_buf, 0, PAGE_SIZE);
     g_txq.desc[VIRTIO_TX_SLOT].addr = g_tx_buf_phys;
@@ -217,6 +237,7 @@ int virtio_net_init(void) {
 void virtio_net_poll(void) {
     if (!g_ready) return;
     if (__sync_lock_test_and_set(&g_polling, 1)) return;
+    virtio_net_assert_queue_ready(&g_rxq);
 
     virtio_net_reclaim_tx();
 
@@ -226,7 +247,9 @@ void virtio_net_poll(void) {
         uint16_t desc_id = (uint16_t)elem->id;
         uint32_t total_len = elem->len;
         uint16_t frame_len = 0;
+        KASSERT(desc_id < g_rxq.queue_size);
         if (desc_id < g_rxq.active_descs && total_len > sizeof(struct virtio_net_hdr)) {
+            KASSERT(g_rx_bufs[desc_id] != 0);
             frame_len = (uint16_t)(total_len - sizeof(struct virtio_net_hdr));
             if (frame_len > VIRTIO_RX_BUF_SIZE) frame_len = VIRTIO_RX_BUF_SIZE;
             if (g_rx_cb && frame_len > 0) {
@@ -279,6 +302,9 @@ int virtio_net_send(const void* frame, uint16_t len) {
 
     virtio_net_reclaim_tx();
     if (g_tx_busy) return -1;
+    virtio_net_assert_queue_ready(&g_txq);
+    KASSERT(g_tx_buf != 0);
+    KASSERT(VIRTIO_TX_SLOT < g_txq.queue_size);
 
     struct virtio_net_hdr* hdr = (struct virtio_net_hdr*)g_tx_buf;
     uint8_t* payload = g_tx_buf + sizeof(struct virtio_net_hdr);

@@ -80,6 +80,10 @@ KILO_ELF = user/kilo.elf
 FILE_ELF = user/file.elf
 VMERRNO_TEST_ELF = user/vmerrno_test.elf
 FTRUNCSAVE_TEST_ELF = user/ftruncsave_test.elf
+PREADPWRITE_TEST_ELF = user/preadpwrite_test.elf
+XV6_SPARSE_TEST_ELF = user/xv6_sparse_test.elf
+XV6_RECLAIM_TEST_ELF = user/xv6_reclaim_test.elf
+XV6_LARGEWRITE_TEST_ELF = user/xv6_largewrite_test.elf
 HELLO_DYN_ELF = user/hello_dyn.elf
 DYNLINK_LIB_A_SO = user/libdyn_a.so
 DYNLINK_LIB_B_SO = user/libdyn_b.so
@@ -107,7 +111,7 @@ ROOTFS_REBUILD ?= 1
 ROOTFS_VBLK_ARGS = -drive if=none,id=rootfs,file=$(ROOTFS_IMG),format=raw -device virtio-blk-pci,drive=rootfs
 
 # ソース
-SRCS = kernel/init.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
+SRCS = kernel/init.c kernel/kassert.c kernel/pmm.c kernel/elf.c kernel/gdt.c kernel/gdt_flush.S \
        kernel/vmm.c kernel/idt.c kernel/interrupt.S kernel/lapic.c kernel/sound.c kernel/syscall.c kernel/sys_time.c kernel/sys_signal.c kernel/sys_vm.c kernel/sys_proc.c kernel/syscall_entry.S \
        kernel/task.c kernel/task_exec.c kernel/task_fork.c kernel/sched.c kernel/wait.c kernel/bottom_half.c kernel/irq.c kernel/task_switch.S kernel/fs.c kernel/vfs.c kernel/storage.c kernel/xv6bio.c kernel/xv6log.c kernel/xv6fs.c kernel/pic.c kernel/keyboard.c kernel/pci.c kernel/net.c kernel/net_socket.c kernel/virtio.c kernel/virtio_net.c kernel/virtio_blk.c kernel/lwip_port.c kernel/cstring.c kernel/cstdio.c kernel/cstdlib.c kernel/usb.c kernel/smp.c kernel/spinlock.c
 
@@ -163,7 +167,7 @@ DEPS = $(OBJS:.o=.d) \
        $(USER_BUILD_DIR)/wadstdio_test.d $(USER_BUILD_DIR)/udpecho.d $(USER_BUILD_DIR)/udpnb.d \
        $(USER_BUILD_DIR)/vblkstress.d
 
-.PHONY: all clean run ac97run ac97smoke doomac97smoke musltoolchainsmoke muslforkprobesmoke muslexecprobesmoke muslforkexecwaitsmoke muslbusyboxsmoke muslbusyboxenvshowsmoke dynlinkrealappsmoke vmsyscallsmoke timesyscallsmoke signalsyscallsmoke ftruncsavesmoke virtionetirqsmoke virtioblkinflightsmoke virtioq35smoke irqbottomhalfstresssmoke irqbottomhalfsmpstresssmoke finalsmokesuite smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install nativekernelbuildsmoke nativekernelbootsmoke
+.PHONY: all clean run ac97run ac97smoke doomac97smoke musltoolchainsmoke muslforkprobesmoke muslexecprobesmoke muslforkexecwaitsmoke muslbusyboxsmoke muslbusyboxenvshowsmoke dynlinkrealappsmoke vmsyscallsmoke timesyscallsmoke signalsyscallsmoke ftruncsavesmoke preadpwritesmoke xv6sparsesmoke xv6reclaimsmoke xv6largewritesmoke virtionetirqsmoke virtioblkinflightsmoke virtioq35smoke irqbottomhalfstresssmoke irqbottomhalfsmpstresssmoke finalsmokesuite smprun smp4run netrun usb usb-img doommsulrun doommuslrun toolchain toolchain-musl user/doomgeneric.elf busybox-ash busybox-ash-musl busybox-ash-musl-install __busybox_ash_musl __busybox_ash_musl_install nativekernelbuildsmoke nativekernelbootsmoke
 
 all: $(ISO)
 
@@ -211,13 +215,24 @@ $(BEARSSL_A): $(BEARSSL_OBJS)
 	ar rcs $@ $^
 
 Limine/limine:
-	CC=cc CFLAGS="-O2 -pipe" LDFLAGS="" $(MAKE) -C Limine limine
+	@if [ -x template/limine/limine ]; then \
+		cp template/limine/limine template/limine/limine-bios.sys template/limine/limine-bios-cd.bin template/limine/limine-uefi-cd.bin Limine/; \
+		cp template/limine/BOOTX64.EFI template/limine/BOOTIA32.EFI Limine/; \
+	elif [ -x OLD_limine/limine ]; then \
+		cp OLD_limine/limine OLD_limine/limine-bios.sys OLD_limine/limine-bios-cd.bin OLD_limine/limine-uefi-cd.bin Limine/; \
+		cp OLD_limine/BOOTX64.EFI OLD_limine/BOOTIA32.EFI Limine/; \
+	elif [ -f Limine/configure ]; then \
+		CC=cc CFLAGS="-O2 -pipe" LDFLAGS="" $(MAKE) -C Limine limine; \
+	else \
+		echo "ERROR: Limine build files are missing. Restore template/limine or run Limine/bootstrap + configure." >&2; \
+		exit 1; \
+	fi
 
 TEST_ELFS = $(MMAP_TEST_ELF) $(REAP_TEST_ELF) $(ROBUST_TEST_ELF) $(VRAM_TEST_ELF) $(TIME_TEST_ELF) $(KEY_TEST_ELF) $(SOUND_TEST_ELF) $(SIGNAL_TEST_ELF) $(TTY_TEST_ELF) $(SIGMASK_TEST_ELF) $(SIGACTION_TEST_ELF) $(FCHDIR_TEST_ELF) $(TTYLINK_TEST_ELF) $(MKDIR_TEST_ELF) $(WADHEAD_TEST_ELF)
 
 FORCE:
 
-$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(SIGNAL_TEST_ELF) $(SIGMASK_TEST_ELF) $(SIGACTION_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(VBLK_STRESS_ELF) $(SOUND_TEST_ELF) $(GCC_MUSL_ELF) $(CC1_MUSL_ELF) $(AS_MUSL_ELF) $(LD_MUSL_ELF) $(MAKE_MUSL_ELF) $(DOOM_MUSL_ELF) $(KILO_ELF) $(FILE_ELF) $(VMERRNO_TEST_ELF) $(FTRUNCSAVE_TEST_ELF) $(HELLO_DYN_ELF) $(DYNLINK_LIB_A_SO) $(DYNLINK_LIB_B_SO) $(DYNLINK_PLUGIN_SO) $(DYNLINK_CPP_SO) $(DYNLINK_MULTI_TLS_ELF) $(DYNLINK_DLOPEN_ELF) $(DYNLINK_MALLOC_ELF) $(BUSYBOX_ASH_DYN_ELF) $(GCC_DYN_ELF)
+$(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o $(UDP_ECHO_TEST_ELF) $(UDP_NB_TEST_ELF) $(HTTPS_FETCH_ELF) $(TIME_TEST_ELF) $(TICKRATE_TEST_ELF) $(SHOWCPU_ELF) $(RUNQSTAT_ELF) $(TCPHELLO_ELF) $(FORKCPU_TEST_ELF) $(FORKMODE_ELF) $(PIPE_STRESS_ELF) $(SMP_STRESS_ELF) $(SCHEDMIX_ELF) $(REAP_TEST_ELF) $(SIGNAL_TEST_ELF) $(SIGMASK_TEST_ELF) $(SIGACTION_TEST_ELF) $(STATERRNO_ELF) $(PYENC_CHECK_ELF) $(MUSL_DIRCHECK_ELF) $(MUSL_FORKPROBE_ELF) $(MUSL_EXECPROBE_ELF) $(MUSL_ENVSHOW_ELF) $(RETROFS_BASIC_ELF) $(RETROFS_EDGE_ELF) $(VBLK_TEST_ELF) $(VBLK_STRESS_ELF) $(SOUND_TEST_ELF) $(GCC_MUSL_ELF) $(CC1_MUSL_ELF) $(AS_MUSL_ELF) $(LD_MUSL_ELF) $(MAKE_MUSL_ELF) $(KILO_ELF) $(FILE_ELF) $(VMERRNO_TEST_ELF) $(FTRUNCSAVE_TEST_ELF) $(PREADPWRITE_TEST_ELF) $(XV6_SPARSE_TEST_ELF) $(XV6_RECLAIM_TEST_ELF) $(XV6_LARGEWRITE_TEST_ELF) $(HELLO_DYN_ELF) $(DYNLINK_LIB_A_SO) $(DYNLINK_LIB_B_SO) $(DYNLINK_PLUGIN_SO) $(DYNLINK_CPP_SO) $(DYNLINK_MULTI_TLS_ELF) $(DYNLINK_DLOPEN_ELF) $(DYNLINK_MALLOC_ELF) $(BUSYBOX_ASH_DYN_ELF) $(GCC_DYN_ELF)
 	@if [ "$(ROOTFS_REBUILD)" = "0" ] && [ -f "$(ROOTFS_IMG)" ]; then \
 		echo "Keeping existing $(ROOTFS_IMG) (ROOTFS_REBUILD=0)"; \
 	else \
@@ -277,13 +292,17 @@ $(ROOTFS_IMG): FORCE busybox-ash-musl-install $(ROOTFS_FILES) $(USER_BUILD_DIR)/
 		cp $(VBLK_TEST_ELF) rootfs/bin/vblk_test; \
 		cp $(VBLK_STRESS_ELF) rootfs/bin/vblkstress; \
 		cp $(SOUND_TEST_ELF) rootfs/bin/testsound; \
-		cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf; \
+		if [ -f "$(DOOM_MUSL_ELF)" ]; then cp $(DOOM_MUSL_ELF) rootfs/bin/doom-musl.elf; fi; \
 		rm -f rootfs/bin/edit; \
 		cp $(KILO_ELF) rootfs/bin/kilo; \
 		cp $(FILE_ELF) rootfs/bin/file; \
-			cp $(VMERRNO_TEST_ELF) rootfs/bin/vmerrno_test.elf; \
-			cp $(FTRUNCSAVE_TEST_ELF) rootfs/bin/ftruncsave_test.elf; \
-			cp $(HELLO_DYN_ELF) rootfs/bin/hello_dyn.elf; \
+		cp $(VMERRNO_TEST_ELF) rootfs/bin/vmerrno_test.elf; \
+		cp $(FTRUNCSAVE_TEST_ELF) rootfs/bin/ftruncsave_test.elf; \
+		cp $(PREADPWRITE_TEST_ELF) rootfs/bin/preadpwrite_test.elf; \
+		cp $(XV6_SPARSE_TEST_ELF) rootfs/bin/xv6_sparse_test.elf; \
+		cp $(XV6_RECLAIM_TEST_ELF) rootfs/bin/xv6_reclaim_test.elf; \
+		cp $(XV6_LARGEWRITE_TEST_ELF) rootfs/bin/xv6_largewrite_test.elf; \
+		cp $(HELLO_DYN_ELF) rootfs/bin/hello_dyn.elf; \
 			cp $(DYNLINK_MULTI_TLS_ELF) rootfs/bin/dynlink_multi_tls.elf; \
 			cp $(DYNLINK_DLOPEN_ELF) rootfs/bin/dynlink_dlopen.elf; \
 			cp $(DYNLINK_MALLOC_ELF) rootfs/bin/dynlink_malloc.elf; \
@@ -384,6 +403,18 @@ signalsyscallsmoke: $(ISO)
 
 ftruncsavesmoke: $(ISO)
 	bash ./tests/ftruncate_save_smoke.sh $(ISO)
+
+preadpwritesmoke: $(ISO)
+	bash ./tests/pread_pwrite_smoke.sh $(ISO)
+
+xv6sparsesmoke: $(ISO)
+	bash ./tests/xv6_sparse_smoke.sh $(ISO)
+
+xv6reclaimsmoke: $(ISO)
+	bash ./tests/xv6_reclaim_smoke.sh $(ISO)
+
+xv6largewritesmoke: $(ISO)
+	bash ./tests/xv6_largewrite_smoke.sh $(ISO)
 
 virtionetirqsmoke: $(ISO)
 	bash ./tests/virtio_net_irq_smoke.sh $(ISO)

@@ -24,6 +24,9 @@
 #define ORTH_TIOCGPGRP 0x540F
 #define ORTH_TIOCSPGRP 0x5410
 #define ORTH_TIOCGWINSZ 0x5413
+#ifndef EINVAL
+#define EINVAL 22
+#endif
 
 extern void syscall_entry(void);
 extern struct task* task_list;
@@ -173,7 +176,7 @@ static void memtrace_mmap(const char* tag, uint64_t addr, uint64_t length, uint6
 static int64_t sys_pread64_impl(int fd, void* buf, size_t count, int64_t offset) {
     int64_t old_offset;
     int64_t ret;
-    if (offset < 0) return -1;
+    if (offset < 0) return -EINVAL;
     old_offset = sys_lseek(fd, 0, 1);
     if (old_offset < 0) return old_offset;
     if (sys_lseek(fd, offset, 0) < 0) {
@@ -188,7 +191,7 @@ static int64_t sys_pread64_impl(int fd, void* buf, size_t count, int64_t offset)
 static int64_t sys_pwrite64_impl(int fd, const void* buf, size_t count, int64_t offset) {
     int64_t old_offset;
     int64_t ret;
-    if (offset < 0) return -1;
+    if (offset < 0) return -EINVAL;
     old_offset = sys_lseek(fd, 0, 1);
     if (old_offset < 0) return old_offset;
     if (sys_lseek(fd, offset, 0) < 0) {

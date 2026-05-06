@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "kassert.h"
 #include "task.h"
 #include "task_internal.h"
 #include "syscall.h"
@@ -48,6 +49,17 @@ static int task_is_idle_task(struct task* t);
 static int task_can_migrate_locked(struct task* t);
 static int normalize_cpu_affinity(uint32_t cpu_id);
 static void task_runq_push_locked(struct task* t, uint32_t cpu_id);
+
+static void task_assert_stack_aligned(uint64_t kstack_top) {
+    if (!kstack_top) return;
+    KASSERT((kstack_top & (PAGE_SIZE - 1)) == 0);
+}
+
+static void task_assert_address_space_owned(struct task* t) {
+    if (!t || task_is_idle_task(t)) return;
+    KASSERT(t->ctx.cr3 != 0);
+    KASSERT((t->ctx.cr3 & (PAGE_SIZE - 1)) == 0);
+}
 
 void task_set_comm_from_path(struct task* t, const char* path) {
     const char* base = path;
@@ -394,8 +406,9 @@ static int task_can_migrate_locked(struct task* t) {
 static void task_runq_remove_locked(struct task* t) {
     struct cpu_local* cpu;
     if (!t || !t->on_runq) return;
+    KASSERT(t->state == TASK_READY);
     cpu = task_get_ready_cpu_locked((uint32_t)t->cpu_affinity);
-    if (!cpu) return;
+    KASSERT(cpu != 0);
     if (t->runq_prev) t->runq_prev->runq_next = t->runq_next;
     else cpu->runq_head = t->runq_next;
     if (t->runq_next) t->runq_next->runq_prev = t->runq_prev;
@@ -409,6 +422,7 @@ static void task_runq_remove_locked(struct task* t) {
 static void task_runq_push_locked(struct task* t, uint32_t cpu_id) {
     struct cpu_local* cpu;
     if (!t || task_is_idle_task(t)) return;
+    KASSERT(t->state == TASK_READY);
     cpu_id = (uint32_t)normalize_cpu_affinity(cpu_id);
     if (t->on_runq) task_runq_remove_locked(t);
     cpu = task_get_ready_cpu_locked(cpu_id);
@@ -421,6 +435,8 @@ static void task_runq_push_locked(struct task* t, uint32_t cpu_id) {
     cpu->runq_tail = t;
     t->on_runq = 1;
     cpu->runq_count++;
+    KASSERT(cpu->runq_head != 0);
+    KASSERT(cpu->runq_tail != 0);
 }
 
 static struct task* task_runq_pop_locked(struct cpu_local* cpu) {
@@ -515,6 +531,9 @@ static int task_reap_locked(struct task* t) {
     struct task** link;
     if (!t) return -1;
     if (t->state != TASK_ZOMBIE && t->state != TASK_DEAD) return -1;
+    KASSERT(!task_is_idle_task(t));
+    task_assert_stack_aligned(t->kstack_top);
+    task_assert_address_space_owned(t);
     task_runq_remove_locked(t);
 
     link = &task_list;

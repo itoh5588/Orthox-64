@@ -1,4 +1,5 @@
 #include "fs.h"
+#include "kassert.h"
 #include "task.h"
 #include "limine.h"
 #include "pmm.h"
@@ -34,7 +35,13 @@ extern void puthex(uint64_t v);
 #define ORTH_LINUX_O_TRUNC   0x200
 #define ORTH_LINUX_O_APPEND  0x400
 #define ORTH_LEGACY_O_DIRECTORY 0x200000
-#define XV6FS_WRITE_CHUNK_MAX (64U * 1024U)
+/*
+ * xv6fs log has 126 payload blocks. A worst-case allocating write logs roughly:
+ * data blocks + bitmap block(s) + indirect metadata block(s) + inode.
+ * 112 KiB leaves room for bitmap and triple-indirect metadata while restoring
+ * most of the throughput lost by the earlier conservative 64 KiB cap.
+ */
+#define XV6FS_WRITE_CHUNK_MAX (112U * 1024U)
 #ifndef ENOENT
 #define ENOENT 2
 #endif
@@ -259,9 +266,27 @@ const char* fs_fd_name(const file_descriptor_t* fd) {
     return fd->name;
 }
 
+static void fs_assert_open_file_consistent(const file_descriptor_t* fd) {
+    if (!fd || !fd->in_use || !fd->file) return;
+    KASSERT(fd->file->ref_count > 0);
+    KASSERT(fd->file->type == fd->type);
+}
+
+static void* fs_fd_data_required(const file_descriptor_t* fd, file_type_t type) {
+    void* data;
+    KASSERT(fd != 0);
+    KASSERT(fd->in_use);
+    fs_assert_open_file_consistent(fd);
+    KASSERT(fs_fd_type(fd) == type);
+    data = fs_fd_data(fd);
+    KASSERT(data != 0);
+    return data;
+}
+
 void fs_release_fd(file_descriptor_t* fd) {
     if (!fd || !fd->in_use) return;
 
+    fs_assert_open_file_consistent(fd);
     if (fd->file) {
         fs_file_put(fd->file);
         fd->file = 0;
@@ -1601,9 +1626,10 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
     }
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     file_descriptor_t* f = &current->fds[fd];
+    fs_assert_open_file_consistent(f);
 
     if (fs_fd_type(f) == FT_PIPE) {
-        pipe_t* pipe = (pipe_t*)fs_fd_data(f);
+        pipe_t* pipe = (pipe_t*)fs_fd_data_required(f, FT_PIPE);
         size_t written = 0;
         const char* src = (const char*)buf;
         while (written < count) {
@@ -1633,6 +1659,7 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
     }
 
     if (fs_fd_type(f) == FT_SOCKET) {
+        (void)fs_fd_data_required(f, FT_SOCKET);
         return net_socket_write_fd(f, buf, count);
     }
 
@@ -1644,11 +1671,10 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
     }
 
     if (fs_fd_type(f) == FT_XV6FS) {
-        struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data(f);
+        struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data_required(f, FT_XV6FS);
         const uint8_t* src = (const uint8_t*)buf;
         size_t offset_now = fs_fd_offset(f);
         size_t written = 0;
-        if (!ip) return -1;
         while (written < count) {
             size_t chunk = count - written;
             int n;
@@ -1698,6 +1724,7 @@ int sys_ftruncate(int fd, uint64_t length) {
     if (!current) return -EINVAL;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     f = &current->fds[fd];
+    fs_assert_open_file_consistent(f);
 
     if (fs_fd_type(f) == FT_RAMFS) {
         struct ramfs_file* rf = find_ramfs(fs_fd_name(f));
@@ -1786,9 +1813,10 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     }
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     file_descriptor_t* f = &current->fds[fd];
+    fs_assert_open_file_consistent(f);
 
     if (fs_fd_type(f) == FT_PIPE) {
-        pipe_t* pipe = (pipe_t*)fs_fd_data(f);
+        pipe_t* pipe = (pipe_t*)fs_fd_data_required(f, FT_PIPE);
         while (1) {
             size_t to_read;
             struct task* writer_to_wake = 0;
@@ -1822,6 +1850,7 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     }
 
     if (fs_fd_type(f) == FT_SOCKET) {
+        (void)fs_fd_data_required(f, FT_SOCKET);
         return net_socket_read_fd(f, buf, count);
     }
 
@@ -1864,8 +1893,7 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     if (fs_fd_type(f) == FT_DIR) return -1;
 
     if (fs_fd_type(f) == FT_XV6FS) {
-        struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data(f);
-        if (!ip) return -1;
+        struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data_required(f, FT_XV6FS);
         xv6fs_ilock(ip);
         uint32_t off = (uint32_t)fs_fd_offset(f);
         int n = xv6fs_readi(ip, buf, off, (uint32_t)count);
@@ -1879,6 +1907,7 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     size_t remaining = fs_fd_size(f) - fs_fd_offset(f);
     size_t to_read = (count > remaining) ? remaining : count;
     char* dest = (char*)buf;
+    KASSERT(fs_fd_data(f) != 0);
     char* src = (char*)fs_fd_data(f) + fs_fd_offset(f);
     for (size_t i = 0; i < to_read; i++) dest[i] = src[i];
     fs_fd_set_offset(f, fs_fd_offset(f) + to_read);
@@ -1894,6 +1923,7 @@ int sys_close(int fd) {
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
 
+    fs_assert_open_file_consistent(&current->fds[fd]);
     fs_release_fd(&current->fds[fd]);
     return 0;
 }
@@ -2040,6 +2070,7 @@ int sys_fstat(int fd, struct kstat* st) {
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     
     file_descriptor_t* f = &current->fds[fd];
+    fs_assert_open_file_consistent(f);
     if (fs_fd_type(f) == FT_CONSOLE) {
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_CHR), 0);
         st->dev = FS_DEV_CONSOLE;
@@ -2048,12 +2079,14 @@ int sys_fstat(int fd, struct kstat* st) {
         return 0;
     }
     if (fs_fd_type(f) == FT_PIPE) {
+        (void)fs_fd_data_required(f, FT_PIPE);
         kstat_set_defaults(st, KSTAT_MODE_FILE | 0600U, 0);
         st->dev = FS_DEV_PIPE;
         st->ino = ((uint64_t)(uintptr_t)fs_fd_data(f)) >> 4;
         return 0;
     }
     if (fs_fd_type(f) == FT_SOCKET) {
+        (void)fs_fd_data_required(f, FT_SOCKET);
         kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_CHR), 0);
         st->dev = FS_DEV_PIPE;
         st->ino = ((uint64_t)(uintptr_t)fs_fd_data(f)) >> 4;
@@ -2091,7 +2124,9 @@ int sys_getdents(int fd, struct orth_dirent* dirp, size_t count) {
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     f = &current->fds[fd];
     if (fs_fd_type(f) != FT_DIR) return -1;
+    fs_assert_open_file_consistent(f);
     if (fs_fd_offset(f) >= fs_fd_size(f)) return 0;
+    (void)fs_fd_data_required(f, FT_DIR);
     remaining = fs_fd_size(f) - fs_fd_offset(f);
     to_copy = (count > remaining) ? remaining : count;
     for (size_t i = 0; i < to_copy; i++) {
@@ -2128,9 +2163,10 @@ int sys_getdents64(int fd, void* dirp, size_t count) {
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
     f = &current->fds[fd];
     if (fs_fd_type(f) != FT_DIR) return -1;
+    fs_assert_open_file_consistent(f);
     if (fs_fd_offset(f) >= fs_fd_size(f)) return 0;
 
-    src = (struct orth_dirent*)fs_fd_data(f);
+    src = (struct orth_dirent*)fs_fd_data_required(f, FT_DIR);
     index = fs_fd_offset(f) / sizeof(struct orth_dirent);
 
     while ((index + 1) * sizeof(struct orth_dirent) <= fs_fd_size(f)) {

@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "kassert.h"
 #include "virtio_blk.h"
 #include "virtio.h"
 #include "pci.h"
@@ -45,6 +46,18 @@ static struct vblk_request_ctx g_vblk_requests[VIRTIO_BLK_MAX_REQUESTS];
 
 static int virtio_blk_irq(int irq, void* ctx);
 
+static void vblk_assert_request_ctx(const struct vblk_request_ctx* req) {
+    KASSERT(req != 0);
+    KASSERT(req->in_use);
+    KASSERT(req->hdr != 0);
+    KASSERT(req->status != 0);
+    KASSERT(req->hdr_phys != 0);
+    KASSERT(req->status_phys == req->hdr_phys + sizeof(struct virtio_blk_req));
+    KASSERT((req->hdr_phys & (PAGE_SIZE - 1)) == 0);
+    KASSERT(req->desc_head + VIRTIO_BLK_DESCS_PER_REQ <= g_vblk_q.queue_size);
+    KASSERT((req->desc_head % VIRTIO_BLK_DESCS_PER_REQ) == 0);
+}
+
 static int vblk_reclaim_used(void) {
     int completed = 0;
     struct vblk_request_ctx* done_reqs[VIRTIO_BLK_MAX_REQUESTS];
@@ -61,6 +74,7 @@ static int vblk_reclaim_used(void) {
             &g_vblk_q.used->ring[g_vblk_q.last_used_idx % g_vblk_q.queue_size];
         uint16_t head = (uint16_t)elem->id;
         struct vblk_request_ctx* req = 0;
+        KASSERT(head < g_vblk_q.queue_size);
         for (int i = 0; i < g_vblk_request_count; i++) {
             if (g_vblk_requests[i].in_use && g_vblk_requests[i].desc_head == head) {
                 req = &g_vblk_requests[i];
@@ -69,6 +83,7 @@ static int vblk_reclaim_used(void) {
         }
         g_vblk_q.last_used_idx++;
         if (!req) continue;
+        vblk_assert_request_ctx(req);
         if (completed < VIRTIO_BLK_MAX_REQUESTS) {
             done_reqs[completed] = req;
             done_status[completed] = *req->status == VIRTIO_BLK_S_OK ? 0 : -1;
@@ -107,6 +122,7 @@ static struct vblk_request_ctx* vblk_acquire_request(void) {
                 req->desc_head = (uint16_t)(i * VIRTIO_BLK_DESCS_PER_REQ);
                 reinit_completion(&req->completion);
                 *req->status = 0xFF;
+                vblk_assert_request_ctx(req);
                 spin_unlock_irqrestore(&g_vblk_idle_wait.lock, flags);
                 return req;
             }
@@ -127,7 +143,10 @@ static struct vblk_request_ctx* vblk_acquire_request(void) {
 
 static void vblk_release_request(struct vblk_request_ctx* req) {
     uint64_t flags = spin_lock_irqsave(&g_vblk_idle_wait.lock);
-    if (req) req->in_use = 0;
+    if (req) {
+        vblk_assert_request_ctx(req);
+        req->in_use = 0;
+    }
     spin_unlock_irqrestore(&g_vblk_idle_wait.lock, flags);
     wake_up_one(&g_vblk_idle_wait);
 }
@@ -150,6 +169,7 @@ static int vblk_init_request_pool(void) {
         g_vblk_requests[i].status_phys =
             g_vblk_requests[i].hdr_phys + sizeof(struct virtio_blk_req);
         init_completion(&g_vblk_requests[i].completion);
+        KASSERT(g_vblk_requests[i].desc_head + VIRTIO_BLK_DESCS_PER_REQ <= g_vblk_q.queue_size);
     }
 
     return 0;
@@ -283,6 +303,10 @@ static int virtio_blk_irq(int irq, void* ctx) {
 
 static void vblk_fill_descriptors(struct vblk_request_ctx* req, uint32_t type,
                                   uint64_t sector, void* buf, uint32_t len) {
+    vblk_assert_request_ctx(req);
+    KASSERT(buf != 0);
+    KASSERT(len > 0);
+    KASSERT(type == VIRTIO_BLK_T_IN || type == VIRTIO_BLK_T_OUT);
     uint16_t head = req->desc_head;
     uint16_t data = (uint16_t)(head + 1U);
     uint16_t status = (uint16_t)(head + 2U);
@@ -290,6 +314,7 @@ static void vblk_fill_descriptors(struct vblk_request_ctx* req, uint32_t type,
     if (data_phys == 0) {
         data_phys = VIRT_TO_PHYS(buf);
     }
+    KASSERT(data_phys != 0);
 
     req->hdr->type = type;
     req->hdr->reserved = 0;
@@ -313,6 +338,7 @@ static void vblk_fill_descriptors(struct vblk_request_ctx* req, uint32_t type,
 }
 
 static void vblk_submit_request(struct vblk_request_ctx* req) {
+    vblk_assert_request_ctx(req);
     uint64_t flags = spin_lock_irqsave(&g_vblk_idle_wait.lock);
     g_vblk_q.avail->ring[g_vblk_q.avail->idx % g_vblk_q.queue_size] = req->desc_head;
     __sync_synchronize();
@@ -323,6 +349,7 @@ static void vblk_submit_request(struct vblk_request_ctx* req) {
 
 static int vblk_consume_completion_status(struct vblk_request_ctx* req) {
     int status;
+    vblk_assert_request_ctx(req);
     uint64_t flags = spin_lock_irqsave(&req->completion.wait.lock);
     if (req->completion.done == 0) {
         spin_unlock_irqrestore(&req->completion.wait.lock, flags);
@@ -335,6 +362,7 @@ static int vblk_consume_completion_status(struct vblk_request_ctx* req) {
 }
 
 static int vblk_wait_request(struct vblk_request_ctx* req) {
+    vblk_assert_request_ctx(req);
     if (g_vblk_irq_enabled && get_current_task()) {
         int status = 0;
         int wait_ret = wait_for_completion_timeout_status(&req->completion,

@@ -11,6 +11,7 @@
  */
 
 #include "xv6fs.h"
+#include "kassert.h"
 #include <stdarg.h>
 
 extern int vsnprintf(char *dst, size_t size, const char *fmt, va_list ap);
@@ -25,11 +26,6 @@ static void xv6log_print(const char *fmt, ...) {
     va_end(ap);
     if (n > 0) sys_write_serial(buf, (size_t)n);
 }
-
-#define XV6LOG_PANIC(msg) do { \
-    xv6log_print("xv6log PANIC: %s  (%s:%d)\n", (msg), __FILE__, __LINE__); \
-    __builtin_trap(); \
-} while(0)
 
 /* ------------------------------------------------------------------ */
 /* on-disk ログヘッダ                                                  */
@@ -63,8 +59,7 @@ static void recover_from_log(void);
 /* ------------------------------------------------------------------ */
 
 void xv6log_init(uint32_t dev, struct xv6fs_superblock *sb) {
-    if (sizeof(struct logheader) >= XV6FS_BSIZE)
-        XV6LOG_PANIC("initlog: logheader too large");
+    KASSERT(sizeof(struct logheader) < XV6FS_BSIZE);
 
     spinlock_init(&lg.lock);
     lg.start       = (int)sb->logstart;
@@ -163,8 +158,7 @@ void xv6log_end_op(void) {
 
     spin_lock(&lg.lock);
     lg.outstanding--;
-    if (lg.committing)
-        XV6LOG_PANIC("xv6log_end_op: log.committing");
+    KASSERT(!lg.committing);
     if (lg.outstanding == 0) {
         do_commit = 1;
         lg.committing = 1;
@@ -212,12 +206,8 @@ void xv6log_write(struct xv6buf *b) {
     int i;
 
     spin_lock(&lg.lock);
-    if (lg.lh.n >= XV6FS_LOGBLOCKS) {
-        XV6LOG_PANIC("xv6log_write: transaction too large");
-    }
-    if (lg.outstanding < 1) {
-        XV6LOG_PANIC("xv6log_write: outside of transaction");
-    }
+    KASSERT(lg.lh.n < XV6FS_LOGBLOCKS);
+    KASSERT(lg.outstanding >= 1);
 
     for (i = 0; i < lg.lh.n; i++) {
         if (lg.lh.block[i] == (int)b->blockno)

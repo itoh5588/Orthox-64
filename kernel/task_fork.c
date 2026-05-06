@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "kassert.h"
 #include "task_internal.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -26,6 +27,11 @@ int task_fork(struct syscall_frame* frame) {
     struct task* parent = get_current_task();
     uint64_t flags = task_lock_irqsave();
     struct task* child = task_alloc_struct();
+    uint32_t spawn_cpu;
+    void* kstack_phys;
+    KASSERT(parent != 0);
+    KASSERT(frame != 0);
+    KASSERT(parent->ctx.cr3 != 0);
     if (!child) {
         task_unlock_irqrestore(flags);
         return -1;
@@ -41,8 +47,7 @@ int task_fork(struct syscall_frame* frame) {
         child->sig_action_masks[i] = parent->sig_action_masks[i];
         child->sig_action_flags[i] = parent->sig_action_flags[i];
     }
-    uint32_t spawn_cpu = task_choose_fork_cpu_locked((uint32_t)parent->cpu_affinity);
-    task_mark_ready_on_cpu_locked_internal(child, spawn_cpu);
+    spawn_cpu = task_choose_fork_cpu_locked((uint32_t)parent->cpu_affinity);
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;
     child->user_entry = parent->user_entry;
@@ -57,8 +62,19 @@ int task_fork(struct syscall_frame* frame) {
     child->tls_align = parent->tls_align;
     child->timeslice_ticks = TASK_TIMESLICE_TICKS;
     child->ctx.cr3 = vmm_copy_pml4((uint64_t*)PHYS_TO_VIRT(parent->ctx.cr3));
+    if (!child->ctx.cr3) {
+        task_free_struct(child);
+        task_unlock_irqrestore(flags);
+        return -1;
+    }
     kernel_strcpy(child->cwd, parent->cwd, sizeof(child->cwd));
-    void* kstack_phys = pmm_alloc(4);
+    kstack_phys = pmm_alloc(4);
+    if (!kstack_phys) {
+        vmm_free_user_pml4(child->ctx.cr3);
+        task_free_struct(child);
+        task_unlock_irqrestore(flags);
+        return -1;
+    }
     child->kstack_top = (uint64_t)PHYS_TO_VIRT(kstack_phys) + 4 * PAGE_SIZE;
     child->os_stack_ptr = child->kstack_top;
     struct syscall_frame* child_frame = (struct syscall_frame*)(child->kstack_top - sizeof(struct syscall_frame));
@@ -91,6 +107,9 @@ int task_fork(struct syscall_frame* frame) {
             return -1;
         }
     }
+    KASSERT(child->kstack_top != 0);
+    KASSERT(child->ctx.cr3 != 0);
+    task_mark_ready_on_cpu_locked_internal(child, spawn_cpu);
     child->next = task_list;
     task_list = child;
     task_rebalance_ready_task_locked_internal(child);

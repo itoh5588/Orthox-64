@@ -21,6 +21,7 @@
 #include "virtio_blk.h"
 #include "usb.h"
 #include "version.h"
+#include "kassert.h"
 
 volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(0);
 
@@ -244,6 +245,10 @@ void _start(void) {
     puts(" v");
     puts(ORTHOX_KERNEL_RELEASE);
     puts(" Boot ---\r\n");
+
+#ifdef ORTHOX_KASSERT_SELFTEST
+    KASSERT(0 && "ORTHOX_KASSERT_SELFTEST");
+#endif
 
     if (memmap_request.response && hhdm_request.response && kernel_address_request.response) {
         pmm_init();

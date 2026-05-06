@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "kassert.h"
 #include "virtio.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -11,6 +12,7 @@ static void* kernel_memset(void* s, int c, size_t n) {
 }
 
 static uint32_t virtq_bytes(uint16_t queue_size) {
+    KASSERT(queue_size > 0);
     uint32_t avail_bytes = (uint32_t)(sizeof(uint16_t) * (3U + queue_size));
     uint32_t used_off = (uint32_t)((sizeof(struct vring_desc) * queue_size + avail_bytes + (VIRTQ_ALIGN - 1)) & ~(VIRTQ_ALIGN - 1));
     uint32_t used_bytes = (uint32_t)(sizeof(uint16_t) * 3U + sizeof(struct vring_used_elem) * queue_size);
@@ -18,6 +20,9 @@ static uint32_t virtq_bytes(uint16_t queue_size) {
 }
 
 static void virtq_layout(struct virtio_queue* q) {
+    KASSERT(q != 0);
+    KASSERT(q->queue_size > 0);
+    KASSERT(q->ring_virt != 0);
     uint32_t avail_bytes = (uint32_t)(sizeof(uint16_t) * (3U + q->queue_size));
     uint32_t used_off = (uint32_t)((sizeof(struct vring_desc) * q->queue_size + avail_bytes + (VIRTQ_ALIGN - 1)) & ~(VIRTQ_ALIGN - 1));
     q->desc = (struct vring_desc*)q->ring_virt;
@@ -38,11 +43,15 @@ int virtio_virtq_init(uint16_t iobase, uint16_t queue_index, struct virtio_queue
     if (!ring_phys) return -1;
 
     q->ring_phys = (uint64_t)ring_phys;
+    KASSERT((q->ring_phys & (PAGE_SIZE - 1)) == 0);
     q->ring_virt = (uint8_t*)PHYS_TO_VIRT(ring_phys);
     q->active_descs = 0;
     q->last_used_idx = 0;
     kernel_memset(q->ring_virt, 0, pages * PAGE_SIZE);
     virtq_layout(q);
+    KASSERT(q->desc != 0);
+    KASSERT(q->avail != 0);
+    KASSERT(q->used != 0);
 
     outl((uint16_t)(iobase + VIRTIO_PCI_QUEUE_PFN), (uint32_t)(q->ring_phys / PAGE_SIZE));
     return 0;

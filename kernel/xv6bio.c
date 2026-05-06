@@ -10,6 +10,7 @@
 
 #include "xv6fs.h"
 #include "storage.h"
+#include "kassert.h"
 #include <stdarg.h>
 
 extern int vsnprintf(char *dst, size_t size, const char *fmt, va_list ap);
@@ -25,11 +26,6 @@ static void xv6bio_log(const char *fmt, ...) {
     va_end(ap);
     if (n > 0) sys_write_serial(buf, (size_t)n);
 }
-
-#define XV6BIO_PANIC(msg) do { \
-    xv6bio_log("xv6bio PANIC: %s  (%s:%d)\n", (msg), __FILE__, __LINE__); \
-    __builtin_trap(); \
-} while(0)
 
 /* ------------------------------------------------------------------ */
 
@@ -107,7 +103,7 @@ static struct xv6buf *bget(uint32_t dev, uint32_t blockno) {
         }
     }
 
-    XV6BIO_PANIC("bget: no free buffers");
+    KASSERT(0 && "xv6bio bget no free buffers");
     return (struct xv6buf *)0; /* unreachable */
 }
 

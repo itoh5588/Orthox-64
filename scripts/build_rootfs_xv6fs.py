@@ -405,6 +405,126 @@ def _read_file_data(din: dict) -> bytes:
     return bytes(result)
 
 
+def _type_name(ftype: int) -> str:
+    return {
+        0: "free",
+        T_DIR: "dir",
+        T_FILE: "file",
+        T_DEVICE: "device",
+    }.get(ftype, f"unknown({ftype})")
+
+
+def _iter_dirents(din: dict) -> list[tuple[int, str]]:
+    data = _read_file_data(din)
+    entry_size = 2 + DIRSIZ
+    entries: list[tuple[int, str]] = []
+    for i in range(0, len(data), entry_size):
+        raw = data[i:i + entry_size]
+        if len(raw) < entry_size:
+            break
+        child_inum, name_b = struct.unpack(DIRENT_FMT, raw)
+        if child_inum == 0:
+            continue
+        name = name_b.rstrip(b'\x00').decode('utf-8', errors='replace')
+        entries.append((child_inum, name))
+    return entries
+
+
+def _file_block_refs(din: dict) -> tuple[list[tuple[int, int]], list[tuple[str, int]]]:
+    """Return data block refs and indirect metadata block refs for an inode."""
+    addrs = din['addrs']
+    total = (din['size'] + BSIZE - 1) // BSIZE
+    data_refs: list[tuple[int, int]] = []
+    meta_refs: list[tuple[str, int]] = []
+
+    for fbn in range(min(total, NDIRECT)):
+        if addrs[fbn] != 0:
+            data_refs.append((fbn, addrs[fbn]))
+
+    remaining = total - NDIRECT
+    if remaining <= 0:
+        return data_refs, meta_refs
+
+    if addrs[NDIRECT] != 0:
+        meta_refs.append(("indirect", addrs[NDIRECT]))
+        ind = _read_uints(addrs[NDIRECT])
+        for idx in range(min(remaining, NINDIRECT)):
+            if ind[idx] != 0:
+                data_refs.append((NDIRECT + idx, ind[idx]))
+    remaining -= NINDIRECT
+    if remaining <= 0:
+        return data_refs, meta_refs
+
+    if addrs[NDIRECT + 1] != 0:
+        meta_refs.append(("double", addrs[NDIRECT + 1]))
+        dind = _read_uints(addrs[NDIRECT + 1])
+        limit = min(remaining, NDINDIRECT)
+        for rel in range(limit):
+            i2, i1 = rel // NINDIRECT, rel % NINDIRECT
+            if dind[i2] == 0:
+                continue
+            if i1 == 0:
+                meta_refs.append((f"double[{i2}]", dind[i2]))
+            ind = _read_uints(dind[i2])
+            if ind[i1] != 0:
+                data_refs.append((NDIRECT + NINDIRECT + rel, ind[i1]))
+    remaining -= NDINDIRECT
+    if remaining <= 0:
+        return data_refs, meta_refs
+
+    if addrs[NDIRECT + 2] != 0:
+        meta_refs.append(("triple", addrs[NDIRECT + 2]))
+        tind = _read_uints(addrs[NDIRECT + 2])
+        limit = min(remaining, NTINDIRECT)
+        seen_dind: set[int] = set()
+        seen_ind: set[int] = set()
+        for rel in range(limit):
+            i3 = rel // NDINDIRECT
+            r2 = rel % NDINDIRECT
+            i2, i1 = r2 // NINDIRECT, r2 % NINDIRECT
+            if tind[i3] == 0:
+                continue
+            if i3 not in seen_dind:
+                meta_refs.append((f"triple[{i3}]", tind[i3]))
+                seen_dind.add(i3)
+            dind = _read_uints(tind[i3])
+            if dind[i2] == 0:
+                continue
+            ind_key = i3 * NINDIRECT + i2
+            if ind_key not in seen_ind:
+                meta_refs.append((f"triple[{i3}][{i2}]", dind[i2]))
+                seen_ind.add(ind_key)
+            ind = _read_uints(dind[i2])
+            if ind[i1] != 0:
+                data_refs.append((NDIRECT + NINDIRECT + NDINDIRECT + rel, ind[i1]))
+
+    return data_refs, meta_refs
+
+
+def _bitmap_used_blocks() -> set[int]:
+    used: set[int] = set()
+    for bno in range(FSSIZE):
+        bp = bmapstart + bno // (BSIZE * 8)
+        off = bno % (BSIZE * 8)
+        buf = rsect(bp)
+        if buf[off // 8] & (1 << (off % 8)):
+            used.add(bno)
+    return used
+
+
+def _set_bitmap_block(bno: int, used: bool) -> None:
+    if bno < 0 or bno >= FSSIZE:
+        raise ValueError(f"bitmap block out of range: {bno}")
+    bp = bmapstart + bno // (BSIZE * 8)
+    off = bno % (BSIZE * 8)
+    buf = rsect(bp)
+    if used:
+        buf[off // 8] |= 1 << (off % 8)
+    else:
+        buf[off // 8] &= ~(1 << (off % 8))
+    wsect(bp, bytes(buf))
+
+
 def _find_dirent(dir_inum: int, din: dict, name: str) -> int | None:
     """ディレクトリ内の name を検索し、子 inum を返す。見つからなければ None。"""
     data = _read_file_data(din)
@@ -560,6 +680,261 @@ def replace_file_in_image(img_path: str, fs_path: str, host_path: str) -> int:
     return 0
 
 
+def sparsify_zero_blocks_in_image(img_path: str, fs_path: str) -> int:
+    """Convert fully zero-filled data blocks in a file into sparse holes."""
+    if _load_image(img_path) != 0:
+        return 1
+
+    inum = _lookup_path(fs_path)
+    if inum is None:
+        return 1
+
+    din = rinode(inum)
+    if din['type'] != T_FILE:
+        print(f"ERROR: {fs_path!r} is not a regular file (type={din['type']})", file=sys.stderr)
+        return 1
+
+    addrs = din['addrs']
+    total = (din['size'] + BSIZE - 1) // BSIZE
+    zero_block = bytes(BSIZE)
+    cleared = 0
+
+    for fbn in range(total):
+        blk = _get_data_block(addrs, fbn)
+        if blk == 0 or bytes(rsect(blk)) != zero_block:
+            continue
+
+        if fbn < NDIRECT:
+            addrs[fbn] = 0
+        elif fbn < NDIRECT + NINDIRECT:
+            ind = _read_uints(addrs[NDIRECT])
+            ind[fbn - NDIRECT] = 0
+            _write_uints(addrs[NDIRECT], ind)
+        elif fbn < NDIRECT + NINDIRECT + NDINDIRECT:
+            rel = fbn - NDIRECT - NINDIRECT
+            dind = _read_uints(addrs[NDIRECT + 1])
+            ind_blk = dind[rel // NINDIRECT]
+            ind = _read_uints(ind_blk)
+            ind[rel % NINDIRECT] = 0
+            _write_uints(ind_blk, ind)
+        else:
+            rel = fbn - NDIRECT - NINDIRECT - NDINDIRECT
+            tind = _read_uints(addrs[NDIRECT + 2])
+            dind_blk = tind[rel // NDINDIRECT]
+            dind = _read_uints(dind_blk)
+            r2 = rel % NDINDIRECT
+            ind_blk = dind[r2 // NINDIRECT]
+            ind = _read_uints(ind_blk)
+            ind[r2 % NINDIRECT] = 0
+            _write_uints(ind_blk, ind)
+
+        _set_bitmap_block(blk, False)
+        cleared += 1
+
+    din['addrs'] = addrs
+    winode(inum, din)
+    Path(img_path).write_bytes(image)
+    print(f"Sparsified {cleared} zero data block(s): {fs_path} in {img_path}")
+    return 0
+
+
+def list_path_in_image(img_path: str, fs_path: str) -> int:
+    if _load_image(img_path) != 0:
+        return 1
+
+    inum = _lookup_path(fs_path)
+    if inum is None:
+        return 1
+
+    din = rinode(inum)
+    if din['type'] != T_DIR:
+        print(f"ERROR: {fs_path!r} is not a directory (type={din['type']})", file=sys.stderr)
+        return 1
+
+    print(f"{fs_path or '/'}: inum={inum} entries={len(_iter_dirents(din))}")
+    for child_inum, name in _iter_dirents(din):
+        child = rinode(child_inum)
+        print(
+            f"{child_inum:5d}  {_type_name(child['type']):8s}  "
+            f"{child['size']:10d}  {name}"
+        )
+    return 0
+
+
+def stat_path_in_image(img_path: str, fs_path: str) -> int:
+    if _load_image(img_path) != 0:
+        return 1
+
+    inum = _lookup_path(fs_path)
+    if inum is None:
+        return 1
+
+    din = rinode(inum)
+    data_refs, meta_refs = _file_block_refs(din)
+    holes = ((din['size'] + BSIZE - 1) // BSIZE) - len(data_refs)
+    print(f"path: {fs_path or '/'}")
+    print(f"  inum:  {inum}")
+    print(f"  type:  {_type_name(din['type'])} ({din['type']})")
+    print(f"  nlink: {din['nlink']}")
+    print(f"  size:  {din['size']} bytes")
+    print(f"  data blocks:     {len(data_refs)}")
+    print(f"  sparse holes:    {max(0, holes)}")
+    print(f"  indirect blocks: {len(meta_refs)}")
+    print(f"  addrs: {' '.join(str(a) for a in din['addrs'])}")
+    return 0
+
+
+def dump_inode_in_image(img_path: str, inum_text: str) -> int:
+    if _load_image(img_path) != 0:
+        return 1
+
+    try:
+        inum = int(inum_text, 0)
+    except ValueError:
+        print(f"ERROR: bad inode number: {inum_text}", file=sys.stderr)
+        return 1
+    if inum < 0 or inum >= NINODES:
+        print(f"ERROR: inode out of range: {inum}", file=sys.stderr)
+        return 1
+
+    din = rinode(inum)
+    data_refs, meta_refs = _file_block_refs(din)
+    print(f"inode {inum}")
+    print(f"  type:  {_type_name(din['type'])} ({din['type']})")
+    print(f"  major: {din['major']}")
+    print(f"  minor: {din['minor']}")
+    print(f"  nlink: {din['nlink']}")
+    print(f"  size:  {din['size']} bytes")
+    print(f"  addrs: {' '.join(str(a) for a in din['addrs'])}")
+    if meta_refs:
+        print("  indirect metadata blocks:")
+        for label, blk in meta_refs:
+            print(f"    {label:18s} -> {blk}")
+    if data_refs:
+        print("  data blocks:")
+        for fbn, blk in data_refs:
+            print(f"    fbn {fbn:8d} -> {blk}")
+    if din['type'] == T_DIR:
+        print("  dirents:")
+        for child_inum, name in _iter_dirents(din):
+            print(f"    {child_inum:5d}  {name}")
+    return 0
+
+
+def _block_range_summary(blocks: set[int], limit: int = 12) -> str:
+    if not blocks:
+        return "none"
+    vals = sorted(blocks)
+    shown = ", ".join(str(v) for v in vals[:limit])
+    if len(vals) > limit:
+        shown += f", ... (+{len(vals) - limit})"
+    return shown
+
+
+def check_image(img_path: str) -> int:
+    if _load_image(img_path) != 0:
+        return 1
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    referenced: dict[int, str] = {}
+
+    raw_sb = struct.unpack("<IIIIIIII", bytes(image[BSIZE:BSIZE + 32]))
+    magic, sb_size, sb_nblocks, sb_ninodes, sb_nlog, sb_logstart, sb_inodestart, sb_bmapstart = raw_sb
+    if magic != FSMAGIC:
+        errors.append(f"bad magic 0x{magic:08x}")
+    if sb_size != FSSIZE:
+        warnings.append(f"superblock size differs from tool constant: sb={sb_size} tool={FSSIZE}")
+    if sb_ninodes != NINODES:
+        warnings.append(f"superblock ninodes differs from tool constant: sb={sb_ninodes} tool={NINODES}")
+    if sb_logstart != logstart or sb_inodestart != inodestart or sb_bmapstart != bmapstart:
+        errors.append("superblock layout was not loaded consistently")
+    if sb_nblocks != nblocks:
+        warnings.append(f"superblock nblocks differs from tool constant: sb={sb_nblocks} tool={nblocks}")
+    if sb_nlog != nlog:
+        warnings.append(f"superblock nlog differs from tool constant: sb={sb_nlog} tool={nlog}")
+
+    root = rinode(ROOTINO)
+    if root['type'] != T_DIR:
+        errors.append(f"ROOTINO={ROOTINO} is not a directory (type={root['type']})")
+
+    used_bitmap = _bitmap_used_blocks()
+    fixed_blocks = set(range(nmeta))
+    allocated_inodes = 0
+
+    for inum in range(1, NINODES):
+        din = rinode(inum)
+        if din['type'] == 0:
+            continue
+        allocated_inodes += 1
+        if din['type'] not in (T_DIR, T_FILE, T_DEVICE):
+            errors.append(f"inode {inum}: unknown type {din['type']}")
+        if din['nlink'] <= 0:
+            warnings.append(f"inode {inum}: nlink <= 0 ({din['nlink']})")
+        if din['size'] > MAXFILE * BSIZE:
+            errors.append(f"inode {inum}: size exceeds MAXFILE ({din['size']})")
+        if din['type'] == T_DIR and din['size'] % (2 + DIRSIZ) != 0:
+            errors.append(f"inode {inum}: directory size is not dirent-aligned ({din['size']})")
+
+        if din['type'] == T_DIR:
+            for child_inum, name in _iter_dirents(din):
+                if child_inum >= NINODES:
+                    errors.append(f"inode {inum}: dirent {name!r} points out of range ({child_inum})")
+                elif rinode(child_inum)['type'] == 0:
+                    errors.append(f"inode {inum}: dirent {name!r} points to free inode {child_inum}")
+
+        data_refs, meta_refs = _file_block_refs(din)
+        for label, blk in [(f"data fbn {fbn}", blk) for fbn, blk in data_refs]:
+            if blk < nmeta or blk >= FSSIZE:
+                errors.append(f"inode {inum}: {label} block out of data range: {blk}")
+                continue
+            owner = referenced.setdefault(blk, f"inode {inum} {label}")
+            if owner != f"inode {inum} {label}":
+                errors.append(f"block {blk}: duplicate reference by {owner} and inode {inum} {label}")
+        for label, blk in meta_refs:
+            if blk < nmeta or blk >= FSSIZE:
+                errors.append(f"inode {inum}: {label} metadata block out of data range: {blk}")
+                continue
+            owner = referenced.setdefault(blk, f"inode {inum} {label}")
+            if owner != f"inode {inum} {label}":
+                errors.append(f"block {blk}: duplicate reference by {owner} and inode {inum} {label}")
+
+    referenced_blocks = set(referenced)
+    missing_bitmap = referenced_blocks - used_bitmap
+    if missing_bitmap:
+        errors.append(f"referenced blocks missing from bitmap: {_block_range_summary(missing_bitmap)}")
+
+    allocated_unreferenced = used_bitmap - fixed_blocks - referenced_blocks
+    if allocated_unreferenced:
+        warnings.append(
+            f"bitmap-allocated data blocks not referenced by live inodes: "
+            f"{len(allocated_unreferenced)} ({_block_range_summary(allocated_unreferenced)})"
+        )
+
+    free_but_fixed = fixed_blocks - used_bitmap
+    if free_but_fixed:
+        errors.append(f"metadata blocks missing from bitmap: {_block_range_summary(free_but_fixed)}")
+
+    print("xv6fs check:")
+    print(f"  image:          {img_path}")
+    print(f"  size blocks:    {sb_size}")
+    print(f"  inodes used:    {allocated_inodes} / {NINODES}")
+    print(f"  bitmap used:    {len(used_bitmap)} / {FSSIZE}")
+    print(f"  referenced fs:  {len(referenced_blocks)} data/meta blocks")
+    print(f"  unreferenced:   {len(allocated_unreferenced)} bitmap-allocated data blocks")
+
+    for warning in warnings:
+        print(f"WARN: {warning}", file=sys.stderr)
+    for error in errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+
+    if errors:
+        print(f"FAILED: {len(errors)} error(s), {len(warnings)} warning(s)")
+        return 1
+    print(f"OK: {len(warnings)} warning(s)")
+    return 0
+
+
 # ──────────────────────────────────────────────
 # main
 # ──────────────────────────────────────────────
@@ -576,10 +951,45 @@ def main() -> int:
             return 1
         return replace_file_in_image(sys.argv[4], sys.argv[2], sys.argv[3])
 
+    if len(sys.argv) >= 2 and sys.argv[1] == '--ls':
+        if len(sys.argv) != 4:
+            print("usage: build_rootfs_xv6fs.py --ls FS_PATH IMG_FILE", file=sys.stderr)
+            return 1
+        return list_path_in_image(sys.argv[3], sys.argv[2])
+
+    if len(sys.argv) >= 2 and sys.argv[1] == '--stat':
+        if len(sys.argv) != 4:
+            print("usage: build_rootfs_xv6fs.py --stat FS_PATH IMG_FILE", file=sys.stderr)
+            return 1
+        return stat_path_in_image(sys.argv[3], sys.argv[2])
+
+    if len(sys.argv) >= 2 and sys.argv[1] == '--dump-inode':
+        if len(sys.argv) != 4:
+            print("usage: build_rootfs_xv6fs.py --dump-inode INUM IMG_FILE", file=sys.stderr)
+            return 1
+        return dump_inode_in_image(sys.argv[3], sys.argv[2])
+
+    if len(sys.argv) >= 2 and sys.argv[1] == '--check':
+        if len(sys.argv) != 3:
+            print("usage: build_rootfs_xv6fs.py --check IMG_FILE", file=sys.stderr)
+            return 1
+        return check_image(sys.argv[2])
+
+    if len(sys.argv) >= 2 and sys.argv[1] == '--sparsify-zero-blocks':
+        if len(sys.argv) != 4:
+            print("usage: build_rootfs_xv6fs.py --sparsify-zero-blocks FS_PATH IMG_FILE", file=sys.stderr)
+            return 1
+        return sparsify_zero_blocks_in_image(sys.argv[3], sys.argv[2])
+
     if len(sys.argv) < 3:
         print("usage: build_rootfs_xv6fs.py ROOT_DIR OUT_IMG", file=sys.stderr)
         print("       build_rootfs_xv6fs.py --extract FS_PATH OUT_FILE IMG_FILE", file=sys.stderr)
         print("       build_rootfs_xv6fs.py --replace FS_PATH HOST_FILE IMG_FILE", file=sys.stderr)
+        print("       build_rootfs_xv6fs.py --ls FS_PATH IMG_FILE", file=sys.stderr)
+        print("       build_rootfs_xv6fs.py --stat FS_PATH IMG_FILE", file=sys.stderr)
+        print("       build_rootfs_xv6fs.py --dump-inode INUM IMG_FILE", file=sys.stderr)
+        print("       build_rootfs_xv6fs.py --check IMG_FILE", file=sys.stderr)
+        print("       build_rootfs_xv6fs.py --sparsify-zero-blocks FS_PATH IMG_FILE", file=sys.stderr)
         return 1
 
     root_dir = Path(sys.argv[1])

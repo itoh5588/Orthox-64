@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "kassert.h"
 #include "vmm.h"
 #include "pmm.h"
 #include "task.h"
@@ -37,6 +38,10 @@ static uint64_t rdmsr_local(uint32_t msr) {
     uint32_t low, high;
     __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
     return ((uint64_t)high << 32) | low;
+}
+
+static void vmm_assert_page_aligned(uint64_t phys) {
+    KASSERT((phys & (PAGE_SIZE - 1)) == 0);
 }
 
 #if ORTHOX_MEM_TRACE
@@ -92,7 +97,10 @@ static void dump_fault_cpu_state(void) {
 }
 
 static uint64_t* get_next_level(uint64_t* current_table, uint64_t index, bool allocate, uint64_t flags) {
+    KASSERT(current_table != 0);
+    KASSERT(index < 512);
     if (current_table[index] & PTE_PRESENT) {
+        vmm_assert_page_aligned(current_table[index] & PTE_ADDR_MASK);
         if (current_table[index] & PTE_HUGE) {
             return (uint64_t*)PHYS_TO_VIRT(current_table[index] & PTE_ADDR_MASK);
         }
@@ -134,6 +142,8 @@ void vmm_init(void) {
 }
 
 void vmm_map_page(uint64_t* pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+    KASSERT(pml4 != 0);
+    vmm_assert_page_aligned(paddr);
     uint64_t* pdp = get_next_level(pml4, PML4_IDX(vaddr), true, flags);
     uint64_t* pd  = get_next_level(pdp, PDP_IDX(vaddr), true, flags);
     uint64_t* pt  = get_next_level(pd, PD_IDX(vaddr), true, flags);
@@ -143,6 +153,9 @@ void vmm_map_page(uint64_t* pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags
 }
 
 void vmm_map_huge_page(uint64_t* pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+    KASSERT(pml4 != 0);
+    KASSERT((vaddr & (HUGE_PAGE_SIZE - 1)) == 0);
+    KASSERT((paddr & (HUGE_PAGE_SIZE - 1)) == 0);
     uint64_t* pdp = get_next_level(pml4, PML4_IDX(vaddr), true, flags);
     uint64_t* pd  = get_next_level(pdp, PDP_IDX(vaddr), true, flags);
 
@@ -166,6 +179,7 @@ void vmm_map_range(uint64_t* pml4, uint64_t vaddr, uint64_t paddr, uint64_t size
 }
 
 uint64_t vmm_get_phys(uint64_t* pml4, uint64_t vaddr) {
+    KASSERT(pml4 != 0);
     if (!(pml4[PML4_IDX(vaddr)] & PTE_PRESENT)) return 0;
     uint64_t* pdp = (uint64_t*)PHYS_TO_VIRT(pml4[PML4_IDX(vaddr)] & PTE_ADDR_MASK);
     if (!(pdp[PDP_IDX(vaddr)] & PTE_PRESENT)) return 0;
@@ -193,7 +207,9 @@ uint64_t vmm_get_kernel_pml4_phys(void) {
 }
 
 uint64_t vmm_copy_pml4(uint64_t* old_pml4) {
+    KASSERT(old_pml4 != 0);
     void* new_pml4_phys = pmm_alloc(1);
+    if (!new_pml4_phys) return 0;
     uint64_t* new_pml4 = (uint64_t*)PHYS_TO_VIRT(new_pml4_phys);
 
     for (int i = 256; i < 512; i++) {
@@ -267,6 +283,8 @@ uint64_t vmm_copy_pml4(uint64_t* old_pml4) {
 
 void vmm_free_user_pml4(uint64_t pml4_phys) {
     if (!pml4_phys) return;
+    KASSERT(pml4_phys != vmm_get_kernel_pml4_phys());
+    vmm_assert_page_aligned(pml4_phys);
 
     uint64_t* pml4 = (uint64_t*)PHYS_TO_VIRT((void*)pml4_phys);
     for (int i = 0; i < 256; i++) {
@@ -278,19 +296,23 @@ void vmm_free_user_pml4(uint64_t pml4_phys) {
             if (!(pdp[j] & PTE_PRESENT)) continue;
 
             uint64_t pd_phys = pdp[j] & PTE_ADDR_MASK;
+            vmm_assert_page_aligned(pd_phys);
             uint64_t* pd = (uint64_t*)PHYS_TO_VIRT((void*)pd_phys);
             for (int k = 0; k < 512; k++) {
                 if (!(pd[k] & PTE_PRESENT)) continue;
 
                 if (pd[k] & PTE_HUGE) {
+                    KASSERT(pmm_get_ref((void*)(pd[k] & PTE_ADDR_MASK)) > 0);
                     pmm_free((void*)(pd[k] & PTE_ADDR_MASK), 512);
                     continue;
                 }
 
                 uint64_t pt_phys = pd[k] & PTE_ADDR_MASK;
+                vmm_assert_page_aligned(pt_phys);
                 uint64_t* pt = (uint64_t*)PHYS_TO_VIRT((void*)pt_phys);
                 for (int l = 0; l < 512; l++) {
                     if (!(pt[l] & PTE_PRESENT)) continue;
+                    KASSERT(pmm_get_ref((void*)(pt[l] & PTE_ADDR_MASK)) > 0);
                     pmm_free((void*)(pt[l] & PTE_ADDR_MASK), 1);
                 }
                 pmm_free((void*)pt_phys, 1);
@@ -408,6 +430,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
         if (pd[PD_IDX(fault_vaddr)] & PTE_COW) {
             vmm_memtrace_pf("pf-cow-huge", fault_vaddr, frame->error_code, frame->rip);
             void* old_page_phys = (void*)(pd[PD_IDX(fault_vaddr)] & PTE_ADDR_MASK);
+            KASSERT(pmm_get_ref(old_page_phys) > 0);
             if (pmm_get_ref(old_page_phys) > 1) {
                 void* new_page_phys = pmm_alloc(512); // 2MB
                 for (uint64_t i = 0; i < HUGE_PAGE_SIZE; i++) {
@@ -441,6 +464,7 @@ void vmm_page_fault_handler(struct interrupt_frame* frame) {
 #endif
             vmm_memtrace_pf("pf-cow", fault_vaddr, frame->error_code, frame->rip);
             void* old_page_phys = (void*)(*pte & PTE_ADDR_MASK);
+            KASSERT(pmm_get_ref(old_page_phys) > 0);
             if (pmm_get_ref(old_page_phys) > 1) {
                 void* new_page_phys = pmm_alloc(1);
                 if (!new_page_phys) {
