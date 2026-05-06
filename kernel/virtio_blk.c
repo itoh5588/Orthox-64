@@ -286,6 +286,10 @@ static void vblk_fill_descriptors(struct vblk_request_ctx* req, uint32_t type,
     uint16_t head = req->desc_head;
     uint16_t data = (uint16_t)(head + 1U);
     uint16_t status = (uint16_t)(head + 2U);
+    uint64_t data_phys = vmm_get_phys(vmm_get_kernel_pml4(), (uint64_t)(uintptr_t)buf);
+    if (data_phys == 0) {
+        data_phys = VIRT_TO_PHYS(buf);
+    }
 
     req->hdr->type = type;
     req->hdr->reserved = 0;
@@ -296,7 +300,7 @@ static void vblk_fill_descriptors(struct vblk_request_ctx* req, uint32_t type,
     g_vblk_q.desc[head].flags = VRING_DESC_F_NEXT;
     g_vblk_q.desc[head].next = data;
 
-    g_vblk_q.desc[data].addr = VIRT_TO_PHYS(buf);
+    g_vblk_q.desc[data].addr = data_phys;
     g_vblk_q.desc[data].len = len;
     g_vblk_q.desc[data].flags =
         VRING_DESC_F_NEXT | (type == VIRTIO_BLK_T_IN ? VRING_DESC_F_WRITE : 0);

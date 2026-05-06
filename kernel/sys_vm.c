@@ -16,6 +16,8 @@
 
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
+extern int64_t sys_read(int fd, void* buf, size_t count);
+extern int64_t sys_lseek(int fd, int64_t offset, int whence);
 
 static void* kernel_memset(void* s, int c, size_t n) {
     unsigned char* p = s;
@@ -306,17 +308,15 @@ void* sys_mremap(void* old_addr, size_t old_len, size_t new_len, int flags, void
     return mapped;
 }
 
-static void copy_mmap_file_page(uint8_t* dest, file_descriptor_t* f, uint64_t file_off) {
-    if (!f || !dest) return;
-    size_t size = fs_fd_size(f);
-    void* data = fs_fd_data(f);
-    if (file_off >= size || !data) return;
-    uint64_t remain = size - file_off;
-    if (remain > PAGE_SIZE) remain = PAGE_SIZE;
-    uint8_t* src = (uint8_t*)data + file_off;
-    for (uint64_t i = 0; i < remain; i++) {
-        dest[i] = src[i];
+static void copy_mmap_file_page(uint8_t* dest, int fd, uint64_t file_off) {
+    if (!dest || fd < 0) return;
+    int64_t old = sys_lseek(fd, 0, 1);
+    if (old < 0) return;
+    if (sys_lseek(fd, (int64_t)file_off, 0) >= 0) {
+        int64_t n = sys_read(fd, dest, PAGE_SIZE);
+        (void)n;
     }
+    (void)sys_lseek(fd, old, 0);
 }
 
 void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, int64_t offset) {
@@ -372,7 +372,7 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, int64_t o
         }
         kernel_memset(PHYS_TO_VIRT(phys), 0, PAGE_SIZE);
         if (!is_anonymous) {
-            copy_mmap_file_page((uint8_t*)PHYS_TO_VIRT(phys), backing_fd, (uint64_t)offset + off);
+            copy_mmap_file_page((uint8_t*)PHYS_TO_VIRT(phys), fd, (uint64_t)offset + off);
         }
         vmm_map_page(pml4, base + off, (uint64_t)phys, map_flags);
         mapped += PAGE_SIZE;

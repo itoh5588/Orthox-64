@@ -246,9 +246,7 @@ void xv6fs_iput(struct xv6fs_inode *ip) {
         spin_lock(&ip->lock);
         spin_unlock(&itable.lock);
 
-        /* itrunc は後で定義されるが前方参照のため宣言済み */
-        extern void xv6fs_itrunc(struct xv6fs_inode *ip);
-        xv6fs_itrunc(ip);
+        ip->size = 0;
         ip->type = 0;
         xv6fs_iupdate(ip);
         ip->valid = 0;
@@ -270,7 +268,7 @@ void xv6fs_iunlockput(struct xv6fs_inode *ip) {
 /* bmap — 論理ブロック番号 → 物理ブロック番号 (triple indirect 対応) */
 /* ------------------------------------------------------------------ */
 
-static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
+static uint32_t bmap_lookup(struct xv6fs_inode *ip, uint32_t bn, int alloc) {
     uint32_t addr;
     struct xv6buf *bp;
     uint32_t *a;
@@ -278,6 +276,7 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
     /* 直接ブロック */
     if (bn < XV6FS_NDIRECT) {
         if ((addr = ip->addrs[bn]) == 0) {
+            if (!alloc) return 0;
             addr = balloc(ip->dev);
             if (addr == 0) return 0;
             ip->addrs[bn] = addr;
@@ -289,6 +288,7 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
     /* 1段間接ブロック */
     if (bn < XV6FS_NINDIRECT) {
         if ((addr = ip->addrs[XV6FS_NDIRECT]) == 0) {
+            if (!alloc) return 0;
             addr = balloc(ip->dev);
             if (addr == 0) return 0;
             ip->addrs[XV6FS_NDIRECT] = addr;
@@ -296,6 +296,10 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
         bp = xv6bread(ip->dev, addr);
         a  = (uint32_t *)bp->data;
         if ((addr = a[bn]) == 0) {
+            if (!alloc) {
+                xv6brelse(bp);
+                return 0;
+            }
             addr = balloc(ip->dev);
             if (addr) {
                 a[bn] = addr;
@@ -310,6 +314,7 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
     /* 2段間接ブロック */
     if (bn < XV6FS_NDINDIRECT) {
         if ((addr = ip->addrs[XV6FS_NDIRECT + 1]) == 0) {
+            if (!alloc) return 0;
             addr = balloc(ip->dev);
             if (addr == 0) return 0;
             ip->addrs[XV6FS_NDIRECT + 1] = addr;
@@ -319,6 +324,10 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
         a  = (uint32_t *)bp->data;
         uint32_t i2 = bn / XV6FS_NINDIRECT;
         if ((addr = a[i2]) == 0) {
+            if (!alloc) {
+                xv6brelse(bp);
+                return 0;
+            }
             addr = balloc(ip->dev);
             if (addr) {
                 a[i2] = addr;
@@ -333,6 +342,10 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
         a  = (uint32_t *)bp->data;
         uint32_t i1 = bn % XV6FS_NINDIRECT;
         if ((addr = a[i1]) == 0) {
+            if (!alloc) {
+                xv6brelse(bp);
+                return 0;
+            }
             addr = balloc(ip->dev);
             if (addr) {
                 a[i1] = addr;
@@ -347,6 +360,7 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
     /* 3段間接ブロック */
     if (bn < XV6FS_NTINDIRECT) {
         if ((addr = ip->addrs[XV6FS_NDIRECT + 2]) == 0) {
+            if (!alloc) return 0;
             addr = balloc(ip->dev);
             if (addr == 0) return 0;
             ip->addrs[XV6FS_NDIRECT + 2] = addr;
@@ -356,6 +370,10 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
         a  = (uint32_t *)bp->data;
         uint32_t i3 = bn / XV6FS_NDINDIRECT;
         if ((addr = a[i3]) == 0) {
+            if (!alloc) {
+                xv6brelse(bp);
+                return 0;
+            }
             addr = balloc(ip->dev);
             if (addr) { a[i3] = addr; xv6log_write(bp); }
         }
@@ -367,6 +385,10 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
         a  = (uint32_t *)bp->data;
         uint32_t i2t = (bn % XV6FS_NDINDIRECT) / XV6FS_NINDIRECT;
         if ((addr = a[i2t]) == 0) {
+            if (!alloc) {
+                xv6brelse(bp);
+                return 0;
+            }
             addr = balloc(ip->dev);
             if (addr) { a[i2t] = addr; xv6log_write(bp); }
         }
@@ -378,6 +400,10 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
         a  = (uint32_t *)bp->data;
         uint32_t i1t = bn % XV6FS_NINDIRECT;
         if ((addr = a[i1t]) == 0) {
+            if (!alloc) {
+                xv6brelse(bp);
+                return 0;
+            }
             addr = balloc(ip->dev);
             if (addr) { a[i1t] = addr; xv6log_write(bp); }
         }
@@ -387,6 +413,10 @@ static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
 
     XV6FS_PANIC("bmap: out of range");
     return 0;
+}
+
+static uint32_t bmap(struct xv6fs_inode *ip, uint32_t bn) {
+    return bmap_lookup(ip, bn, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -493,10 +523,13 @@ int xv6fs_readi(struct xv6fs_inode *ip, void *dst, uint32_t off, uint32_t n) {
         n = ip->size - off;
 
     for (tot = 0; tot < n; tot += m, off += m, dst = (uint8_t *)dst + m) {
-        uint32_t addr = bmap(ip, off / XV6FS_BSIZE);
-        if (addr == 0) break;
-        bp = xv6bread(ip->dev, addr);
+        uint32_t addr = bmap_lookup(ip, off / XV6FS_BSIZE, 0);
         m  = min(n - tot, XV6FS_BSIZE - off % XV6FS_BSIZE);
+        if (addr == 0) {
+            memset(dst, 0, m);
+            continue;
+        }
+        bp = xv6bread(ip->dev, addr);
         memcpy(dst, bp->data + (off % XV6FS_BSIZE), m);
         xv6brelse(bp);
     }
@@ -508,7 +541,7 @@ int xv6fs_writei(struct xv6fs_inode *ip, const void *src,
     uint32_t tot, m;
     struct xv6buf *bp;
 
-    if (off > ip->size || off + n < off)
+    if (off + n < off)
         return -1;
     if (off + n > (uint32_t)XV6FS_MAXFILE * XV6FS_BSIZE)
         return -1;
@@ -541,12 +574,13 @@ struct xv6fs_inode *xv6fs_dirlookup(struct xv6fs_inode *dp,
                                      const char *name, uint32_t *poff) {
     struct xv6fs_dirent de;
 
-    if (dp->type != XV6FS_T_DIR)
-        XV6FS_PANIC("xv6fs_dirlookup: not a directory");
+    if (dp->type != XV6FS_T_DIR) {
+        return (struct xv6fs_inode *)0;
+    }
 
     for (uint32_t off = 0; off < dp->size; off += sizeof(de)) {
         if (xv6fs_readi(dp, &de, off, sizeof(de)) != (int)sizeof(de))
-            XV6FS_PANIC("xv6fs_dirlookup: read error");
+            break;
         if (de.inum == 0)
             continue;
         if (namecmp(name, de.name) == 0) {
@@ -731,13 +765,82 @@ int xv6fs_write_file(const char *path, uint64_t offset,
     return (r == (int)n) ? 0 : -1;
 }
 
+int xv6fs_create_file(const char *path, int mode_unused,
+                      struct xv6fs_inode **out_ip) {
+    (void)mode_unused;
+    char name[XV6FS_DIRSIZ];
+    struct xv6fs_inode *dp;
+    struct xv6fs_inode *ip;
+
+    if (out_ip) *out_ip = 0;
+    if (!path || path[0] == '\0') return -1;
+
+    xv6log_begin_op();
+    dp = xv6fs_nameiparent(path, name);
+    if (!dp) {
+        xv6log_end_op();
+        return -1;
+    }
+
+    xv6fs_ilock(dp);
+    ip = xv6fs_dirlookup(dp, name, 0);
+    if (ip) {
+        xv6fs_ilock(ip);
+        if (ip->type != XV6FS_T_FILE) {
+            xv6fs_iunlock(ip);
+            xv6fs_iput(ip);
+            xv6fs_iunlock(dp);
+            xv6log_end_op();
+            xv6fs_iput(dp);
+            return -1;
+        }
+        xv6fs_iunlock(ip);
+        xv6fs_iunlock(dp);
+        xv6log_end_op();
+        xv6fs_iput(dp);
+        if (out_ip) *out_ip = ip;
+        else xv6fs_iput(ip);
+        return 0;
+    }
+
+    ip = xv6fs_ialloc(dp->dev, XV6FS_T_FILE);
+    if (!ip) {
+        xv6fs_iunlock(dp);
+        xv6log_end_op();
+        xv6fs_iput(dp);
+        return -1;
+    }
+    xv6fs_ilock(ip);
+    ip->nlink = 1;
+    xv6fs_iupdate(ip);
+    if (xv6fs_dirlink(dp, name, ip->inum) < 0) {
+        ip->nlink = 0;
+        xv6fs_iupdate(ip);
+        xv6fs_iunlock(ip);
+        xv6fs_iput(ip);
+        xv6fs_iunlock(dp);
+        xv6log_end_op();
+        xv6fs_iput(dp);
+        return -1;
+    }
+    xv6fs_iunlock(ip);
+    xv6fs_iunlock(dp);
+    xv6log_end_op();
+    xv6fs_iput(dp);
+
+    if (out_ip) *out_ip = ip;
+    else xv6fs_iput(ip);
+    return 0;
+}
+
 int xv6fs_truncate_file(const char *path, uint64_t length) {
     struct xv6fs_inode *ip = xv6fs_namei(path);
     if (!ip) return -1;
     xv6log_begin_op();
     xv6fs_ilock(ip);
     if (length == 0) {
-        xv6fs_itrunc(ip);
+        ip->size = 0;
+        xv6fs_iupdate(ip);
     } else {
         ip->size = (uint32_t)length;
         xv6fs_iupdate(ip);

@@ -34,6 +34,7 @@ extern void puthex(uint64_t v);
 #define ORTH_LINUX_O_TRUNC   0x200
 #define ORTH_LINUX_O_APPEND  0x400
 #define ORTH_LEGACY_O_DIRECTORY 0x200000
+#define XV6FS_WRITE_CHUNK_MAX (64U * 1024U)
 #ifndef ENOENT
 #define ENOENT 2
 #endif
@@ -54,6 +55,9 @@ extern void puthex(uint64_t v);
 #endif
 #ifndef ENOSPC
 #define ENOSPC 28
+#endif
+#ifndef EEXIST
+#define EEXIST 17
 #endif
 
 static void pipe_wake_task(struct task* waiter) {
@@ -122,7 +126,9 @@ static void fs_release_xv6fs_file(fs_file_t* file) {
     if (!file) return;
     struct xv6fs_inode* ip = (struct xv6fs_inode*)file->private_data;
     if (ip) {
+        xv6log_begin_op();
         xv6fs_iput(ip);
+        xv6log_end_op();
         file->private_data = 0;
     }
 }
@@ -1424,6 +1430,50 @@ int sys_open(const char* path, int flags, int mode) {
     }
 
     if (want_creat) {
+        if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+            struct xv6fs_inode* ip = 0;
+            if (xv6fs_create_file(path, mode, &ip) == 0 && ip) {
+                fs_file_t* file;
+                if (want_trunc && xv6fs_truncate_file(path, 0) < 0) {
+                    xv6fs_iput(ip);
+                    return -1;
+                }
+                file = fs_alloc_file();
+                if (!file) {
+                    xv6fs_iput(ip);
+                    return -1;
+                }
+                file->type = FT_XV6FS;
+                file->size = 0;
+                file->offset = 0;
+                file->ops = &g_xv6fs_file_ops;
+                file->private_data = ip;
+                file->aux0 = 0;
+                xv6fs_ilock(ip);
+                file->size = ip->size;
+                xv6fs_iunlock(ip);
+                for (int j = 0; j < 63; j++) {
+                    file->path[j] = path[j];
+                    if (path[j] == '\0') break;
+                }
+                file->path[63] = '\0';
+                current->fds[fd].type = FT_XV6FS;
+                current->fds[fd].file = file;
+                current->fds[fd].data = 0;
+                current->fds[fd].size = 0;
+                current->fds[fd].offset = 0;
+                current->fds[fd].in_use = 1;
+                current->fds[fd].flags = flags;
+                current->fds[fd].aux0 = 0;
+                current->fds[fd].aux1 = 0;
+                for (int j = 0; j < 63; j++) {
+                    current->fds[fd].name[j] = path[j];
+                    if (path[j] == '\0') break;
+                }
+                current->fds[fd].name[63] = '\0';
+                return fd;
+            }
+        }
         rf = create_ramfs(path, (uint32_t)mode);
         if (rf) {
             fs_file_t* file = fs_alloc_file();
@@ -1595,17 +1645,29 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
 
     if (fs_fd_type(f) == FT_XV6FS) {
         struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data(f);
-        if (!ip) return -1;
+        const uint8_t* src = (const uint8_t*)buf;
         size_t offset_now = fs_fd_offset(f);
-        xv6log_begin_op();
-        xv6fs_ilock(ip);
-        int n = xv6fs_writei(ip, buf, (uint32_t)offset_now, (uint32_t)count);
-        if (ip->size > fs_fd_size(f)) fs_fd_set_size(f, ip->size);
-        xv6fs_iunlock(ip);
-        xv6log_end_op();
-        if (n < 0) return -1;
-        fs_fd_set_offset(f, offset_now + (size_t)n);
-        return (int64_t)n;
+        size_t written = 0;
+        if (!ip) return -1;
+        while (written < count) {
+            size_t chunk = count - written;
+            int n;
+            if (chunk > XV6FS_WRITE_CHUNK_MAX) chunk = XV6FS_WRITE_CHUNK_MAX;
+            xv6log_begin_op();
+            xv6fs_ilock(ip);
+            n = xv6fs_writei(ip, src + written,
+                             (uint32_t)(offset_now + written),
+                             (uint32_t)chunk);
+            if (ip->size > fs_fd_size(f)) fs_fd_set_size(f, ip->size);
+            xv6fs_iunlock(ip);
+            xv6log_end_op();
+            if (n < 0) return written ? (int64_t)written : -1;
+            if (n == 0) break;
+            written += (size_t)n;
+            if ((size_t)n < chunk) break;
+        }
+        fs_fd_set_offset(f, offset_now + written);
+        return (int64_t)written;
     }
 
     if (fs_fd_type(f) != FT_RAMFS) return -1;
@@ -2390,12 +2452,20 @@ int sys_chmod(const char* path, uint32_t mode) {
 int sys_mkdir(const char* path, int mode) {
     char resolved_path[256];
     const char* norm;
+    struct kstat st;
     if (!path || path[0] == '\0') return -1;
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     norm = normalize_fs_path(resolved_path);
-    if (*norm == '\0') return -1;
+    if (*norm == '\0') return -EEXIST;
 
     if (find_ramfs(norm)) return -1;
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        if (fs_try_active_root_stat(norm, &st) == 0) {
+            if ((st.mode & 0170000U) == KSTAT_MODE_DIR) return -EEXIST;
+            return -1;
+        }
+        return xv6fs_mkdir_path(norm, mode) == 0 ? 0 : -1;
+    }
     return create_ramfs_dir(norm, (uint32_t)mode) ? 0 : -1;
 }
 

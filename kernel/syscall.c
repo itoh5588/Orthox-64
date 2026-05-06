@@ -170,6 +170,36 @@ static void memtrace_mmap(const char* tag, uint64_t addr, uint64_t length, uint6
 #endif
 }
 
+static int64_t sys_pread64_impl(int fd, void* buf, size_t count, int64_t offset) {
+    int64_t old_offset;
+    int64_t ret;
+    if (offset < 0) return -1;
+    old_offset = sys_lseek(fd, 0, 1);
+    if (old_offset < 0) return old_offset;
+    if (sys_lseek(fd, offset, 0) < 0) {
+        sys_lseek(fd, old_offset, 0);
+        return -1;
+    }
+    ret = sys_read(fd, buf, count);
+    sys_lseek(fd, old_offset, 0);
+    return ret;
+}
+
+static int64_t sys_pwrite64_impl(int fd, const void* buf, size_t count, int64_t offset) {
+    int64_t old_offset;
+    int64_t ret;
+    if (offset < 0) return -1;
+    old_offset = sys_lseek(fd, 0, 1);
+    if (old_offset < 0) return old_offset;
+    if (sys_lseek(fd, offset, 0) < 0) {
+        sys_lseek(fd, old_offset, 0);
+        return -1;
+    }
+    ret = sys_write(fd, buf, count);
+    sys_lseek(fd, old_offset, 0);
+    return ret;
+}
+
 static uint64_t align_up_page(uint64_t v) {
     return (v + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 }
@@ -504,6 +534,14 @@ void syscall_dispatch(struct syscall_frame* frame) {
             break;
         case SYS_WRITE:
             frame->rax = (uint64_t)sys_write((int)frame->rdi, (const void*)frame->rsi, (size_t)frame->rdx);
+            break;
+        case SYS_PREAD64:
+            frame->rax = (uint64_t)sys_pread64_impl((int)frame->rdi, (void*)frame->rsi,
+                                                    (size_t)frame->rdx, (int64_t)frame->r10);
+            break;
+        case SYS_PWRITE64:
+            frame->rax = (uint64_t)sys_pwrite64_impl((int)frame->rdi, (const void*)frame->rsi,
+                                                     (size_t)frame->rdx, (int64_t)frame->r10);
             break;
         case SYS_OPEN:
             frame->rax = (uint64_t)sys_open((const char*)frame->rdi, (int)frame->rsi, (int)frame->rdx);

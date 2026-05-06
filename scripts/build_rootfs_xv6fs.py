@@ -396,10 +396,11 @@ def _read_file_data(din: dict) -> bytes:
     fbn    = 0
     while len(result) < size:
         blk = _get_data_block(addrs, fbn)
-        if blk == 0:
-            break
         to_read = min(BSIZE, size - len(result))
-        result.extend(rsect(blk)[:to_read])
+        if blk == 0:
+            result.extend(bytes(to_read))
+        else:
+            result.extend(rsect(blk)[:to_read])
         fbn += 1
     return bytes(result)
 
@@ -462,6 +463,103 @@ def extract_file_from_image(img_path: str, fs_path: str, out_path: str) -> int:
     return 0
 
 
+def _load_image(img_path: str) -> int:
+    """既存 xv6fs イメージを読み込み、superblock 由来の layout を反映する。"""
+    global image, inodestart, bmapstart, logstart
+
+    raw = Path(img_path).read_bytes()
+    image = bytearray(raw)
+
+    sb_fields = struct.unpack("<IIIIIIII", bytes(image[BSIZE:BSIZE + 32]))
+    magic, _, _, _, _, logstart_sb, inodestart_sb, bmapstart_sb = sb_fields
+    if magic != FSMAGIC:
+        print(f"ERROR: bad magic 0x{magic:08x} (expected 0x{FSMAGIC:08x})", file=sys.stderr)
+        return 1
+
+    inodestart = logstart_sb + (inodestart_sb - logstart_sb)
+    bmapstart  = bmapstart_sb
+    logstart   = logstart_sb
+    return 0
+
+
+def _lookup_path(fs_path: str) -> int | None:
+    parts = [p for p in fs_path.strip('/').split('/') if p]
+    inum  = ROOTINO
+
+    for part in parts:
+        din = rinode(inum)
+        if din['type'] != T_DIR:
+            print(f"ERROR: inum={inum} is not a directory (looking for '{part}')", file=sys.stderr)
+            return None
+        child = _find_dirent(inum, din, part)
+        if child is None:
+            print(f"ERROR: '{part}' not found", file=sys.stderr)
+            return None
+        inum = child
+    return inum
+
+
+def _allocated_file_blocks(din: dict) -> list[int]:
+    blocks = []
+    total = (din['size'] + BSIZE - 1) // BSIZE
+    for fbn in range(total):
+        blk = _get_data_block(din['addrs'], fbn)
+        if blk == 0:
+            break
+        blocks.append(blk)
+    return blocks
+
+
+def replace_file_in_image(img_path: str, fs_path: str, host_path: str) -> int:
+    """既存 regular file の割り当て済みブロック内で内容だけを差し替える。
+
+    inode や block の新規割り当ては行わない。/kbuild のキャッシュを保持したまま
+    /etc/bootcmd のような小ファイルを差し替えるための保守的な操作。
+    """
+    if _load_image(img_path) != 0:
+        return 1
+
+    inum = _lookup_path(fs_path)
+    if inum is None:
+        return 1
+
+    din = rinode(inum)
+    if din['type'] != T_FILE:
+        print(f"ERROR: {fs_path!r} is not a regular file (type={din['type']})", file=sys.stderr)
+        return 1
+
+    data = Path(host_path).read_bytes()
+    blocks = _allocated_file_blocks(din)
+    capacity = len(blocks) * BSIZE
+    if len(data) > capacity:
+        print(
+            f"ERROR: replacement too large for allocated file blocks: "
+            f"{len(data)} > {capacity} bytes ({fs_path})",
+            file=sys.stderr,
+        )
+        return 1
+
+    written = 0
+    for blk in blocks:
+        buf = bytearray(BSIZE)
+        chunk = data[written:written + BSIZE]
+        buf[:len(chunk)] = chunk
+        wsect(blk, bytes(buf))
+        written += len(chunk)
+        if written >= len(data):
+            # Zero the rest of the previously allocated blocks so stale bytes
+            # cannot leak if a reader ignores inode size.
+            for rest in blocks[blocks.index(blk) + 1:]:
+                wsect(rest, bytes(BSIZE))
+            break
+
+    din['size'] = len(data)
+    winode(inum, din)
+    Path(img_path).write_bytes(image)
+    print(f"Replaced {len(data):,} bytes: {host_path} -> {fs_path} in {img_path}")
+    return 0
+
+
 # ──────────────────────────────────────────────
 # main
 # ──────────────────────────────────────────────
@@ -472,9 +570,16 @@ def main() -> int:
             return 1
         return extract_file_from_image(sys.argv[4], sys.argv[2], sys.argv[3])
 
+    if len(sys.argv) >= 2 and sys.argv[1] == '--replace':
+        if len(sys.argv) != 5:
+            print("usage: build_rootfs_xv6fs.py --replace FS_PATH HOST_FILE IMG_FILE", file=sys.stderr)
+            return 1
+        return replace_file_in_image(sys.argv[4], sys.argv[2], sys.argv[3])
+
     if len(sys.argv) < 3:
         print("usage: build_rootfs_xv6fs.py ROOT_DIR OUT_IMG", file=sys.stderr)
         print("       build_rootfs_xv6fs.py --extract FS_PATH OUT_FILE IMG_FILE", file=sys.stderr)
+        print("       build_rootfs_xv6fs.py --replace FS_PATH HOST_FILE IMG_FILE", file=sys.stderr)
         return 1
 
     root_dir = Path(sys.argv[1])

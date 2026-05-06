@@ -21,6 +21,8 @@
 #define SYS_RT_SIGACTION 13
 #define SYS_RT_SIGPROCMASK 14
 #define SYS_IOCTL   16
+#define SYS_PREAD64 17
+#define SYS_PWRITE64 18
 #define SYS_READV   19
 #define SYS_WRITEV  20
 #define SYS_PIPE    22

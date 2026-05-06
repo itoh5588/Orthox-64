@@ -212,10 +212,12 @@ void xv6log_write(struct xv6buf *b) {
     int i;
 
     spin_lock(&lg.lock);
-    if (lg.lh.n >= XV6FS_LOGBLOCKS)
+    if (lg.lh.n >= XV6FS_LOGBLOCKS) {
         XV6LOG_PANIC("xv6log_write: transaction too large");
-    if (lg.outstanding < 1)
+    }
+    if (lg.outstanding < 1) {
         XV6LOG_PANIC("xv6log_write: outside of transaction");
+    }
 
     for (i = 0; i < lg.lh.n; i++) {
         if (lg.lh.block[i] == (int)b->blockno)

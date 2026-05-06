@@ -98,7 +98,7 @@ struct xv6buf {
 /* in-memory inode                                                     */
 /* ------------------------------------------------------------------ */
 
-#define XV6FS_NINODE  64   /* inodeキャッシュ数 */
+#define XV6FS_NINODE  512  /* inodeキャッシュ数 */
 
 struct xv6fs_inode {
     uint32_t   dev;
@@ -195,6 +195,7 @@ int xv6fs_list_dir(const char *path, struct orth_dirent *dirents,
                    size_t max_entries, size_t *out_count);
 int xv6fs_write_file(const char *path, uint64_t offset,
                      const void *buf, size_t n);
+int xv6fs_create_file(const char *path, int mode, struct xv6fs_inode **out_ip);
 int xv6fs_truncate_file(const char *path, uint64_t length);
 int xv6fs_unlink_path(const char *path);
 int xv6fs_rmdir_path(const char *path);
