@@ -76,7 +76,7 @@ KERNEL_OBJS = \
     $(patsubst ports/lwip/src/%.c, $(BUILD)/lwip/%.o, $(LWIP_SRCS))
 
 # ビルドディレクトリ (/kbuild/**) はホスト側 rootfs ビルド時に事前作成済み（rootfs/kbuild/）。
-# retrofs 上に永続化することで2回目以降はインクリメンタルビルドになる。
+# xv6fs 上に永続化することで2回目以降はインクリメンタルビルドになる。
 
 .PHONY: all clean
 

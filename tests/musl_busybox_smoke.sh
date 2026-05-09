@@ -111,7 +111,7 @@ fi
 grep -q 'musl-busybox-start' "${SERIAL_LOG}"
 grep -q 'shell=/etc/musl_busybox_smoke.ash' "${SERIAL_LOG}"
 grep -q 'cat-hello' "${SERIAL_LOG}"
-grep -q 'Hello from RetroFS!' "${SERIAL_LOG}"
+grep -q 'Hello from xv6fs!' "${SERIAL_LOG}"
 grep -q 'stat-hello' "${SERIAL_LOG}"
 grep -q '/hello.txt' "${SERIAL_LOG}"
 grep -q 'touch-bbx' "${SERIAL_LOG}"

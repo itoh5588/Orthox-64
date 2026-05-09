@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ISO="${1:-orthos-retrofs.iso}"
+ISO="${1:-orthos.iso}"
 SERIAL_LOG="${SERIAL_LOG:-LOGs/doom-ac97-serial.log}"
 mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/doom-ac97-qemu.out}"
@@ -27,7 +27,7 @@ cp "${BOOTCMD_PATH}" "${BOOTCMD_BACKUP}"
     echo "/bin/doom-musl.elf"
 } > "${BOOTCMD_PATH}"
 
-make orthos-retrofs.iso ORTHOS_LIBGCC=/usr/lib/gcc/x86_64-linux-gnu/13/libgcc.a >/tmp/doom-ac97-build.out
+make orthos.iso ORTHOS_LIBGCC=/usr/lib/gcc/x86_64-linux-gnu/13/libgcc.a >/tmp/doom-ac97-build.out
 
 rm -f "${SERIAL_LOG}" "${QEMU_OUT}"
 

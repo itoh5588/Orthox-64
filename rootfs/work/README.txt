@@ -9,4 +9,4 @@ Typical native build loop:
   cc hello.c -o hello
   ./hello
 
-Run `sync` in the shell before rebooting to flush RetroFS changes.
+Run `sync` in the shell before rebooting to flush xv6fs changes.

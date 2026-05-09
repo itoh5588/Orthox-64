@@ -42,8 +42,6 @@ cat > "${SCRIPT_PATH}" <<'EOF'
 echo stat-missing-start
 /bin/staterrno.elf
 echo stat-missing-after-staterrno
-/bin/retrofsedge
-echo stat-missing-after-retrofsedge
 stat /definitely-missing
 echo stat-missing-end
 EOF

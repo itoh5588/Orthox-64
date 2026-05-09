@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ISO="${1:-orthos-retrofs.iso}"
+ISO="${1:-orthos.iso}"
 SERIAL_LOG="${SERIAL_LOG:-LOGs/dynlink-serial.log}"
 mkdir -p LOGs
 QEMU_OUT="${QEMU_OUT:-/tmp/dynlink-qemu.out}"

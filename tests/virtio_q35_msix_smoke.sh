@@ -46,7 +46,7 @@ for _ in $(seq 1 90); do
     if grep -q '\[net\] virtio-net ready.*msix=1' "${SERIAL_LOG}" 2>/dev/null &&
        grep -q '\[vblk\] virtio-blk ready.*msix=1' "${SERIAL_LOG}" 2>/dev/null &&
        grep -q '\[lwip\] dhcp bound ip=' "${SERIAL_LOG}" 2>/dev/null &&
-       grep -q '\[boot\] mounted RetroFS root image on vblk0' "${SERIAL_LOG}" 2>/dev/null; then
+       grep -q '\[boot\] mounted xv6fs root image on vblk0' "${SERIAL_LOG}" 2>/dev/null; then
         break
     fi
     sleep 1
@@ -91,7 +91,7 @@ trap - EXIT
 
 grep -q '\[net\] virtio-net ready.*msix=1' "${SERIAL_LOG}"
 grep -q '\[vblk\] virtio-blk ready.*msix=1' "${SERIAL_LOG}"
-grep -q '\[boot\] mounted RetroFS root image on vblk0' "${SERIAL_LOG}"
+grep -q '\[boot\] mounted xv6fs root image on vblk0' "${SERIAL_LOG}"
 grep -q '\[net\] virtio-net irq bottom half active' "${SERIAL_LOG}"
 grep -q '\[lwip\] dhcp bound ip=' "${SERIAL_LOG}"
 grep -q '\[lwip\] udp echo len=' "${SERIAL_LOG}"
