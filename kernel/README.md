@@ -1,7 +1,6 @@
 # Orthox-64 Kernel Source Structure
 
 This directory contains the core source code for the Orthox-64 kernel.
-For deeper design notes and verification records, see `Docs/Internal/Kernel.md`.
 
 ## File Breakdown
 

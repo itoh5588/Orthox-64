@@ -1,7 +1,6 @@
 # Orthox-64 Kernel Source Structure
 
 このディレクトリには、Orthox-64 カーネルのコアソースコードが含まれています。
-より詳細な設計メモと検証記録は `Docs/Internal/Kernel.md` を参照してください。
 
 ## ファイル一覧
 
