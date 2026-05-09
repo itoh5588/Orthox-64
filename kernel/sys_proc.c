@@ -10,7 +10,6 @@
 #define MSR_FS_BASE 0xC0000100
 
 extern struct task* task_list;
-extern int sys_close(int fd);
 extern void puts(const char* s);
 
 static inline void wrmsr(uint32_t msr, uint64_t val) {
@@ -125,7 +124,7 @@ void sys_exit(int status) {
     sound_beep_stop();
     for (int fd = 0; fd < MAX_FDS; fd++) {
         if (current->fds[fd].in_use) {
-            (void)sys_close(fd);
+            (void)fs_close(fd);
         }
     }
     task_mark_zombie(current, status);

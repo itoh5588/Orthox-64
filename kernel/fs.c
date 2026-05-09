@@ -1275,7 +1275,7 @@ int fs_get_mount_status(char* buf, size_t size) {
     return 0;
 }
 
-int sys_open(const char* path, int flags, int mode) {
+int fs_open(const char* path, int flags, int mode) {
     struct task* current = get_current_task();
     int want_dir = (flags & (O_DIRECTORY | ORTH_LEGACY_O_DIRECTORY)) != 0;
     int want_creat = (flags & (O_CREAT | ORTH_LINUX_O_CREAT)) != 0;
@@ -1610,13 +1610,13 @@ int sys_open(const char* path, int flags, int mode) {
     return -ENOENT;
 }
 
-int sys_openat(int dirfd, const char* path, int flags, int mode) {
+int fs_openat(int dirfd, const char* path, int flags, int mode) {
     char resolved_path[256];
     if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -ENOENT;
-    return sys_open(resolved_path, flags, mode);
+    return fs_open(resolved_path, flags, mode);
 }
 
-int64_t sys_write(int fd, const void* buf, size_t count) {
+int64_t fs_write(int fd, const void* buf, size_t count) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd >= 0 && fd < MAX_FDS && current->fds[fd].in_use
@@ -1717,7 +1717,7 @@ int64_t sys_write(int fd, const void* buf, size_t count) {
     }
 }
 
-int sys_ftruncate(int fd, uint64_t length) {
+int fs_ftruncate(int fd, uint64_t length) {
     struct task* current = get_current_task();
     file_descriptor_t* f;
 
@@ -1751,7 +1751,7 @@ int sys_ftruncate(int fd, uint64_t length) {
     return -EINVAL;
 }
 
-int sys_truncate(const char* path, uint64_t length) {
+int fs_truncate(const char* path, uint64_t length) {
     char resolved_path[256];
     const char* norm;
     struct ramfs_file* rf;
@@ -1778,7 +1778,7 @@ int sys_truncate(const char* path, uint64_t length) {
     return -ENOENT;
 }
 
-int64_t sys_read(int fd, void* buf, size_t count) {
+int64_t fs_read(int fd, void* buf, size_t count) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd >= 0 && fd < MAX_FDS && current->fds[fd].in_use
@@ -1918,7 +1918,7 @@ int64_t sys_read(int fd, void* buf, size_t count) {
     return (int64_t)to_read;
 }
 
-int sys_close(int fd) {
+int fs_close(int fd) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -1928,7 +1928,7 @@ int sys_close(int fd) {
     return 0;
 }
 
-int sys_dup2(int oldfd, int newfd) {
+int fs_dup2(int oldfd, int newfd) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (oldfd < 0 || oldfd >= MAX_FDS || !current->fds[oldfd].in_use) return -1;
@@ -1936,14 +1936,14 @@ int sys_dup2(int oldfd, int newfd) {
     if (oldfd == newfd) return newfd;
 
     if (current->fds[newfd].in_use) {
-        sys_close(newfd);
+        fs_close(newfd);
     }
 
     if (fs_dup_fd(&current->fds[newfd], &current->fds[oldfd]) < 0) return -1;
     return newfd;
 }
 
-int sys_fcntl(int fd, int cmd, uint64_t arg) {
+int fs_fcntl(int fd, int cmd, uint64_t arg) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -1955,7 +1955,7 @@ int sys_fcntl(int fd, int cmd, uint64_t arg) {
             if (minfd < 0) return -1;
             for (int newfd = minfd; newfd < MAX_FDS; newfd++) {
                 if (!current->fds[newfd].in_use) {
-                    if (sys_dup2(fd, newfd) < 0) return -1;
+                    if (fs_dup2(fd, newfd) < 0) return -1;
                     current->fds[newfd].fd_flags =
                         (cmd == F_DUPFD_CLOEXEC) ? FD_CLOEXEC : 0;
                     return newfd;
@@ -1979,7 +1979,7 @@ int sys_fcntl(int fd, int cmd, uint64_t arg) {
     }
 }
 
-int sys_pipe(int pipefd[2]) {
+int fs_pipe(int pipefd[2]) {
     struct task* current = get_current_task();
     if (!current) return -1;
 
@@ -2040,10 +2040,10 @@ int sys_pipe(int pipefd[2]) {
     return 0;
 }
 
-int sys_pipe2(int pipefd[2], int flags) {
+int fs_pipe2(int pipefd[2], int flags) {
     int ret;
     if (flags & ~(ORTH_LINUX_O_CLOEXEC | ORTH_LINUX_O_NONBLOCK)) return -1;
-    ret = sys_pipe(pipefd);
+    ret = fs_pipe(pipefd);
     if (ret < 0) return ret;
     if (flags & ORTH_LINUX_O_CLOEXEC) {
         struct task* current = get_current_task();
@@ -2055,7 +2055,7 @@ int sys_pipe2(int pipefd[2], int flags) {
     return 0;
 }
 
-int sys_fstat(int fd, struct kstat* st) {
+int fs_fstat(int fd, struct kstat* st) {
     struct task* current = get_current_task();
     if (!current || !st) return -1;
     
@@ -2115,7 +2115,7 @@ int sys_fstat(int fd, struct kstat* st) {
     return 0;
 }
 
-int sys_getdents(int fd, struct orth_dirent* dirp, size_t count) {
+int fs_getdents(int fd, struct orth_dirent* dirp, size_t count) {
     struct task* current = get_current_task();
     file_descriptor_t* f;
     size_t remaining;
@@ -2151,7 +2151,7 @@ static uint8_t dirent_type_from_mode(uint32_t mode) {
     return 0;
 }
 
-int sys_getdents64(int fd, void* dirp, size_t count) {
+int fs_getdents64(int fd, void* dirp, size_t count) {
     struct task* current = get_current_task();
     file_descriptor_t* f;
     struct orth_dirent* src;
@@ -2268,21 +2268,21 @@ static int fs_stat_normalized_path(const char* path, struct kstat* st) {
     return -ENOENT;
 }
 
-int sys_stat(const char* path, struct kstat* st) {
+int fs_stat(const char* path, struct kstat* st) {
     char resolved_path[256];
     if (!st || !path) return -EINVAL;
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
     return fs_stat_normalized_path(normalize_fs_path(resolved_path), st);
 }
 
-int sys_fstatat(int dirfd, const char* path, struct kstat* st, int flags) {
+int fs_fstatat(int dirfd, const char* path, struct kstat* st, int flags) {
     char resolved_path[256];
     (void)flags;
     if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) {
         return -ENOENT;
     }
     {
-        int ret = sys_stat(resolved_path, st);
+        int ret = fs_stat(resolved_path, st);
         return ret;
     }
 }
@@ -2305,17 +2305,17 @@ int sys_fstatat(int dirfd, const char* path, struct kstat* st, int flags) {
 #ifndef AT_SYMLINK_NOFOLLOW
 #define AT_SYMLINK_NOFOLLOW 0x0002
 #endif
-int sys_access(const char* path, int mode) {
-    return sys_faccessat(-100, path, mode, 0);
+int fs_access(const char* path, int mode) {
+    return fs_faccessat(-100, path, mode, 0);
 }
 
-int sys_faccessat(int dirfd, const char* path, int mode, int flags) {
+int fs_faccessat(int dirfd, const char* path, int mode, int flags) {
     struct kstat st;
     uint32_t perm_bits;
     char resolved_path[256];
     if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW)) return -1;
     if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -1;
-    if (sys_stat(resolved_path, &st) < 0) {
+    if (fs_stat(resolved_path, &st) < 0) {
         return -1;
     }
     if (mode == F_OK) return 0;
@@ -2327,7 +2327,7 @@ int sys_faccessat(int dirfd, const char* path, int mode, int flags) {
     return -1;
 }
 
-int sys_utimensat(int dirfd, const char* path, const void* times, int flags) {
+int fs_utimensat(int dirfd, const char* path, const void* times, int flags) {
     char resolved_path[256];
     struct kstat st;
     struct ramfs_file* rf;
@@ -2356,7 +2356,7 @@ int sys_utimensat(int dirfd, const char* path, const void* times, int flags) {
     }
 
     if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -ENOENT;
-    if (sys_stat(resolved_path, &st) < 0) return -ENOENT;
+    if (fs_stat(resolved_path, &st) < 0) return -ENOENT;
     norm = normalize_fs_path(resolved_path);
     rf = find_ramfs(norm);
     if (rf) {
@@ -2368,20 +2368,20 @@ int sys_utimensat(int dirfd, const char* path, const void* times, int flags) {
     return 0;
 }
 
-int64_t sys_readlink(const char* path, char* buf, size_t bufsiz) {
-    return sys_readlinkat(-100, path, buf, bufsiz);
+int64_t fs_readlink(const char* path, char* buf, size_t bufsiz) {
+    return fs_readlinkat(-100, path, buf, bufsiz);
 }
 
-int64_t sys_readlinkat(int dirfd, const char* path, char* buf, size_t bufsiz) {
+int64_t fs_readlinkat(int dirfd, const char* path, char* buf, size_t bufsiz) {
     struct kstat dummy;
     (void)buf;
     (void)bufsiz;
     if (!path) return -1;
-    if (sys_fstatat(dirfd, path, &dummy, AT_SYMLINK_NOFOLLOW) < 0) return -1;
+    if (fs_fstatat(dirfd, path, &dummy, AT_SYMLINK_NOFOLLOW) < 0) return -1;
     return -1;
 }
 
-int64_t sys_lseek(int fd, int64_t offset, int whence) {
+int64_t fs_lseek(int fd, int64_t offset, int whence) {
     struct task* current = get_current_task();
     if (!current) return -1;
     
@@ -2406,7 +2406,7 @@ int64_t sys_lseek(int fd, int64_t offset, int whence) {
     return new_offset;
 }
 
-int sys_unlink(const char* path) {
+int fs_unlink(const char* path) {
     char resolved_path[256];
     if (!path) return -1;
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
@@ -2443,7 +2443,7 @@ int sys_unlink(const char* path) {
     return -1; // ファイルが見つからないか、TAR 内など削除できないファイル
 }
 
-int sys_rename(const char* oldpath, const char* newpath) {
+int fs_rename(const char* oldpath, const char* newpath) {
     char old_resolved[256];
     char new_resolved[256];
     const char* old_norm;
@@ -2468,7 +2468,7 @@ int sys_rename(const char* oldpath, const char* newpath) {
     return 0;
 }
 
-int sys_chmod(const char* path, uint32_t mode) {
+int fs_chmod(const char* path, uint32_t mode) {
     char resolved_path[256];
     const char* norm;
     struct ramfs_file* rf;
@@ -2485,7 +2485,7 @@ int sys_chmod(const char* path, uint32_t mode) {
     return -1;
 }
 
-int sys_mkdir(const char* path, int mode) {
+int fs_mkdir(const char* path, int mode) {
     char resolved_path[256];
     const char* norm;
     struct kstat st;
@@ -2505,13 +2505,13 @@ int sys_mkdir(const char* path, int mode) {
     return create_ramfs_dir(norm, (uint32_t)mode) ? 0 : -1;
 }
 
-int sys_mkdirat(int dirfd, const char* path, int mode) {
+int fs_mkdirat(int dirfd, const char* path, int mode) {
     char resolved_path[256];
     if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -1;
-    return sys_mkdir(resolved_path, mode);
+    return fs_mkdir(resolved_path, mode);
 }
 
-int sys_rmdir(const char* path) {
+int fs_rmdir(const char* path) {
     char resolved_path[256];
     const char* norm;
     if (!path || path[0] == '\0') return -1;
@@ -2543,21 +2543,21 @@ int sys_rmdir(const char* path) {
     return -1;
 }
 
-int sys_sync(void) {
+int fs_sync(void) {
     if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
         return xv6fs_sync();
     }
     return 0;
 }
 
-int sys_unlinkat(int dirfd, const char* path, int flags) {
+int fs_unlinkat(int dirfd, const char* path, int flags) {
     char resolved_path[256];
     if (resolve_dirfd_path(dirfd, path, resolved_path, sizeof(resolved_path)) < 0) return -1;
-    if (flags & ORTH_AT_REMOVEDIR) return sys_rmdir(resolved_path);
-    return sys_unlink(resolved_path);
+    if (flags & ORTH_AT_REMOVEDIR) return fs_rmdir(resolved_path);
+    return fs_unlink(resolved_path);
 }
 
-int sys_chdir(const char* path) {
+int fs_chdir(const char* path) {
     struct task* current = get_current_task();
     struct kstat st;
     char resolved_path[256];
@@ -2565,7 +2565,7 @@ int sys_chdir(const char* path) {
     size_t i = 0;
     if (!current || !path || path[0] == '\0') return -1;
     resolve_task_path(path, resolved_path, sizeof(resolved_path));
-    if (sys_stat(resolved_path, &st) < 0) return -1;
+    if (fs_stat(resolved_path, &st) < 0) return -1;
     if ((st.mode & 0170000U) != KSTAT_MODE_DIR) return -1;
     norm = normalize_fs_path(resolved_path);
     current->cwd[i++] = '/';
@@ -2576,7 +2576,7 @@ int sys_chdir(const char* path) {
     return 0;
 }
 
-int sys_fchdir(int fd) {
+int fs_fchdir(int fd) {
     struct task* current = get_current_task();
     struct kstat st;
     file_descriptor_t* f;
@@ -2598,7 +2598,7 @@ int sys_fchdir(int fd) {
     return 0;
 }
 
-int sys_getcwd(char* buf, size_t size) {
+int fs_getcwd(char* buf, size_t size) {
     struct task* current = get_current_task();
     size_t i = 0;
     if (!current || !buf || size == 0) return -1;

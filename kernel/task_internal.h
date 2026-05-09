@@ -19,6 +19,8 @@ struct syscall_frame {
     uint64_t rip, cs, rflags, rsp, ss;
 };
 
+int task_fork(struct syscall_frame* frame);
+int task_execve(struct syscall_frame* frame, const char* path, char* const argv[], char* const envp[]);
 void task_set_comm_from_path(struct task* t, const char* path);
 uint64_t task_lock_irqsave(void);
 void task_unlock_irqrestore(uint64_t flags);

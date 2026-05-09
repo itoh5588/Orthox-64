@@ -16,8 +16,10 @@
 
 extern void puts(const char* s);
 extern void puthex(uint64_t v);
-extern int64_t sys_read(int fd, void* buf, size_t count);
-extern int64_t sys_lseek(int fd, int64_t offset, int whence);
+
+void sys_brk_init(uint64_t initial_break) {
+    (void)initial_break;
+}
 
 static void* kernel_memset(void* s, int c, size_t n) {
     unsigned char* p = s;
@@ -310,13 +312,13 @@ void* sys_mremap(void* old_addr, size_t old_len, size_t new_len, int flags, void
 
 static void copy_mmap_file_page(uint8_t* dest, int fd, uint64_t file_off) {
     if (!dest || fd < 0) return;
-    int64_t old = sys_lseek(fd, 0, 1);
+    int64_t old = fs_lseek(fd, 0, 1);
     if (old < 0) return;
-    if (sys_lseek(fd, (int64_t)file_off, 0) >= 0) {
-        int64_t n = sys_read(fd, dest, PAGE_SIZE);
+    if (fs_lseek(fd, (int64_t)file_off, 0) >= 0) {
+        int64_t n = fs_read(fd, dest, PAGE_SIZE);
         (void)n;
     }
-    (void)sys_lseek(fd, old, 0);
+    (void)fs_lseek(fd, old, 0);
 }
 
 void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, int64_t offset) {

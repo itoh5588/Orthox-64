@@ -510,7 +510,7 @@ static int64_t socket_send_stream(file_descriptor_t* f, net_socket_backend_t* so
     return (int64_t)sent;
 }
 
-int sys_socket(int domain, int type, int protocol) {
+int net_socket_socket(int domain, int type, int protocol) {
     struct task* current = get_current_task();
     int base_type = type & SOCK_TYPE_MASK;
     int extra_flags = type & ~SOCK_TYPE_MASK;
@@ -565,7 +565,7 @@ int sys_socket(int domain, int type, int protocol) {
     return fd;
 }
 
-int sys_bind(int fd, const void* addr, uint32_t addrlen) {
+int net_socket_bind(int fd, const void* addr, uint32_t addrlen) {
     struct task* current = get_current_task();
     if (!current || !addr) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -590,7 +590,7 @@ int sys_bind(int fd, const void* addr, uint32_t addrlen) {
     return 0;
 }
 
-int sys_connect(int fd, const void* addr, uint32_t addrlen) {
+int net_socket_connect(int fd, const void* addr, uint32_t addrlen) {
     struct task* current = get_current_task();
     if (!current || !addr) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -648,7 +648,7 @@ int sys_connect(int fd, const void* addr, uint32_t addrlen) {
     return 0;
 }
 
-int sys_listen(int fd, int backlog) {
+int net_socket_listen(int fd, int backlog) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -665,7 +665,7 @@ int sys_listen(int fd, int backlog) {
     return 0;
 }
 
-int sys_accept(int fd, void* addr, uint32_t* addrlen) {
+int net_socket_accept(int fd, void* addr, uint32_t* addrlen) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -715,7 +715,7 @@ int sys_accept(int fd, void* addr, uint32_t* addrlen) {
     return newfd;
 }
 
-int sys_setsockopt(int fd, int level, int optname, const void* optval, uint32_t optlen) {
+int net_socket_setsockopt(int fd, int level, int optname, const void* optval, uint32_t optlen) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -743,7 +743,7 @@ int sys_setsockopt(int fd, int level, int optname, const void* optval, uint32_t 
     return -1;
 }
 
-int sys_getsockname(int fd, void* addr, uint32_t* addrlen) {
+int net_socket_getsockname(int fd, void* addr, uint32_t* addrlen) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -752,7 +752,7 @@ int sys_getsockname(int fd, void* addr, uint32_t* addrlen) {
     return fill_sockaddr_in(addr, addrlen, sock->local_addr, sock->local_port) ? 0 : -1;
 }
 
-int sys_getpeername(int fd, void* addr, uint32_t* addrlen) {
+int net_socket_getpeername(int fd, void* addr, uint32_t* addrlen) {
     struct task* current = get_current_task();
     if (!current) return -1;
     if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
@@ -761,7 +761,7 @@ int sys_getpeername(int fd, void* addr, uint32_t* addrlen) {
     return fill_sockaddr_in(addr, addrlen, sock->peer_addr, sock->peer_port) ? 0 : -1;
 }
 
-int sys_shutdown(int fd, int how) {
+int net_socket_shutdown(int fd, int how) {
     struct task* current = get_current_task();
     (void)how;
     if (!current) return -1;
@@ -774,7 +774,7 @@ int sys_shutdown(int fd, int how) {
     return 0;
 }
 
-int64_t sys_sendto(int fd, const void* buf, size_t len, int flags, const void* dest_addr, uint32_t addrlen) {
+int64_t net_socket_sendto(int fd, const void* buf, size_t len, int flags, const void* dest_addr, uint32_t addrlen) {
     struct task* current = get_current_task();
     if (!current || !buf) return -1;
     if (flags & ~MSG_NOSIGNAL) return -1;
@@ -821,7 +821,7 @@ int64_t sys_sendto(int fd, const void* buf, size_t len, int flags, const void* d
     return (int64_t)len;
 }
 
-int64_t sys_recvfrom(int fd, void* buf, size_t len, int flags, void* src_addr, uint32_t* addrlen) {
+int64_t net_socket_recvfrom(int fd, void* buf, size_t len, int flags, void* src_addr, uint32_t* addrlen) {
     struct task* current = get_current_task();
     if (!current || !buf) return -1;
     if (flags != 0) return -1;
