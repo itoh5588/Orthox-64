@@ -2109,9 +2109,22 @@ int fs_fstat(int fd, struct kstat* st) {
         return 0;
     }
     if ((fs_fd_type(f) == FT_RAMFS || fs_fd_type(f) == FT_MODULE || fs_fd_type(f) == FT_XV6FS) && fs_fd_name(f)[0]) {
-        return fs_stat_normalized_path(normalize_fs_path(fs_fd_name(f)), st);
+        if (fs_stat_normalized_path(normalize_fs_path(fs_fd_name(f)), st) == 0) return 0;
+        /* path lookup failed (e.g. fd->name truncated to 63 chars).
+           fall back to fd-local metadata so fstat does not break dlopen. */
     }
     kstat_set_defaults(st, fs_default_mode_for_type(KSTAT_MODE_FILE), (int64_t)fs_fd_size(f));
+    if (fs_fd_type(f) == FT_XV6FS) {
+        struct xv6fs_inode* ip = (struct xv6fs_inode*)fs_fd_data_required(f, FT_XV6FS);
+        st->dev = FS_DEV_ROOT_ARCHIVE;
+        st->ino = ip ? ip->inum : fs_hash_name(fs_fd_name(f));
+    } else if (fs_fd_type(f) == FT_RAMFS) {
+        st->dev = FS_DEV_RAMFS;
+        st->ino = fs_hash_name(fs_fd_name(f));
+    } else if (fs_fd_type(f) == FT_MODULE) {
+        st->dev = FS_DEV_MODULE;
+        st->ino = fs_hash_name(fs_fd_name(f));
+    }
     return 0;
 }
 

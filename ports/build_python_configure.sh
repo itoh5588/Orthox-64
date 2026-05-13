@@ -33,9 +33,9 @@ make clean || true
     --without-ensurepip \
     --with-build-python=python3 \
     MACHDEP=linux \
-    CC="$ROOT/ports/orthos-musl-gcc.sh" \
-    CXX="$ROOT/ports/orthos-musl-gcc.sh" \
-    CFLAGS="-static -fno-PIC -fno-PIE -D__ORTHOS__ -D_GNU_SOURCE -D_Py_FORCE_UTF8_FS_ENCODING -D_Py_FORCE_UTF8_LOCALE" \
-    LDFLAGS="-static -fno-PIC -fno-PIE" \
+    CC="$ROOT/ports/orthos-musl-gcc-dyn.sh" \
+    CXX="$ROOT/ports/orthos-musl-gcc-dyn.sh" \
+    CFLAGS="-D__ORTHOS__ -D_GNU_SOURCE -D_Py_FORCE_UTF8_FS_ENCODING -D_Py_FORCE_UTF8_LOCALE" \
+    LDFLAGS="-Wl,-E" \
     LIBS="-lc -lm" \
     --prefix="/"
