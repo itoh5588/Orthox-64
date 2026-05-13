@@ -9,9 +9,19 @@
 #define ORTH_TIOCGPGRP   0x540F
 #define ORTH_TIOCSPGRP   0x5410
 #define ORTH_TIOCGWINSZ  0x5413
+#define ORTH_FIONCLEX    0x5450
+#define ORTH_FIOCLEX     0x5451
+
+#define ORTH_F_SETFD     2
 
 #ifndef EINVAL
 #define EINVAL 22
+#endif
+#ifndef EFAULT
+#define EFAULT 14
+#endif
+#ifndef ENOTTY
+#define ENOTTY 25
 #endif
 
 #ifndef ORTHOX_MEM_PROGRESS
@@ -190,17 +200,25 @@ int64_t sys_pwrite64(int fd, const void* buf, size_t count, int64_t offset) {
     return ret;
 }
 
+static int fd_is_console(int fd) {
+    struct task* current = get_current_task();
+    if (!current) return 0;
+    if (fd < 0 || fd >= MAX_FDS) return 0;
+    if (!current->fds[fd].in_use) return 0;
+    return current->fds[fd].type == FT_CONSOLE;
+}
+
 int sys_tcgetattr(int fd, struct orth_termios* tio) {
-    (void)fd;
-    if (!tio) return -1;
+    if (!tio) return -EFAULT;
+    if (!fd_is_console(fd)) return -ENOTTY;
     *tio = g_console_termios;
     return 0;
 }
 
 int sys_tcsetattr(int fd, int optional_actions, const struct orth_termios* tio) {
-    (void)fd;
     (void)optional_actions;
-    if (!tio) return -1;
+    if (!tio) return -EFAULT;
+    if (!fd_is_console(fd)) return -ENOTTY;
     g_console_termios = *tio;
     return 0;
 }
@@ -208,7 +226,8 @@ int sys_tcsetattr(int fd, int optional_actions, const struct orth_termios* tio) 
 int sys_ioctl(int fd, unsigned long request, uint64_t arg) {
     switch (request) {
         case ORTH_TIOCGWINSZ:
-            if (!arg) return -1;
+            if (!arg) return -EFAULT;
+            if (!fd_is_console(fd)) return -ENOTTY;
             ((struct orth_winsize*)arg)->ws_row = 25;
             ((struct orth_winsize*)arg)->ws_col = 80;
             ((struct orth_winsize*)arg)->ws_xpixel = 0;
@@ -225,8 +244,12 @@ int sys_ioctl(int fd, unsigned long request, uint64_t arg) {
             return sys_tcgetattr(fd, (struct orth_termios*)arg);
         case ORTH_TCSETS:
             return sys_tcsetattr(fd, 0, (const struct orth_termios*)arg);
+        case ORTH_FIOCLEX:
+            return fs_fcntl(fd, ORTH_F_SETFD, FD_CLOEXEC);
+        case ORTH_FIONCLEX:
+            return fs_fcntl(fd, ORTH_F_SETFD, 0);
         default:
-            return -1;
+            return -ENOTTY;
     }
 }
 
