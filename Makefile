@@ -1,3 +1,6 @@
+# OS 判定
+UNAME_S := $(shell uname -s)
+
 # コンパイラ設定
 CC = clang
 LD = lld -flavor gnu
@@ -329,7 +332,13 @@ $(XV6FS_IMG): $(ROOTFS_FILES)
 
 rootfs-xv6.img: $(XV6FS_IMG)
 
-$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf Limine/limine $(ROOTFS_IMG)
+ifeq ($(UNAME_S),Darwin)
+LIMINE_BINARY_DEP =
+else
+LIMINE_BINARY_DEP = Limine/limine
+endif
+
+$(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf $(LIMINE_BINARY_DEP) $(ROOTFS_IMG)
 	rm -rf iso_root
 	mkdir -p iso_root/boot/limine
 	cp $(KERNEL_ELF) iso_root/boot/kernel.elf
@@ -346,7 +355,9 @@ $(ISO): $(KERNEL_ELF) $(SH_ELF) iso/limine.conf Limine/limine $(ROOTFS_IMG)
 		-apm-block-size 2048 --efi-boot boot/limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		iso_root -o $(ISO)
+ifneq ($(UNAME_S),Darwin)
 	$(CURDIR)/Limine/limine bios-install $(ISO)
+endif
 	rm -rf iso_root
 
 
