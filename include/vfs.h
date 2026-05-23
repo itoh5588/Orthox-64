@@ -11,6 +11,7 @@ enum vfs_mount_kind {
     VFS_MOUNT_NONE = 0,
     VFS_MOUNT_USB_FAT = 1,
     VFS_MOUNT_IMAGE_FS = 2,
+    VFS_MOUNT_PROCFS = 3,
 };
 
 struct vfs_mountpoint {

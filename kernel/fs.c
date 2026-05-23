@@ -13,6 +13,7 @@
 #include "xv6fs.h"
 #include "string.h"
 #include "virtio_blk.h"
+#include "procfs.h"
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -1136,6 +1137,7 @@ void fs_init(void) {
     }
     vfs_init();
     vfs_register_mountpoint("usb", VFS_MOUNT_USB_FAT, 0);
+    vfs_register_mountpoint("proc", VFS_MOUNT_PROCFS, 0);
 }
 
 static int ramfs_grow(struct ramfs_file* rf, size_t needed) {
@@ -1355,6 +1357,30 @@ int fs_open(const char* path, int flags, int mode) {
             file->path[63] = '\0';
             current->fds[fd].name[63] = '\0';
         }
+        return fd;
+    }
+
+    if (mount && mount->kind == VFS_MOUNT_PROCFS) {
+        fs_file_t* file;
+        if ((flags & O_WRONLY) || (flags & O_RDWR) || want_creat) return -EROFS;
+        if (!mount_subpath || mount_subpath[0] == '\0') return -ENOENT;
+        file = procfs_open(mount_subpath, flags);
+        if (!file) return -ENOENT;
+        current->fds[fd].type = FT_PROCFS;
+        current->fds[fd].file = file;
+        current->fds[fd].data = NULL;
+        current->fds[fd].size = 0;
+        current->fds[fd].offset = 0;
+        current->fds[fd].in_use = 1;
+        current->fds[fd].flags = flags;
+        current->fds[fd].fd_flags = 0;
+        current->fds[fd].aux0 = 0;
+        current->fds[fd].aux1 = 0;
+        for (int j = 0; j < 63; j++) {
+            current->fds[fd].name[j] = mount_subpath[j];
+            if (mount_subpath[j] == '\0') break;
+        }
+        current->fds[fd].name[63] = '\0';
         return fd;
     }
 

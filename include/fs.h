@@ -19,7 +19,8 @@ typedef enum {
     FT_USB,     // USB FAT file
     FT_XV6FS,   // file inside xv6fs root image
     FT_RAWDEV,  // raw output device (e.g. /dev/kout)
-    FT_DIR      // synthesized directory listing
+    FT_DIR,     // synthesized directory listing
+    FT_PROCFS   // procfs snapshot text buffer
 } file_type_t;
 
 struct fs_file;
