@@ -16,7 +16,8 @@ int fflush(FILE* stream);
 void perror(const char* s);
 /*
  * Kernel-local minimal snprintf. Supports %% %c %s %d %i %u %x %X %p
- * and l/ll integer variants. Width, precision, floating point, and locale
+ * and l/ll integer variants. Decimal field width, '-' left alignment, and
+ * '0' zero padding are supported. Precision, floating point, and locale
  * formatting are intentionally unsupported.
  */
 int snprintf(char* dst, size_t size, const char* fmt, ...);
