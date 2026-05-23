@@ -27,6 +27,13 @@
 #define XV6FS_T_FILE   2
 #define XV6FS_T_DEVICE 3
 
+/*
+ * Orthox-64 stores POSIX permission bits for regular files and directories
+ * in the otherwise unused minor field. The major field marks that minor is
+ * valid, preserving compatibility with old images that left both fields zero.
+ */
+#define XV6FS_MODE_MAGIC 0x4f4d
+
 /* directory entry name length (NULL終端なし)
  * dirent = inum(2) + name(62) = 64 bytes → BSIZE(1024)/64 = 16 entries/block */
 #define XV6FS_DIRSIZ   62
@@ -200,6 +207,7 @@ int xv6fs_truncate_file(const char *path, uint64_t length);
 int xv6fs_unlink_path(const char *path);
 int xv6fs_rmdir_path(const char *path);
 int xv6fs_mkdir_path(const char *path, int mode);
+int xv6fs_chmod_path(const char *path, uint32_t mode);
 int xv6fs_sync(void);
 
 #endif /* XV6FS_H */

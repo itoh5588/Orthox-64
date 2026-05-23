@@ -14,6 +14,11 @@ int puts(const char* s);
 size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream);
 int fflush(FILE* stream);
 void perror(const char* s);
+/*
+ * Kernel-local minimal snprintf. Supports %% %c %s %d %i %u %x %X %p
+ * and l/ll integer variants. Width, precision, floating point, and locale
+ * formatting are intentionally unsupported.
+ */
 int snprintf(char* dst, size_t size, const char* fmt, ...);
 int vsnprintf(char* dst, size_t size, const char* fmt, va_list ap);
 

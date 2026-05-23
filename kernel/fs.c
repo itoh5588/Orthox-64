@@ -2495,6 +2495,9 @@ int fs_chmod(const char* path, uint32_t mode) {
         rf->ctime_sec = fs_now_sec();
         return 0;
     }
+    if (g_root_source == ROOT_SOURCE_XV6FS && xv6fs_is_mounted()) {
+        return xv6fs_chmod_path(norm, mode) == 0 ? 0 : -1;
+    }
     return -1;
 }
 

@@ -31,6 +31,7 @@ ROOTINO  = 1
 T_DIR    = 1
 T_FILE   = 2
 T_DEVICE = 3
+MODE_MAGIC = 0x4f4d
 DIRSIZ   = 62   # dirent = inum(2) + name(62) = 64 bytes; BSIZE/64 = 16 entries/block
 
 # dinode on-disk layout:
@@ -120,13 +121,18 @@ def rinode(inum: int) -> dict:
     }
 
 
-def ialloc(ftype: int) -> int:
+def ialloc(ftype: int, mode: int | None = None) -> int:
     global freeinode
     inum = freeinode
     freeinode += 1
     assert inum < NINODES, f"out of inodes: {inum} (max {NINODES})"
+    if mode is None:
+        mode = 0o755 if ftype == T_DIR else 0o644
     din = {'type': ftype, 'major': 0, 'minor': 0, 'nlink': 1,
            'size': 0, 'addrs': [0] * DINODE_ADDRS}
+    if ftype in (T_DIR, T_FILE):
+        din['major'] = MODE_MAGIC
+        din['minor'] = mode & 0o7777
     winode(inum, din)
     return inum
 
@@ -261,8 +267,8 @@ def add_dirent(parent: int, name: str, child: int) -> None:
     iappend(parent, _dirent(child, name))
 
 
-def mkdirnode(parent: int | None, name: str | None) -> int:
-    inum = ialloc(T_DIR)
+def mkdirnode(parent: int | None, name: str | None, mode: int | None = None) -> int:
+    inum = ialloc(T_DIR, mode)
     iappend(inum, _dirent(inum, "."))
     iappend(inum, _dirent(parent if parent is not None else inum, ".."))
     if parent is not None and name is not None:
@@ -302,20 +308,20 @@ def populate(host_path: Path, dir_inum: int, depth: int = 0) -> None:
         if entry.is_symlink():
             try:
                 target = os.readlink(entry).encode()
-                child  = ialloc(T_FILE)
+                child  = ialloc(T_FILE, entry.lstat().st_mode & 0o7777)
                 add_dirent(dir_inum, name, child)
                 iappend(child, target)
             except OSError as e:
                 print(f"\nSKIP symlink {entry}: {e}", file=sys.stderr)
 
         elif entry.is_dir():
-            child = mkdirnode(dir_inum, name)
+            child = mkdirnode(dir_inum, name, entry.stat().st_mode & 0o7777)
             populate(entry, child, depth + 1)
 
         else:
             try:
                 fsize = entry.stat().st_size
-                child = ialloc(T_FILE)
+                child = ialloc(T_FILE, entry.stat().st_mode & 0o7777)
                 add_dirent(dir_inum, name, child)
                 with entry.open('rb') as f:
                     while True:

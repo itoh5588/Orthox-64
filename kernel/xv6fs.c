@@ -32,6 +32,20 @@ static void xv6fs_print(const char *fmt, ...) {
 
 #define min(a, b) ((uint32_t)(a) < (uint32_t)(b) ? (uint32_t)(a) : (uint32_t)(b))
 
+static uint32_t xv6fs_type_mode(const struct xv6fs_inode *ip) {
+    uint32_t type = (ip->type == XV6FS_T_DIR) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE;
+    uint32_t perm = (ip->type == XV6FS_T_DIR) ? 0555U : 0444U;
+    if (ip->major == XV6FS_MODE_MAGIC) {
+        perm = (uint32_t)ip->minor & 07777U;
+    }
+    return type | perm;
+}
+
+static void xv6fs_set_mode(struct xv6fs_inode *ip, uint32_t mode) {
+    ip->major = XV6FS_MODE_MAGIC;
+    ip->minor = (int16_t)(mode & 07777U);
+}
+
 /* ------------------------------------------------------------------ */
 /* グローバル状態                                                      */
 /* ------------------------------------------------------------------ */
@@ -768,8 +782,7 @@ int xv6fs_stat_path(const char *path, uint32_t *out_mode,
     struct xv6fs_inode *ip = xv6fs_namei(lookup);
     if (!ip) return -1;
     xv6fs_ilock(ip);
-    if (out_mode)  *out_mode  = (ip->type == XV6FS_T_DIR) ?
-                                 KSTAT_MODE_DIR : KSTAT_MODE_FILE;
+    if (out_mode)  *out_mode  = xv6fs_type_mode(ip);
     if (out_size)  *out_size  = ip->size;
     if (out_mtime) *out_mtime = 0;
     xv6fs_iunlock(ip);
@@ -800,7 +813,7 @@ int xv6fs_list_dir(const char *path, struct orth_dirent *dirents,
 
         struct xv6fs_inode *ip = xv6fs_iget(dp->dev, de.inum);
         xv6fs_ilock(ip);
-        uint32_t mode = (ip->type == XV6FS_T_DIR) ? KSTAT_MODE_DIR : KSTAT_MODE_FILE;
+        uint32_t mode = xv6fs_type_mode(ip);
         uint32_t sz   = ip->size;
         xv6fs_iunlock(ip);
         xv6fs_iput(ip);
@@ -834,9 +847,8 @@ int xv6fs_write_file(const char *path, uint64_t offset,
     return (r == (int)n) ? 0 : -1;
 }
 
-int xv6fs_create_file(const char *path, int mode_unused,
+int xv6fs_create_file(const char *path, int mode,
                       struct xv6fs_inode **out_ip) {
-    (void)mode_unused;
     char name[XV6FS_DIRSIZ];
     struct xv6fs_inode *dp;
     struct xv6fs_inode *ip;
@@ -881,6 +893,7 @@ int xv6fs_create_file(const char *path, int mode_unused,
     }
     xv6fs_ilock(ip);
     ip->nlink = 1;
+    xv6fs_set_mode(ip, (uint32_t)mode);
     xv6fs_iupdate(ip);
     if (xv6fs_dirlink(dp, name, ip->inum) < 0) {
         ip->nlink = 0;
@@ -981,8 +994,7 @@ int xv6fs_rmdir_path(const char *path) {
     return 0;
 }
 
-int xv6fs_mkdir_path(const char *path, int mode_unused) {
-    (void)mode_unused;
+int xv6fs_mkdir_path(const char *path, int mode) {
     char name[XV6FS_DIRSIZ];
     struct xv6fs_inode *dp = xv6fs_nameiparent(path, name);
     if (!dp) return -1;
@@ -995,6 +1007,7 @@ int xv6fs_mkdir_path(const char *path, int mode_unused) {
     }
     xv6fs_ilock(ip);
     ip->nlink = 1;
+    xv6fs_set_mode(ip, (uint32_t)mode);
     xv6fs_iupdate(ip);
     xv6fs_dirlink(ip, ".", ip->inum);
     xv6fs_dirlink(ip, "..", dp->inum);
@@ -1003,6 +1016,25 @@ int xv6fs_mkdir_path(const char *path, int mode_unused) {
     xv6fs_iupdate(dp);
     xv6fs_iunlock(ip); xv6fs_iput(ip);
     xv6fs_iunlock(dp); xv6log_end_op(); xv6fs_iput(dp);
+    return 0;
+}
+
+int xv6fs_chmod_path(const char *path, uint32_t mode) {
+    struct xv6fs_inode *ip = xv6fs_namei(path);
+    if (!ip) return -1;
+    xv6log_begin_op();
+    xv6fs_ilock(ip);
+    if (ip->type != XV6FS_T_DIR && ip->type != XV6FS_T_FILE) {
+        xv6fs_iunlock(ip);
+        xv6log_end_op();
+        xv6fs_iput(ip);
+        return -1;
+    }
+    xv6fs_set_mode(ip, mode);
+    xv6fs_iupdate(ip);
+    xv6fs_iunlock(ip);
+    xv6log_end_op();
+    xv6fs_iput(ip);
     return 0;
 }
 
