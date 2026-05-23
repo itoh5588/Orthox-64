@@ -5,6 +5,7 @@
 #include "lapic.h"
 #include "vfs.h"
 #include "string.h"
+#include "stdio.h"
 
 #ifndef ENOENT
 #define ENOENT 2
@@ -33,51 +34,16 @@ static const struct procfs_entry g_proc_entries[] = {
     { "mounts",  PROCFS_MOUNTS  },
 };
 
-static size_t append_str(char* buf, size_t cap, size_t off, const char* s) {
-    while (*s && off + 1 < cap) buf[off++] = *s++;
-    return off;
-}
-
-static size_t append_u64(char* buf, size_t cap, size_t off, uint64_t v) {
-    char tmp[24];
-    int n = 0;
-    if (v == 0) tmp[n++] = '0';
-    while (v) { tmp[n++] = (char)('0' + (v % 10U)); v /= 10U; }
-    while (n > 0 && off + 1 < cap) buf[off++] = tmp[--n];
-    return off;
-}
-
-static size_t append_u64_pad3(char* buf, size_t cap, size_t off, uint64_t v) {
-    char tmp[4];
-    tmp[0] = (char)('0' + (v / 100U) % 10U);
-    tmp[1] = (char)('0' + (v / 10U) % 10U);
-    tmp[2] = (char)('0' + v % 10U);
-    for (int i = 0; i < 3 && off + 1 < cap; i++) buf[off++] = tmp[i];
-    return off;
-}
-
 static size_t build_uptime(char* buf, size_t cap) {
     uint64_t ms = lapic_get_ticks_ms();
     uint64_t sec = ms / 1000U;
     uint64_t frac = ms % 1000U;
-    size_t off = 0;
-    off = append_str(buf, cap, off, "uptime_sec ");
-    off = append_u64(buf, cap, off, sec);
-    off = append_str(buf, cap, off, ".");
-    off = append_u64_pad3(buf, cap, off, frac);
-    off = append_str(buf, cap, off, "\n");
-    off = append_str(buf, cap, off, "uptime_ms ");
-    off = append_u64(buf, cap, off, ms);
-    off = append_str(buf, cap, off, "\n");
-    return off;
-}
-
-static size_t emit_kv(char* buf, size_t cap, size_t off, const char* key, uint64_t v) {
-    off = append_str(buf, cap, off, key);
-    off = append_str(buf, cap, off, " ");
-    off = append_u64(buf, cap, off, v);
-    off = append_str(buf, cap, off, "\n");
-    return off;
+    int n = snprintf(buf, cap,
+                     "uptime_sec %llu.%03llu\nuptime_ms %llu\n",
+                     (unsigned long long)sec,
+                     (unsigned long long)frac,
+                     (unsigned long long)ms);
+    return (n < 0) ? 0 : (size_t)n;
 }
 
 static size_t build_meminfo(char* buf, size_t cap) {
@@ -85,15 +51,22 @@ static size_t build_meminfo(char* buf, size_t cap) {
     uint64_t total_pages = pmm_get_total_pages();
     uint64_t free_pages = pmm_get_free_pages();
     uint64_t used_pages = pmm_get_allocated_pages();
-    size_t off = 0;
-    off = emit_kv(buf, cap, off, "page_size",       page_size);
-    off = emit_kv(buf, cap, off, "total_pages",     total_pages);
-    off = emit_kv(buf, cap, off, "free_pages",      free_pages);
-    off = emit_kv(buf, cap, off, "used_pages",      used_pages);
-    off = emit_kv(buf, cap, off, "total_mem_bytes", total_pages * page_size);
-    off = emit_kv(buf, cap, off, "free_mem_bytes",  free_pages * page_size);
-    off = emit_kv(buf, cap, off, "used_mem_bytes",  used_pages * page_size);
-    return off;
+    int n = snprintf(buf, cap,
+                     "page_size %llu\n"
+                     "total_pages %llu\n"
+                     "free_pages %llu\n"
+                     "used_pages %llu\n"
+                     "total_mem_bytes %llu\n"
+                     "free_mem_bytes %llu\n"
+                     "used_mem_bytes %llu\n",
+                     (unsigned long long)page_size,
+                     (unsigned long long)total_pages,
+                     (unsigned long long)free_pages,
+                     (unsigned long long)used_pages,
+                     (unsigned long long)(total_pages * page_size),
+                     (unsigned long long)(free_pages * page_size),
+                     (unsigned long long)(used_pages * page_size));
+    return (n < 0) ? 0 : (size_t)n;
 }
 
 static size_t build_mounts(char* buf, size_t cap) {
@@ -108,11 +81,12 @@ static size_t build_mounts(char* buf, size_t cap) {
             case VFS_MOUNT_PROCFS:   kind_name = "procfs"; break;
             default: break;
         }
-        off = append_str(buf, cap, off, "/");
-        off = append_str(buf, cap, off, mounts[i]->path);
-        off = append_str(buf, cap, off, " ");
-        off = append_str(buf, cap, off, kind_name);
-        off = append_str(buf, cap, off, "\n");
+        if (off >= cap) break;
+        int n = snprintf(buf + off, cap - off,
+                         "/%s %s\n", mounts[i]->path, kind_name);
+        if (n <= 0) break;
+        off += (size_t)n;
+        if (off >= cap) { off = cap - 1; break; }
     }
     return off;
 }
