@@ -1,12 +1,36 @@
 # Orthox-64 Installation Guide
 
 ## Requirements
-To build this project, you need the following tools:
-- **Host OS:** Linux or macOS (WSL2 recommended)
-- **Compiler:** x86_64-elf-gcc, x86_64-elf-binutils
-- **Build Tools:** make, python3
-- **Image Creation:** xorriso, mtools
-- **Emulator:** QEMU (x86_64)
+
+To build and run Orthox-64, you need the following tools on the host:
+
+- **Host OS:** Linux (Ubuntu 24.04 + WSL2 is the reference environment) or macOS
+- **C/C++ Compiler:** `clang` with `-target x86_64-elf` (no separate x86_64-elf-gcc cross toolchain is needed)
+- **Linker:** `lld`
+- **Build Tools:** `make`, `python3`
+- **Image Tools:** `xorriso`, `mtools`
+- **Emulator:** `qemu-system-x86_64`
+
+### Ubuntu 22.04 / 24.04 (incl. WSL2)
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  clang lld llvm \
+  build-essential \
+  make python3 \
+  xorriso mtools \
+  qemu-system-x86 \
+  git
+```
+
+### macOS
+
+```bash
+brew install llvm lld make python3 xorriso mtools qemu git
+```
+
+`brew`-installed `clang` may need to be on `PATH` ahead of the system `clang`. Adjust your shell init if necessary.
 
 ## Build Instructions
 
@@ -16,30 +40,22 @@ To build this project, you need the following tools:
    cd Orthox-64
    ```
 
-2. **Build the kernel and userland**
+2. **Build the kernel, userland, and a bootable ISO**
    ```bash
    make
    ```
-   This will build the kernel (`kernel/kernel.elf`) and userland binaries, then create `rootfs.tar`.
-
-3. **Create a bootable image (ISO)**
-   ```bash
-   make iso
-   ```
-   This creates a bootable ISO image including the Limine bootloader.
+   This produces `orthos.iso` (Limine-bootable) along with `kernel.elf` and user-space binaries.
 
 ## Running the OS
 
-To run using QEMU, you can use the following script:
 ```bash
-./run_qemu.sh
+make run
 ```
-(Use `./run_doom_qemu.sh` to run DOOM)
 
-## Toolchain Setup
-If you need to build your own toolchain, use the scripts in the `ports/` directory:
-```bash
-cd ports
-./build_gcc.sh
-./build_binutils.sh
-```
+Internally this invokes `tests/run_qemu_stdio.sh`, which boots `orthos.iso` under `qemu-system-x86_64` with serial console multiplexed to stdio (`-serial mon:stdio`).
+
+To exit QEMU at any time, press `Ctrl-A x`.
+
+## Optional: Native (On-OS) Toolchain
+
+`ports/build_gcc.sh` and `ports/build_binutils.sh` build the GCC 4.7.4 / Binutils 2.26 toolchain that runs **inside** Orthox-64 (used for the self-hosted kernel build demonstrated in Day 43 of the project log). These scripts target a macOS development host and are not required for the standard host-side cross build above.

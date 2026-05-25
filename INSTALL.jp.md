@@ -1,12 +1,36 @@
 # Orthox-64 インストールガイド
 
 ## 必要条件
-ビルドには以下のツールが必要です：
-- **ホストOS:** Linux または macOS (WSL2推奨)
-- **コンパイラ:** x86_64-elf-gcc, x86_64-elf-binutils
-- **ビルドツール:** make, python3
-- **イメージ作成:** xorriso, mtools
-- **エミュレータ:** QEMU (x86_64)
+
+Orthox-64 をビルド・実行するには、ホスト側に以下のツールが必要です。
+
+- **ホスト OS:** Linux（リファレンス環境は Ubuntu 24.04 + WSL2）または macOS
+- **C/C++ コンパイラ:** `clang`（`-target x86_64-elf` でクロスコンパイル。`x86_64-elf-gcc` 等の専用ツールチェインは不要）
+- **リンカ:** `lld`
+- **ビルドツール:** `make`、`python3`
+- **イメージ作成:** `xorriso`、`mtools`
+- **エミュレータ:** `qemu-system-x86_64`
+
+### Ubuntu 22.04 / 24.04（WSL2 含む）
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  clang lld llvm \
+  build-essential \
+  make python3 \
+  xorriso mtools \
+  qemu-system-x86 \
+  git
+```
+
+### macOS
+
+```bash
+brew install llvm lld make python3 xorriso mtools qemu git
+```
+
+`brew` の `clang` をシステムの `clang` より優先するよう `PATH` を調整してください。
 
 ## ビルド手順
 
@@ -16,30 +40,22 @@
    cd Orthox-64
    ```
 
-2. **カーネルとユーザーランドのビルド**
+2. **カーネル・ユーザーランド・ブート ISO を一括ビルド**
    ```bash
    make
    ```
-   これにより、カーネル (`kernel/kernel.elf`) とユーザーランドバイナリがビルドされ、`rootfs.tar` が作成されます。
-
-3. **ブートイメージ (ISO) の作成**
-   ```bash
-   make iso
-   ```
-   Limine ブートローダーを含むブート可能な ISO イメージが作成されます。
+   `orthos.iso`（Limine ブート対応）と `kernel.elf`、各種ユーザーランドバイナリが生成されます。
 
 ## 実行方法
 
-QEMU を使用して実行するには、以下のスクリプトが利用可能です：
 ```bash
-./run_qemu.sh
+make run
 ```
-（DOOM を実行する場合は `./run_doom_qemu.sh` を使用してください）
 
-## ツールチェインの構築
-独自のツールチェインをビルドする必要がある場合は、`ports/` ディレクトリ内のスクリプトを使用してください：
-```bash
-cd ports
-./build_gcc.sh
-./build_binutils.sh
-```
+内部的には `tests/run_qemu_stdio.sh` が呼ばれ、`qemu-system-x86_64` でシリアルコンソールを stdio に接続して `orthos.iso` を起動します（`-serial mon:stdio`）。
+
+QEMU を抜けるには `Ctrl-A x` を入力してください。
+
+## 補足: OS 内ネイティブツールチェイン
+
+`ports/build_gcc.sh` と `ports/build_binutils.sh` は、Orthox-64 の**内側で動く** GCC 4.7.4 / Binutils 2.26 を構築するためのスクリプトです（Day 43 で達成した「OS による自分のカーネルのビルド」で使用）。macOS の開発ホストを想定しており、上記の標準ホスト側クロスビルドには不要です。

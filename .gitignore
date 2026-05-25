@@ -68,8 +68,8 @@ native-kernel-boot-serial.log
 native-kernel-boot-build.log
 kernel-output.img
 
-# Private / internal files
-CLAUDE.md
+# Private / internal files (root-level only; book-reader/ keeps its own CLAUDE.md)
+/CLAUDE.md
 RISCV-virt-Porting-Plan.md
 SMP-Design.md
 future.md
@@ -79,7 +79,7 @@ send_keys.py
 Docs/
 LOGs/
 logs/
-.claude/
+/.claude/
 .codex
 .vscode/
 DOOM_Script/
