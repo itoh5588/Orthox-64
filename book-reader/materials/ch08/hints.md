@@ -91,9 +91,9 @@
 - `t->user_entry = info.has_interp ? interp_info.entry : info.entry;` の三項演算子。
 
 ### Lv2 — それでも進まない場合
-- メインバイナリが `ET_DYN` (PIE) の場合は `exec_load_bias = EXEC_ET_DYN_LOAD_BASE` でずらしてロード。詳細は第14章クラスタB。
+- メインバイナリが `ET_DYN` (PIE) の場合は `exec_load_bias = EXEC_ET_DYN_LOAD_BASE` でずらしてロード。詳細は第14章クラスタC。
 - インタープリタは `EXEC_INTERP_LOAD_BASE` (別のベース) でロード。これによりメインバイナリとインタープリタが衝突しない。
-- `task_prepare_initial_user_stack` の中で auxv の `AT_PHDR`, `AT_BASE`, `AT_ENTRY` を書き込む (第14章クラスタC で詳細)。インタープリタはこれを読んでメインバイナリの場所を知る。
+- `task_prepare_initial_user_stack` の中で auxv の `AT_PHDR`, `AT_BASE`, `AT_ENTRY` を書き込む (第14章クラスタE で詳細)。インタープリタはこれを読んでメインバイナリの場所を知る。
 
 ### Lv3 — 典型的な誤解
 - 「`execve` で動的リンカーが要らない場合 (静的バイナリ) なら `interp_info` は無視」は正しいが、auxv 自体は**静的バイナリでも構築する**。`AT_PHDR`, `AT_ENTRY` 等は静的バイナリでも必要。
