@@ -22,7 +22,7 @@ Japanese main README: [README.md](README.md)
 - **USB Support:** Basic USB stack and Mass Storage Class (MSC) support.
 - **Networking:** `virtio-net` + `lwIP` based IPv4 networking with DHCP, DNS, ICMP, UDP, TCP, socket syscalls, BusyBox `httpd`, outbound HTTP client support, and userland HTTPS client support with BearSSL.
 - **SMP:** 4 CPU bring-up, LAPIC timer, reschedule IPI, per-CPU run queue, and validated blocking wakeup paths for pipe, wait, and socket workloads.
-- **Sound:** Audio support via Intel HD Audio.
+- **Sound:** PCM playback via AC97 with Sound Blaster 16 fallback, plus beep output.
 - **Userland:** Environment based on `musl libc` for better standard compatibility.
 - **Shared Libraries:** Full dynamic linking support — musl-based dynamic linker, position-independent `.so` loading, `dlopen`/`dlsym`, TLS (Thread-Local Storage), C++ runtime `.so` support, and Python C-extension `.so` imports.
 - **Native Kernel Self-Compilation:** Orthox-64 can compile its own kernel from source, entirely within the running OS, using the natively-ported GCC 4.7.4 and Binutils 2.26. The resulting kernel boots and runs correctly — the self-hosting build loop is closed.
