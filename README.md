@@ -3,7 +3,7 @@
 ![Orthox-64 デスクトップ](assets/screenshot.png)
 ![Orthox-64 DOOM](assets/doom.png)
 
-Orthox-64（オーソックス・シックスティフォー）は、シンプルで飾らないOSを構築するプロジェクト。
+Orthox-64（オーソックス・シックスティフォー）は、モノシリック構造のシンプルなOSを構築するプロジェクト。
 
 英語版: [README.en.md](README.en.md)
 
