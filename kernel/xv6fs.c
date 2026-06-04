@@ -1,4 +1,10 @@
 /*
+ * Portions of this file are derived from xv6-riscv (MIT License):
+ *   Copyright (c) 2006-2019 Frans Kaashoek, Robert Morris, Russ Cox,
+ *                           Massachusetts Institute of Technology
+ * The full xv6 MIT license text is reproduced in THIRD_PARTY_NOTICES.md.
+ */
+/*
  * xv6fs.c — ファイルシステムコア
  * xv6-riscv/kernel/fs.c を Orthox-64 向けに移植。
  *
