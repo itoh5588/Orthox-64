@@ -51,3 +51,8 @@ Orthox-64 is inspired by and references the following projects:
 - **[MikanOS](https://github.com/uchan-nos/mikanos)**: A modern educational OS by [uchan-nos](https://github.com/uchan-nos). The kernel architecture and some primitive setups were developed with reference to its implementation.
 - **[Limine](https://github.com/limine-bootloader/limine)**: Used as the bootloader for modern UEFI/BIOS support.
 - **[xv6-riscv](https://github.com/mit-pdos/xv6-riscv)**: The xv6 teaching operating system by MIT PDOS, MIT License. Orthox-64's root filesystem (xv6fs) is ported from xv6-riscv's `kernel/fs.c`, `bio.c`, and `log.c`, extended with triple-indirect block support and adapted to the Orthox-64 kernel environment.
+
+## License
+Orthox-64 itself is released under the MIT License ([LICENSE](LICENSE)).
+
+The kernel includes filesystem code ported from xv6-riscv (MIT), and the `ports/` directory bundles third-party components such as musl, lwIP, BearSSL, Limine, CPython, zlib, BusyBox, and GNU Make/Binutils/GCC. Their copyright notices and licenses (some under the GPL), along with distribution notes, are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
