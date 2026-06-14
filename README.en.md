@@ -7,7 +7,11 @@ Most hobby kernels stop at a shell. Orthox-64 closes the **self-hosting loop**: 
 ![Orthox-64 Desktop](assets/screenshot.png)
 ![Orthox-64 DOOM](assets/doom.png)
 
-<!-- TODO (high impact): add an asciinema/GIF of the OS compiling its own kernel and booting it. This is the single most compelling demo for an osdev audience. -->
+### Watch it compile its own kernel
+
+![Orthox-64 compiling its own kernel, natively](assets/native-kernel-build.gif)
+
+*The running OS rebuilds its own kernel from source using its natively-ported **GCC 4.7.4 / binutils** — every `cc1` and `as` step executes on Orthox-64 itself, then `ld` links `/kernel.elf`, ending in `kernel-native-build: PASS`. (Recorded 2026-05-03; compile output is sped up, nothing else altered. Raw asciicast: [`assets/native-kernel-build.cast`](assets/native-kernel-build.cast).)*
 
 Japanese main README: [README.md](README.md)
 
