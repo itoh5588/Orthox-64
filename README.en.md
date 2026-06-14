@@ -7,11 +7,11 @@ Most hobby kernels stop at a shell. Orthox-64 closes the **self-hosting loop**: 
 ![Orthox-64 Desktop](assets/screenshot.png)
 ![Orthox-64 DOOM](assets/doom.png)
 
-### Watch it compile its own kernel
+### Watch it compile its own kernel — and boot it
 
-![Orthox-64 compiling its own kernel, natively](assets/native-kernel-build.gif)
+![Orthox-64 compiling its own kernel and booting it](assets/native-kernel-build.gif)
 
-*The running OS rebuilds its own kernel from source using its natively-ported **GCC 4.7.4 / binutils** — every `cc1` and `as` step executes on Orthox-64 itself, then `ld` links `/kernel.elf`, ending in `kernel-native-build: PASS`. (Recorded 2026-05-03; compile output is sped up, nothing else altered. Raw asciicast: [`assets/native-kernel-build.cast`](assets/native-kernel-build.cast).)*
+*The full self-hosting loop. **Phase 1:** the running OS rebuilds its own kernel from source with its natively-ported **GCC 4.7.4 / binutils** — every `cc1` and `as` step executes on Orthox-64 itself, then `ld` links `/kernel.elf`, ending in `kernel-native-build: PASS`. **Phase 2:** that freshly built `/kernel.elf` is packaged into a boot ISO and booted as-is — it comes up to a shell (`native-kernel-boot-ok`). (Recorded 2026-05-03; compile output is sped up, nothing else altered. Raw asciicast: [`assets/native-kernel-build.cast`](assets/native-kernel-build.cast).)*
 
 Japanese main README: [README.md](README.md)
 
