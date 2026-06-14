@@ -1,5 +1,7 @@
 # Orthox-64
 
+**🇬🇧 English readers → [README.en.md](README.en.md)**
+
 ![Orthox-64 デスクトップ](assets/screenshot.png)
 ![Orthox-64 DOOM](assets/doom.png)
 
