@@ -1624,7 +1624,7 @@ int64_t fs_write(int fd, const void* buf, size_t count) {
         extern int64_t sys_write_serial(const char* buf, size_t count);
         return sys_write_serial((const char*)buf, count);
     }
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     file_descriptor_t* f = &current->fds[fd];
     fs_assert_open_file_consistent(f);
 
@@ -1811,7 +1811,7 @@ int64_t fs_read(int fd, void* buf, size_t count) {
         }
         return read_bytes;
     }
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     file_descriptor_t* f = &current->fds[fd];
     fs_assert_open_file_consistent(f);
 
@@ -1921,7 +1921,7 @@ int64_t fs_read(int fd, void* buf, size_t count) {
 int fs_close(int fd) {
     struct task* current = get_current_task();
     if (!current) return -1;
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
 
     fs_assert_open_file_consistent(&current->fds[fd]);
     fs_release_fd(&current->fds[fd]);
@@ -1931,8 +1931,8 @@ int fs_close(int fd) {
 int fs_dup2(int oldfd, int newfd) {
     struct task* current = get_current_task();
     if (!current) return -1;
-    if (oldfd < 0 || oldfd >= MAX_FDS || !current->fds[oldfd].in_use) return -1;
-    if (newfd < 0 || newfd >= MAX_FDS) return -1;
+    if (oldfd < 0 || oldfd >= MAX_FDS || !current->fds[oldfd].in_use) return -EBADF;
+    if (newfd < 0 || newfd >= MAX_FDS) return -EBADF;
     if (oldfd == newfd) return newfd;
 
     if (current->fds[newfd].in_use) {
@@ -1946,13 +1946,13 @@ int fs_dup2(int oldfd, int newfd) {
 int fs_fcntl(int fd, int cmd, uint64_t arg) {
     struct task* current = get_current_task();
     if (!current) return -1;
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
 
     switch (cmd) {
         case F_DUPFD:
         case F_DUPFD_CLOEXEC: {
             int minfd = (int)arg;
-            if (minfd < 0) return -1;
+            if (minfd < 0) return -EINVAL;
             for (int newfd = minfd; newfd < MAX_FDS; newfd++) {
                 if (!current->fds[newfd].in_use) {
                     if (fs_dup2(fd, newfd) < 0) return -1;
@@ -2067,7 +2067,7 @@ int fs_fstat(int fd, struct kstat* st) {
         return 0;
     }
     
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     
     file_descriptor_t* f = &current->fds[fd];
     fs_assert_open_file_consistent(f);
@@ -2134,7 +2134,7 @@ int fs_getdents(int fd, struct orth_dirent* dirp, size_t count) {
     size_t remaining;
     size_t to_copy;
     if (!current || !dirp) return -1;
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     f = &current->fds[fd];
     if (fs_fd_type(f) != FT_DIR) return -1;
     fs_assert_open_file_consistent(f);
@@ -2173,7 +2173,7 @@ int fs_getdents64(int fd, void* dirp, size_t count) {
     size_t index;
 
     if (!current || !dirp) return -1;
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     f = &current->fds[fd];
     if (fs_fd_type(f) != FT_DIR) return -1;
     fs_assert_open_file_consistent(f);
@@ -2399,7 +2399,7 @@ int64_t fs_lseek(int fd, int64_t offset, int whence) {
     if (!current) return -1;
     
     if (fd == 0 || fd == 1 || fd == 2) return 0;
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     
     file_descriptor_t* f = &current->fds[fd];
     int64_t new_offset = 0;
@@ -2599,7 +2599,7 @@ int fs_fchdir(int fd) {
     const char* norm;
     size_t i = 0;
     if (!current) return -1;
-    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !current->fds[fd].in_use) return -EBADF;
     f = &current->fds[fd];
     if (fs_fd_type(f) != FT_DIR) return -1;
     if (fs_fd_name(f)[0] == '\0') return -1;

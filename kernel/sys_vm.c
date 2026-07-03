@@ -328,6 +328,9 @@ static void copy_mmap_file_page(uint8_t* dest, int fd, uint64_t file_off) {
     (void)fs_lseek(fd, old, 0);
 }
 
+// File-backed mappings are an eager per-process copy made at map time;
+// MAP_SHARED is accepted but behaves like MAP_PRIVATE (no write-back, no
+// cross-process visibility).
 void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd, int64_t offset) {
     struct task* current = get_current_task();
     if (!current || length == 0) return (void*)-22;

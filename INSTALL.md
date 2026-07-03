@@ -7,7 +7,7 @@ To build and run Orthox-64, you need the following tools on the host:
 - **Host OS:** Linux (Ubuntu 24.04 + WSL2 is the reference environment) or macOS
 - **C/C++ Compiler:** `clang` with `-target x86_64-elf` (no separate x86_64-elf-gcc cross toolchain is needed)
 - **Linker:** `lld`
-- **Build Tools:** `make`, `python3`
+- **Build Tools:** `make`, `python3` (**3.10 or later** — the rootfs build scripts use modern type-hint syntax; the macOS system `python3` 3.9 is not sufficient)
 - **Image Tools:** `xorriso`, `mtools`
 - **Emulator:** `qemu-system-x86_64`
 
@@ -30,7 +30,7 @@ sudo apt-get install -y \
 brew install llvm lld make python3 xorriso mtools qemu git
 ```
 
-`brew`-installed `clang` may need to be on `PATH` ahead of the system `clang`. Adjust your shell init if necessary.
+`brew`-installed `clang` and `python3` may need to be on `PATH` ahead of the system versions (macOS ships Python 3.9, which is too old for the rootfs build scripts). Adjust your shell init if necessary, e.g. `export PATH="/opt/homebrew/bin:$PATH"`.
 
 ## Build Instructions
 

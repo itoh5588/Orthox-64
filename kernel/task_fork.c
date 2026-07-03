@@ -25,18 +25,22 @@ static void kernel_strcpy(char* dst, const char* src, size_t size) {
 
 int task_fork(struct syscall_frame* frame) {
     struct task* parent = get_current_task();
-    uint64_t flags = task_lock_irqsave();
-    struct task* child = task_alloc_struct();
+    struct task* child;
     uint32_t spawn_cpu;
     void* kstack_phys;
+    uint64_t flags;
     KASSERT(parent != 0);
     KASSERT(frame != 0);
     KASSERT(parent->ctx.cr3 != 0);
+    // The heavy setup below (address-space copy, kernel stack, fd clone) runs
+    // outside g_task_lock: the parent is blocked here and the big kernel lock
+    // already serializes it against other syscalls. Holding g_task_lock with
+    // IRQs off across vmm_copy_pml4 would stall every other CPU's scheduler
+    // tick for the whole copy. Only the final publish needs the lock.
+    child = task_alloc_struct();
     if (!child) {
-        task_unlock_irqrestore(flags);
         return -1;
     }
-    child->pid = task_next_pid_locked();
     child->ppid = parent->pid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
@@ -47,7 +51,6 @@ int task_fork(struct syscall_frame* frame) {
         child->sig_action_masks[i] = parent->sig_action_masks[i];
         child->sig_action_flags[i] = parent->sig_action_flags[i];
     }
-    spawn_cpu = task_choose_fork_cpu_locked((uint32_t)parent->cpu_affinity);
     child->heap_break = parent->heap_break;
     child->mmap_end = parent->mmap_end;
     child->user_entry = parent->user_entry;
@@ -64,7 +67,6 @@ int task_fork(struct syscall_frame* frame) {
     child->ctx.cr3 = vmm_copy_pml4((uint64_t*)PHYS_TO_VIRT(parent->ctx.cr3));
     if (!child->ctx.cr3) {
         task_free_struct(child);
-        task_unlock_irqrestore(flags);
         return -1;
     }
     kernel_strcpy(child->cwd, parent->cwd, sizeof(child->cwd));
@@ -72,7 +74,6 @@ int task_fork(struct syscall_frame* frame) {
     if (!kstack_phys) {
         vmm_free_user_pml4(child->ctx.cr3);
         task_free_struct(child);
-        task_unlock_irqrestore(flags);
         return -1;
     }
     child->kstack_top = (uint64_t)PHYS_TO_VIRT(kstack_phys) + 4 * PAGE_SIZE;
@@ -103,12 +104,14 @@ int task_fork(struct syscall_frame* frame) {
             }
             pmm_free((void*)VIRT_TO_PHYS(child->kstack_top - 4 * PAGE_SIZE), 4);
             task_free_struct(child);
-            task_unlock_irqrestore(flags);
             return -1;
         }
     }
     KASSERT(child->kstack_top != 0);
     KASSERT(child->ctx.cr3 != 0);
+    flags = task_lock_irqsave();
+    child->pid = task_next_pid_locked();
+    spawn_cpu = task_choose_fork_cpu_locked((uint32_t)parent->cpu_affinity);
     task_mark_ready_on_cpu_locked_internal(child, spawn_cpu);
     child->next = task_list;
     task_list = child;
