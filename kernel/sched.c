@@ -61,6 +61,10 @@ void schedule(void) {
         next = cpu->idle_task;
     }
     if (next == current_task) {
+        // A wakeup can land between marking ourselves blocked and reaching
+        // here; the pop above already dequeued us, so restore RUNNING or the
+        // next schedule() would drop this task from every queue.
+        next->state = TASK_RUNNING;
         task_unlock_irqrestore(flags);
         return;
     }

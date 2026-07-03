@@ -167,9 +167,13 @@ int sys_munmap(void* addr, size_t length);
 
 uint64_t sys_brk(uint64_t addr) {
     struct task* current = get_current_task();
-    uint64_t old_break = current ? current->heap_break : 0;
+    uint64_t old_break;
     uint64_t pages = 0;
-    if (addr == 0 || addr <= current->heap_break) {
+    if (!current) return 0;
+    old_break = current->heap_break;
+    // Refuse breaks that would run into the mmap region; the caller sees the
+    // unchanged break, which is how brk() reports failure.
+    if (addr == 0 || addr <= current->heap_break || addr >= MMAP_BASE_ADDR) {
         memtrace_brk(addr, old_break, current->heap_break, 0);
         return current->heap_break;
     }
@@ -216,7 +220,9 @@ int sys_mprotect(void* addr, size_t length, int prot) {
         }
 
         *pte &= ~(PTE_WRITABLE | PTE_NX);
-        if (prot & PROT_WRITE) *pte |= PTE_WRITABLE;
+        // COW pages must stay read-only even for PROT_WRITE; the COW fault
+        // handler grants write access after resolving the shared page.
+        if ((prot & PROT_WRITE) && !(*pte & PTE_COW)) *pte |= PTE_WRITABLE;
         if (!(prot & PROT_EXEC)) *pte |= PTE_NX;
         __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
     }
@@ -269,7 +275,8 @@ void* sys_mremap(void* old_addr, size_t old_len, size_t new_len, int flags, void
     first_phys = vmm_get_phys(pml4, old_base);
     first_pte = lookup_user_pte(pml4, old_base);
     if (!first_phys || !first_pte) return (void*)-22;
-    if (*first_pte & PTE_WRITABLE) prot |= PROT_WRITE;
+    // A COW page reads as non-writable but was originally writable.
+    if (*first_pte & (PTE_WRITABLE | PTE_COW)) prot |= PROT_WRITE;
     if (!(*first_pte & PTE_NX)) prot |= PROT_EXEC;
 
     if (new_size == old_size) return old_addr;
